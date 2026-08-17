@@ -187,6 +187,13 @@ class DailyRun:
                     continue
                 result.facts_kept += len(outcome.facts)
                 result.facts_rejected += len(outcome.rejected_facts)
+                # The one judgement the model makes that every deterministic
+                # stage below needs. Dropping it here cost 30 points of score
+                # on every deprecation, made retrieval return nothing before
+                # it even reached the corpus, and left the rationale talking
+                # about plumbing instead of the news.
+                if outcome.change_type is not None:
+                    cluster.change_type = str(outcome.change_type)
                 enriched.append((cluster, outcome.facts))
             record["out_count"] = len(enriched)
         result.enriched = len(enriched)

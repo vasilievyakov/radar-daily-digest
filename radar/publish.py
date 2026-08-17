@@ -28,6 +28,7 @@ from radar.collect import SourceOutcome
 from radar.delta import DeltaOutcome
 from radar.models import (
     ChangeType,
+    DatePrecision,
     ContextLabel,
     Fact,
     FactKind,
@@ -111,7 +112,8 @@ def collect_upcoming(
 ) -> list[UpcomingDeadline]:
     """Dated obligations already in the corpus, nearest first."""
     rows = conn.execute(
-        "SELECT vendor, product, text, event_date, source_url FROM event_statements "
+        "SELECT vendor, product, text, event_date, date_precision, source_url "
+        "FROM event_statements "
         "WHERE change_type IN ('deprecation', 'breaking_change') "
         "AND event_date IS NOT NULL AND event_date > ? AND event_date <= ? "
         "ORDER BY event_date ASC LIMIT ?",
@@ -137,6 +139,9 @@ def collect_upcoming(
                 what=row["text"].strip(),
                 vendor=row["vendor"],
                 source_url=row["source_url"],
+                # Carried through: a year recovered from context must not
+                # render as a firm deadline.
+                date_precision=DatePrecision(row["date_precision"] or "day"),
             )
         )
         if len(out) >= limit:

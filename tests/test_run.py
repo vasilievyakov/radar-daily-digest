@@ -319,3 +319,48 @@ class TestFilterWiring:
                           log_dir=str(tmp / "logs")).execute()
         assert result.ok
         assert result.relevant > 0
+
+
+class TestSeamsCarryValues:
+    """Stage tests prove each stage computes; these prove the output arrives.
+
+    Every defect found on live data had one shape: a value that should exist
+    is absent, and every consumer downstream has a valid path for absence.
+    Nothing throws, and the run stays green while the product degrades.
+    """
+
+    def test_change_type_from_enrichment_reaches_the_signal(self, env):
+        conn, config, fetcher, tmp = env
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+        signals = read_signals(conn, result.run_id)
+        assert signals[0].change_type is not None
+        assert str(signals[0].change_type) == "deprecation"
+
+    def test_the_change_type_weight_is_actually_applied(self, env):
+        """Without the seam a deprecation scores like an ordinary release."""
+        conn, config, fetcher, tmp = env
+        with_type = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                             run_id="typed", for_date=TODAY,
+                             log_dir=str(tmp / "logs")).execute()
+
+        class Untyped(FakeEnricher):
+            def enrich(self, item, source):
+                out = super().enrich(item, source)
+                out.change_type = None
+                return out
+
+        without = DailyRun(conn, config, fetcher, Untyped([sunset_fact()]),
+                           run_id="untyped", for_date=TODAY,
+                           log_dir=str(tmp / "logs")).execute()
+        typed_score = read_signals(conn, "typed")[0].score
+        untyped_score = read_signals(conn, "untyped")[0].score
+        assert typed_score > untyped_score
+
+    def test_the_rationale_names_the_change_not_only_the_plumbing(self, env):
+        conn, config, fetcher, tmp = env
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+        rationale = read_signals(conn, result.run_id)[0].score_rationale
+        assert rationale
+        assert "отключени" in rationale.lower() or "deprecation" in rationale.lower()
