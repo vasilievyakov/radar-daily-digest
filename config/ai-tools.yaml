@@ -73,23 +73,15 @@ corpus:
 
 sources:
   # Приоритет 1: официальные реестры отключений и changelog.
-  # Проверено curl без JS: страницы отдаются целиком и содержат даты.
+  # Каждый адрес проверен curl: указано число уникальных дат на странице.
+
+  # --- Anthropic ---
   - id: anthropic_model_deprecations
     type: html_scrape
     url: https://docs.claude.com/en/docs/about-claude/model-deprecations
     priority: 1
     enabled: true
     parser_hint: dated_table
-    backfill_supported: true
-    backfill_depth_days: 540
-    min_expected_items: 10
-
-  - id: openai_deprecations
-    type: html_scrape
-    url: https://platform.openai.com/docs/deprecations
-    priority: 1
-    enabled: true
-    parser_hint: dated_sections
     backfill_supported: true
     backfill_depth_days: 540
     min_expected_items: 10
@@ -104,30 +96,234 @@ sources:
     backfill_depth_days: 540
     min_expected_items: 20
 
+  # Дат мало, но это даты вступления тарифов в силу.
+  - id: anthropic_pricing
+    type: html_scrape
+    url: https://docs.claude.com/en/docs/about-claude/pricing
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 2
+
+  # Редиректит на GitHub CHANGELOG.md без дат. Тот же материал приходит
+  # структурированно через gh_anthropics_claude_code.
   - id: anthropic_claude_code_release_notes
     type: html_scrape
     url: https://docs.claude.com/en/release-notes/claude-code
     priority: 1
-    enabled: true
+    enabled: false
     parser_hint: dated_sections
-    backfill_supported: true
-    backfill_depth_days: 360
+    backfill_supported: false
     min_expected_items: 10
 
-  # docs.cursor.com/changelog отдаёт 499 КБ и ноль извлекаемых дат: это тупик,
-  # а не клиентский рендеринг. Рабочий адрес — cursor.com/changelog, 190 КБ
-  # с датами в обычном curl. Записей мало, отсюда min_expected_items: 3.
-  - id: cursor_changelog
+  # --- OpenAI ---
+  - id: openai_deprecations
     type: html_scrape
-    url: https://cursor.com/changelog
+    url: https://platform.openai.com/docs/deprecations
     priority: 1
     enabled: true
     parser_hint: dated_sections
     backfill_supported: true
-    backfill_depth_days: 360
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  # Двухуровневые даты: заголовок «June, 2025» задаёт год и месяц,
+  # отметка «Jun 27» внутри задаёт день. 34 месячных заголовка, 154 отметки.
+  - id: openai_changelog
+    type: html_scrape
+    url: https://platform.openai.com/docs/changelog
+    priority: 1
+    enabled: true
+    parser_hint: month_then_day
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  # --- Google ---
+  # Домен уходит в цепочку OAuth-редиректов при браузерном User-Agent.
+  # Наш UA не браузерный, менять его на этих источниках нельзя.
+  - id: google_gemini_deprecations
+    type: html_scrape
+    url: https://ai.google.dev/gemini-api/docs/deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  - id: google_gemini_changelog
+    type: html_scrape
+    url: https://ai.google.dev/gemini-api/docs/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 20
+
+  - id: google_agent_platform_release_notes
+    type: html_scrape
+    url: https://docs.cloud.google.com/gemini-enterprise-agent-platform/release-notes
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  # Страница помечена как более не обновляемая: только для бэкфилла.
+  - id: google_vertex_release_notes_archive
+    type: html_scrape
+    url: https://cloud.google.com/vertex-ai/generative-ai/docs/release-notes
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 30
+    live_collect: false
+
+  - id: google_vertex_model_versions
+    type: html_scrape
+    url: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  # --- GitHub ---
+  # Главный источник по вендору: 833 записи за двенадцать месяцев, из них
+  # 56 об отключениях, 57 о лимитах, 23 о ценах. Четыре ячейки одной лентой.
+  # История берётся помесячным шаблоном, суточное окно — с корневой страницы.
+  - id: github_changelog
+    type: html_scrape
+    url: https://github.blog/changelog/
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 365
+    backfill_url_template: "https://github.blog/changelog/{year}/{month:02d}/"
+    min_expected_items: 5
+
+  - id: github_graphql_breaking_changes
+    type: html_scrape
+    url: https://docs.github.com/en/graphql/overview/breaking-changes
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 10
+
+  - id: github_graphql_changelog
+    type: html_scrape
+    url: https://docs.github.com/en/graphql/overview/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  # --- LangChain ---
+  # Единственный источник с явными датами снятия: «scheduled for removal on».
+  - id: langchain_changelog
+    type: html_scrape
+    url: https://changelog.langchain.com/
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 20
+
+  - id: langsmith_selfhosted_changelog
+    type: html_scrape
+    url: https://docs.langchain.com/langsmith/self-hosted-changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 365
+    min_expected_items: 20
+
+  # --- n8n ---
+  - id: n8n_release_notes
+    type: html_scrape
+    url: https://docs.n8n.io/release-notes/
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 365
+    min_expected_items: 10
+
+  # Ветка 1.x заморожена: 18 разделов breaking changes, ни одного за год.
+  # Берётся только ради исторической глубины.
+  - id: n8n_release_notes_1x_archive
+    type: html_scrape
+    url: https://docs.n8n.io/changelog/release-notes-1.x
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 30
+    live_collect: false
+
+  # --- Cursor ---
+  # Индекс постов лежит во встроенном JSON той же страницы. Единственный
+  # способ получить датированную историю цен Cursor.
+  - id: cursor_blog
+    type: html_scrape
+    url: https://cursor.com/blog
+    priority: 2
+    enabled: true
+    parser_hint: embedded_json_index
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 20
+
+  # Проверено дважды: 191 КБ, шесть дат, из десяти адресов записей дату
+  # кодирует один. Рендеринг не помогает. Оставлен выключенным.
+  - id: cursor_changelog
+    type: html_scrape
+    url: https://cursor.com/changelog
+    priority: 1
+    enabled: false
+    parser_hint: dated_sections
+    backfill_supported: false
     min_expected_items: 3
 
-  # Приоритет 3: GitHub Releases, полная история через пагинацию.
+  # --- MCP ---
+  # Пять ревизий спецификации за всё время, две за последний год.
+  # Ячейку не закрывает, но это единственный датированный след протокола.
+  - id: mcp_spec_versioning
+    type: html_scrape
+    url: https://modelcontextprotocol.io/specification/versioning
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 3
+
+  # --- Приоритет 2: ленты ---
+  - id: github_changelog_feed
+    type: rss
+    url: https://github.blog/changelog/feed/
+    priority: 2
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 5
+
+  # --- Приоритет 3: GitHub Releases, полная история через пагинацию ---
   - id: gh_anthropics_claude_code
     type: github_releases
     url: https://github.com/anthropics/claude-code
@@ -155,8 +351,7 @@ sources:
     backfill_depth_days: 360
     min_expected_items: 5
 
-  # Releases through package tags rather than GitHub Releases: 2 in six months,
-  # 7 in twelve, bodies around 200 characters. Kept as a valid but thin source.
+  # Релизится тегами пакетов, а не GitHub Releases: 2 за полгода, 7 за год.
   - id: gh_modelcontextprotocol_servers
     type: github_releases
     url: https://github.com/modelcontextprotocol/servers
@@ -175,6 +370,8 @@ sources:
     backfill_depth_days: 180
     min_expected_items: 5
 
+  # Монорепо: почти каждый релиз это версия отдельного пакета-интеграции.
+  # Объём есть, плотность полезного на запись низкая.
   - id: gh_langchain
     type: github_releases
     url: https://github.com/langchain-ai/langchain

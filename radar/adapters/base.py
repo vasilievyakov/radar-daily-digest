@@ -43,6 +43,10 @@ class SourceConfig:
     backfill_supported: bool = False
     backfill_depth_days: int = 0
     min_expected_items: int = 1
+    # Some archives are frozen: worth backfilling, pointless to poll daily.
+    live_collect: bool = True
+    # Pages that only expose history through a per-month URL.
+    backfill_url_template: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SourceConfig:
