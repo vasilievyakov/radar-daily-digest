@@ -29,9 +29,11 @@ from radar.models import (
     FactKind,
     Precedent,
     RetrievalReport,
+    RunSummary,
     Signal,
     SignalType,
     Tier,
+    UpcomingDeadline,
 )
 from radar.surfaces import web
 
@@ -65,6 +67,8 @@ def make_lead_signal(**overrides) -> Signal:
             Fact(
                 kind=FactKind.SUNSET_DATE,
                 value="2026-10-15",
+                value_date=date(2026, 10, 15),
+                subject="claude-3-opus",
                 source_url="https://docs.claude.com/en/docs/about-claude/model-deprecations",
                 evidence="claude-3-opus will be retired on October 15, 2026",
                 confidence="high",
@@ -81,7 +85,11 @@ def make_lead_signal(**overrides) -> Signal:
         primary_url="https://docs.claude.com/en/docs/about-claude/model-deprecations",
         duplicates_count=8,
         delta_status=DeltaStatus.NEW,
-        delta_note="Третий раз с мая Anthropic объявляет отключение с двухмесячным предупреждением.",
+        delta_note="повторяется третий раз",
+        context_note=(
+            "Третий раз с мая Anthropic объявляет отключение "
+            "с двухмесячным предупреждением."
+        ),
         days_tracked=1,
         context_label=ContextLabel.RECURRING,
         precedents=[
@@ -114,6 +122,14 @@ def make_lead_signal(**overrides) -> Signal:
         retrieval=RetrievalReport(
             strict_hits=3, relaxed_hits=5, total_found=5, shown=3
         ),
+        run_summary=RunSummary(
+            sources_checked=14,
+            sources_failed=["mcp-servers"],
+            sources_empty=["cursor-changelog"],
+            materials_collected=41,
+            materials_filtered=23,
+            cost_usd=0.27,
+        ),
         score=87,
         score_rationale="вес вендора и близость даты отключения",
         rank=1,
@@ -139,6 +155,8 @@ def make_second_signal(**overrides) -> Signal:
             Fact(
                 kind=FactKind.EFFECTIVE_DATE,
                 value="2026-11-01",
+                value_date=date(2026, 11, 1),
+                subject="Tier 1",
                 source_url="https://platform.openai.com/docs/guides/rate-limits",
                 evidence="new limits take effect on November 1, 2026",
                 evidence_verified=True,
@@ -165,22 +183,32 @@ def make_quiet_signal(**overrides) -> Signal:
             Fact(
                 kind=FactKind.SUNSET_DATE,
                 value="2026-10-15",
+                value_date=date(2026, 10, 15),
+                subject="claude-3-opus",
                 source_url="https://docs.claude.com/deprecations",
                 evidence="claude-3-opus will be retired on October 15, 2026",
                 evidence_verified=True,
             )
         ],
-        precedents=[
-            Precedent(
-                statement_id="stmt-100",
-                text="новые лимиты Tier 1 в OpenAI API",
-                source_url="https://platform.openai.com/docs/guides/rate-limits",
-                event_date=date(2026, 11, 1),
+        upcoming=[
+            UpcomingDeadline(
+                when=date(2026, 10, 15),
+                what="отключается claude-3-opus",
+                vendor="anthropic",
+                source_url="https://docs.claude.com/deprecations",
+            ),
+            UpcomingDeadline(
+                when=date(2026, 11, 1),
+                what="новые лимиты Tier 1 в OpenAI API",
                 vendor="openai",
-                change_type=ChangeType.LIMITS,
-            )
+                source_url="https://platform.openai.com/docs/guides/rate-limits",
+            ),
         ],
-        stats={"sources_checked": 14, "items_filtered": 23, "items_collected": 31},
+        run_summary=RunSummary(
+            sources_checked=14,
+            materials_collected=31,
+            materials_filtered=23,
+        ),
         rank=0,
     )
     data.update(overrides)
@@ -196,7 +224,13 @@ def make_failure_signal(**overrides) -> Signal:
         for_date=TODAY,
         headline="Прогон 17 августа не завершился",
         failure_reason="сбой на стадии обогащения",
-        stats={"items_collected": 34, "sources_checked": 14},
+        failure_stage="enrich",
+        run_summary=RunSummary(
+            sources_checked=14,
+            materials_collected=34,
+            materials_filtered=0,
+            last_success_date=date(2026, 8, 16),
+        ),
         rank=0,
     )
     data.update(overrides)
@@ -266,8 +300,8 @@ def make_run_view(**overrides) -> web.RunLogView:
         notes=["Источник mcp-servers отключён на два прогона"],
         delivery=[{"channel": "telegram", "status": "доставлено", "message_id": "42"}],
         history=[
-            web.RunSummary("run-1", TODAY, "ok", 10, 93000, 4000, 0.27),
-            web.RunSummary("run-0", date(2026, 8, 16), "ok", 9, 88000, 3800, 0.25),
+            web.RunHistoryRow("run-1", TODAY, "ok", 10, 93000, 4000, 0.27),
+            web.RunHistoryRow("run-0", date(2026, 8, 16), "ok", 9, 88000, 3800, 0.25),
         ],
     )
     data.update(overrides)
@@ -557,7 +591,7 @@ def test_quiet_day_page():
 
 
 def test_quiet_day_without_deadlines_drops_the_whole_block():
-    signal = make_quiet_signal(facts=[], precedents=[])
+    signal = make_quiet_signal(facts=[], precedents=[], upcoming=[])
     html = web.render_digest([signal], today=TODAY)
     assert_page_contract(html)
     assert "Ближайшее" not in html
@@ -569,12 +603,16 @@ def test_quiet_day_ignores_past_deadlines():
             Fact(
                 kind=FactKind.SUNSET_DATE,
                 value="2026-06-01",
+                value_date=date(2026, 6, 1),
                 source_url="https://example.test/old",
                 evidence="retired on June 1, 2026",
                 evidence_verified=True,
             )
         ],
         precedents=[],
+        upcoming=[
+            UpcomingDeadline(when=date(2026, 6, 1), what="прошедший срок"),
+        ],
     )
     html = web.render_digest([signal], today=TODAY)
     assert "Ближайшее" not in html
@@ -597,8 +635,8 @@ def test_empty_run_says_so_without_pretending():
 
 
 def test_footer_reports_unanswered_sources_calmly():
-    html = web.render_digest([make_lead_signal()], today=TODAY, run=make_run_view())
-    assert "не ответил: mcp-servers." in html
+    html = web.render_digest([make_lead_signal()], today=TODAY)
+    assert "Один источник не ответил: mcp-servers." in html
     assert "cursor-changelog ответил, но ничего не отдал." in html
     assert "Лог прогона" in html
 
@@ -665,7 +703,9 @@ def test_corpus_page_shows_volume_depth_vendors_and_density():
     assert "16 августа, вчера" in html
     assert "Глубина 196 дней" in html
     assert "anthropic" in html and "openai" in html and "n8n" in html
-    assert "отключение" in html and "лимиты" in html
+    assert "отключения" in html and "лимиты" in html
+    # column headers stay short enough not to wrap into the next column
+    assert "ломающее изменение" not in html
     assert 'class="num dense">24' in html
     assert 'class="num empty">—' in html
 
@@ -731,8 +771,10 @@ def test_dates_always_carry_the_distance(value, expected):
 def test_date_precision_is_respected():
     assert web.fmt_date(date(2026, 10, 1), TODAY, DatePrecision.MONTH) == "октябрь 2026"
     assert web.fmt_date(date(2026, 1, 1), TODAY, DatePrecision.YEAR) == "2026 год"
+    # A guessed year makes "через 59 дней" false precision, so it is dropped.
     marked = web.fmt_date(date(2026, 10, 15), TODAY, DatePrecision.INFERRED)
-    assert marked == "15 октября, через 59 дней (год не указан в источнике)"
+    assert marked == "15 октября (год не указан в источнике)"
+    assert "дней" not in marked
 
 
 def test_plural_forms():
@@ -936,30 +978,35 @@ def test_build_site_leaves_the_store_untouched(tmp_path):
 
 
 def test_one_source_failure_reads_as_russian():
-    run = make_run_view(
-        sources=[web.SourceRow("mcp-servers", "failed", 0, None, "HTTP 503")]
-    )
-    html = web.render_digest([make_lead_signal()], today=TODAY, run=run)
+    html = web.render_digest([make_lead_signal()], today=TODAY)
     assert "Один источник не ответил: mcp-servers." in html
 
 
 def test_two_source_failures_read_as_russian():
-    run = make_run_view(
-        sources=[
-            web.SourceRow("mcp-servers", "failed", 0, None, "HTTP 503"),
-            web.SourceRow("cursor-changelog", "failed", 0, None, "HTTP 500"),
-        ]
+    signal = make_lead_signal(
+        run_summary=RunSummary(
+            sources_checked=14, sources_failed=["mcp-servers", "cursor-changelog"]
+        )
     )
-    html = web.render_digest([make_lead_signal()], today=TODAY, run=run)
-    assert "Два источника не ответили: cursor-changelog, mcp-servers." in html or (
-        "Два источника не ответили: mcp-servers, cursor-changelog." in html
-    )
+    html = web.render_digest([signal], today=TODAY)
+    assert "Два источника не ответили: mcp-servers, cursor-changelog." in html
 
 
 def test_a_deadline_is_listed_once_even_with_two_records():
-    """The corpus record and the quote describe the same day (voice 2)."""
+    """The upcoming entry and the fact describe the same day (voice 2)."""
     html = web.render_digest([make_quiet_signal()], today=TODAY)
     assert html.count("15 октября, через 59 дней") == 1
+    assert "отключается claude-3-opus" in html
+    # the verbatim quote does not get a second line of its own
+    assert "will be retired on October 15" not in html
+
+
+def test_upcoming_falls_back_to_facts_when_the_field_is_empty():
+    signal = make_quiet_signal(upcoming=[])
+    html = web.render_digest([signal], today=TODAY)
+    assert "Ближайшее" in html
+    assert "15 октября, через 59 дней" in html
+    assert "claude-3-opus" in html
 
 
 def test_sub_cent_cost_does_not_break_the_column():
@@ -967,3 +1014,79 @@ def test_sub_cent_cost_does_not_break_the_column():
     html = web.render_run_log(run, today=TODAY)
     assert "&lt; $0.01" in html or "< $0.01" in html
     assert "0.0040" not in html
+
+
+def test_fact_block_shows_the_relative_date_not_the_raw_value():
+    """voice 4 has no exception for the evidence block."""
+    html = web.render_digest([make_lead_signal()], today=TODAY)
+    assert "Дата отключения:" in html
+    assert '<span class="value">15 октября, через 59 дней — claude-3-opus</span>' in html
+    assert "2026-10-15" not in html
+
+
+def test_inferred_fact_date_drops_the_day_count():
+    signal = make_lead_signal(
+        facts=[
+            Fact(
+                kind=FactKind.SUNSET_DATE,
+                value="15 октября",
+                value_date=date(2026, 10, 15),
+                date_precision=DatePrecision.INFERRED,
+                source_url="https://docs.claude.com/deprecations",
+                evidence="retired on October 15",
+                evidence_verified=True,
+            )
+        ]
+    )
+    html = web.render_digest([signal], today=TODAY)
+    assert "15 октября (год не указан в источнике)" in html
+    assert "через 59 дней" not in html
+
+
+def test_context_sentence_comes_from_the_core():
+    html = web.render_digest([make_lead_signal()], today=TODAY)
+    assert "Третий раз с мая Anthropic объявляет отключение" in html
+    # the surface does not paraphrase the corpus on its own
+    assert "Событие повторяется" not in html
+    assert "повторяется третий раз" not in html
+
+
+def test_without_a_context_note_only_the_disclosure_label_is_shown():
+    signal = make_lead_signal(context_note=None)
+    html = web.render_digest([signal], today=TODAY)
+    assert "Показать три записи" in html
+    assert "Событие" not in html.split('<details class="ctx">')[1].split("</summary>")[0]
+
+
+def test_failure_page_names_the_stage_and_the_last_good_day():
+    html = web.render_digest([make_failure_signal()], today=TODAY)
+    assert "Стадия: Обогащение." in html
+    assert "Последняя удачная сводка — 16 августа, вчера." in html
+    assert "Собрано 34 материала, обработать не удалось." in html
+
+
+def test_quiet_day_statistics_come_from_the_run_summary():
+    html = web.render_digest([make_quiet_signal()], today=TODAY)
+    assert "Проверено 14 источников, 23 материала отклонено." in html
+
+
+def test_digest_reads_signals_and_nothing_else():
+    """SUR-1: the page is a function of the published signals."""
+    tree = ast.parse(WEB_SOURCE)
+    render = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "render_digest"
+    )
+    names = {arg.arg for arg in render.args.args} | {
+        arg.arg for arg in render.args.kwonlyargs
+    }
+    assert names == {"signals", "today", "links"}
+    footer = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_digest_footer"
+    )
+    used = {node.attr for node in ast.walk(footer) if isinstance(node, ast.Attribute)}
+    assert "run_summary" in used
+    assert "source_id" not in used

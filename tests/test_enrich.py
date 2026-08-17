@@ -267,6 +267,7 @@ def event(**overrides) -> dict:
             {
                 "kind": "limit",
                 "value": "три уровня использования",
+                "subject": "Claude API",
                 "evidence": "consolidated into three: Start, Build, and Scale",
             }
         ],
@@ -553,6 +554,165 @@ class TestEvidenceVerification:
         other = enricher(config, FakeBackend(payload)).enrich(alone, make_source())
         assert other.statements[0].event_date is None
         assert other.rejected_facts[0].reason == "date_without_quote"
+
+
+class TestFactDateFields:
+    """Surfaces count days off the fact, so the fact carries the parsed date."""
+
+    def test_date_fact_carries_a_parsed_date_and_a_printed_subject(self, config):
+        payload = {
+            "events": [
+                event(
+                    change_type="deprecation",
+                    facts=[
+                        {
+                            "kind": "sunset_date",
+                            "value": "2026-07-24",
+                            "subject": "claude-opus-4-7",
+                            "evidence": "with removal on July 24, 2026",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
+        fact = result.facts[0]
+        assert fact.value == "2026-07-24"
+        assert fact.value_date == date(2026, 7, 24)
+        assert fact.date_precision is DatePrecision.DAY
+        assert fact.subject == "claude-opus-4-7"
+
+    def test_value_stays_iso_because_delta_and_scoring_parse_it(self, config):
+        """Both read `fact.value` with `date.fromisoformat`."""
+        payload = {
+            "events": [
+                event(
+                    change_type="deprecation",
+                    facts=[
+                        {
+                            "kind": "sunset_date",
+                            "value": "2026-07-24",
+                            "subject": "claude-opus-4-7",
+                            "evidence": "with removal on July 24, 2026",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
+        assert date.fromisoformat(result.facts[0].value[:10]) == date(2026, 7, 24)
+
+    def test_a_recovered_year_marks_the_fact_as_inferred(self, config):
+        text = "Jun.26 Improvement\nCost center limit increased to 1,000\n"
+        payload = {
+            "events": [
+                event(
+                    change_type="limits",
+                    event_date="",
+                    event_date_text="Jun.26",
+                    evidence="Cost center limit increased to 1,000",
+                    facts=[
+                        {
+                            "kind": "effective_date",
+                            "value": "Jun.26",
+                            "subject": "Cost center limit",
+                            "evidence": "Jun.26 Improvement",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(text=text), make_source()
+        )
+        fact = result.facts[0]
+        # The year came from the collector, so nothing may render a day count.
+        assert fact.value_date == date(2026, 6, 26)
+        assert fact.date_precision is DatePrecision.INFERRED
+        assert result.statements[0].date_precision is DatePrecision.INFERRED
+
+    def test_a_month_without_a_day_keeps_month_precision(self, config):
+        text = "Shutdown is planned for August 2026 for this endpoint.\n"
+        payload = {
+            "events": [
+                event(
+                    change_type="deprecation",
+                    event_date="",
+                    event_date_text="August 2026",
+                    evidence="Shutdown is planned for August 2026",
+                    facts=[
+                        {
+                            "kind": "sunset_date",
+                            "value": "2026-08",
+                            "subject": "this endpoint",
+                            "evidence": "Shutdown is planned for August 2026",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(text=text), make_source()
+        )
+        assert result.facts[0].value_date == date(2026, 8, 1)
+        assert result.facts[0].date_precision is DatePrecision.MONTH
+
+    def test_a_subject_that_is_not_printed_falls_back_to_the_product(self, config):
+        payload = {
+            "events": [
+                event(
+                    change_type="deprecation",
+                    product="Claude API",
+                    facts=[
+                        {
+                            "kind": "sunset_date",
+                            "value": "2026-07-24",
+                            "subject": "Claude Ultra Enterprise Tier",
+                            "evidence": "with removal on July 24, 2026",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
+        assert result.facts[0].subject == "Claude API"
+
+    def test_an_unprintable_subject_and_product_leave_it_empty(self, config):
+        payload = {
+            "events": [
+                event(
+                    change_type="deprecation",
+                    product="Некий Придуманный Продукт",
+                    facts=[
+                        {
+                            "kind": "sunset_date",
+                            "value": "2026-07-24",
+                            "subject": "Тоже Придуманный",
+                            "evidence": "with removal on July 24, 2026",
+                        }
+                    ],
+                )
+            ]
+        }
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
+        assert result.facts[0].subject is None
+
+    def test_non_date_facts_do_not_borrow_the_product_as_a_subject(self, config):
+        result = enricher(config, FakeBackend({"events": [event()]})).enrich(
+            make_item(), make_source()
+        )
+        fact = result.facts[0]
+        assert fact.kind is FactKind.LIMIT
+        assert fact.subject == "Claude API"
+        assert fact.value_date is None
 
 
 class TestQuantifiers:
@@ -850,6 +1010,44 @@ class TestSystemPromptStability:
         assert len({digest(c["cache_prefix"], c["system"]) for c in backend.calls}) == 1
         assert backend.calls[0]["prompt"] != backend.calls[1]["prompt"]
 
+    def test_the_expensive_model_gets_the_same_system_bytes(self, config):
+        """The escalation branch is where a model name would leak into the prefix.
+
+        Measured on the CLI: four calls sharing a system prompt cost $0.0079
+        each at a stable tokens_in of 15918; break the sharing and the same
+        call costs $0.039.
+        """
+        undated = event(change_type="deprecation", event_date="", event_date_text="")
+        backend = FakeBackend(
+            by_model={
+                "anthropic/claude-sonnet-5": [{"events": [undated]}],
+                "anthropic/claude-opus-5": [{"events": [undated]}],
+            }
+        )
+        enricher(config, backend).enrich(make_item(), make_source())
+
+        assert len(backend.calls) == 2
+        assert backend.models_used[0] != backend.models_used[1]
+        first, second = backend.calls
+        assert first["system"].encode() == second["system"].encode()
+        assert first["cache_prefix"].encode() == second["cache_prefix"].encode()
+        for call in backend.calls:
+            assert call["model"] not in call["system"] + call["cache_prefix"]
+
+    def test_every_chunk_of_a_long_material_shares_the_prefix(self, config):
+        body = "\n".join(
+            f"June {day}, 2026\n" + ("Claude API rate limits changed. " * 20)
+            for day in range(1, 6)
+        )
+        backend = FakeBackend({"events": []})
+        enricher(config, backend).enrich(make_item(text=body), make_source())
+
+        assert len(backend.calls) > 1
+        stable = {
+            (c["system"].encode(), c["cache_prefix"].encode()) for c in backend.calls
+        }
+        assert len(stable) == 1
+
     def test_nothing_material_specific_leaks_into_the_stable_half(self, config):
         backend = FakeBackend({"events": [event()]})
         item = make_item()
@@ -949,6 +1147,32 @@ class TestRouting:
         assert result.statements[0].extractor_model == "anthropic/claude-opus-5"
         # Both calls were paid for.
         assert result.cost_usd == pytest.approx(0.02)
+
+    def test_models_come_from_the_config_not_from_constants(self, config):
+        config.data["models"]["enrich"] = "anthropic/claude-haiku-4.5"
+        config.data["models"]["enrich_critical"] = "anthropic/claude-sonnet-5"
+        undated = event(change_type="deprecation", event_date="", event_date_text="")
+        backend = FakeBackend(
+            by_model={
+                "anthropic/claude-haiku-4.5": [{"events": [undated]}],
+                "anthropic/claude-sonnet-5": [{"events": [undated]}],
+            }
+        )
+        enricher(config, backend).enrich(make_item(), make_source())
+        assert backend.models_used == [
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-sonnet-5",
+        ]
+
+    def test_the_shipped_config_routes_the_two_enrich_stages(self):
+        """The routing pair has to exist wherever the theme config is swapped."""
+        shipped = ThemeConfig.load(REAL_CONFIG)
+        assert shipped.models.get("enrich")
+        assert shipped.models.get("enrich_critical")
+        assert shipped.models["enrich"] != shipped.models["enrich_critical"]
+        assert set(shipped.section("critical_change_types")) <= {
+            str(c) for c in ChangeType
+        }
 
     def test_escalation_can_be_switched_off_in_the_config(self, config):
         config.data["enrichment"]["escalate_critical"] = False
@@ -1155,8 +1379,18 @@ class TestGoldenSet:
             assert got.prompt_version == EXTRACTION_PROMPT_VERSION
             assert got.raw_material_ref == f"golden-{case['id']}"
 
-        want_facts = [tuple(f) for s in expected for f in s["facts"]]
-        assert [(str(f.kind), f.value) for f in result.facts] == want_facts
+        want_facts = [f for s in expected for f in s["facts"]]
+        got_facts = [
+            {
+                "kind": str(f.kind),
+                "value": f.value,
+                "value_date": f.value_date.isoformat() if f.value_date else None,
+                "date_precision": str(f.date_precision),
+                "subject": f.subject,
+            }
+            for f in result.facts
+        ]
+        assert got_facts == want_facts
         assert all(f.evidence_verified for f in result.facts)
         assert all(word_count(f.evidence) <= MAX_EVIDENCE_WORDS for f in result.facts)
 

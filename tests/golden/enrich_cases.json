@@ -26,16 +26,19 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-08-05",
+                "subject": "claude-opus-4-1-20250805",
                 "evidence": "This model was retired August 5, 2026."
               },
               {
                 "kind": "effective_date",
                 "value": "2026-06-05",
+                "subject": "claude-opus-4-1-20250805",
                 "evidence": "On June 5, 2026, Anthropic notified developers using Claude Opus 4.1"
               },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-1-20250805",
+                "subject": "",
                 "evidence": "August 5, 2026 | claude-opus-4-1-20250805 | claude-opus-4-8"
               }
             ]
@@ -52,18 +55,27 @@
             "date_precision": "day",
             "version": "claude-opus-4-1-20250805",
             "facts": [
-              [
-                "sunset_date",
-                "2026-08-05"
-              ],
-              [
-                "effective_date",
-                "2026-06-05"
-              ],
-              [
-                "affected_product",
-                "claude-opus-4-1-20250805"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-05",
+                "value_date": "2026-08-05",
+                "date_precision": "day",
+                "subject": "claude-opus-4-1-20250805"
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-06-05",
+                "value_date": "2026-06-05",
+                "date_precision": "day",
+                "subject": "claude-opus-4-1-20250805"
+              },
+              {
+                "kind": "affected_product",
+                "value": "claude-opus-4-1-20250805",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -94,11 +106,13 @@
               {
                 "kind": "effective_date",
                 "value": "2026-06-29",
+                "subject": "claude-opus-4-6",
                 "evidence": "June 29, 2026"
               },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-6",
+                "subject": "",
                 "evidence": "Requests to claude-opus-4-6 with speed: \"fast\" no longer run"
               }
             ]
@@ -115,11 +129,13 @@
               {
                 "kind": "limit",
                 "value": "три уровня использования: Start, Build, Scale",
+                "subject": "",
                 "evidence": "usage tiers have been consolidated into three: Start, Build, and Scale"
               },
               {
                 "kind": "effective_date",
                 "value": "2026-06-26",
+                "subject": "Claude API",
                 "evidence": "June 26, 2026"
               }
             ]
@@ -136,11 +152,13 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-07-24",
+                "subject": "claude-opus-4-7",
                 "evidence": "with removal on July 24, 2026"
               },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-7",
+                "subject": "",
                 "evidence": "requests to claude-opus-4-7 with speed: \"fast\" will return an error"
               }
             ]
@@ -157,14 +175,20 @@
             "date_precision": "day",
             "version": "claude-opus-4-6",
             "facts": [
-              [
-                "effective_date",
-                "2026-06-29"
-              ],
-              [
-                "affected_product",
-                "claude-opus-4-6"
-              ]
+              {
+                "kind": "effective_date",
+                "value": "2026-06-29",
+                "value_date": "2026-06-29",
+                "date_precision": "day",
+                "subject": "claude-opus-4-6"
+              },
+              {
+                "kind": "affected_product",
+                "value": "claude-opus-4-6",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           },
           {
@@ -175,14 +199,20 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "limit",
-                "три уровня использования: Start, Build, Scale"
-              ],
-              [
-                "effective_date",
-                "2026-06-26"
-              ]
+              {
+                "kind": "limit",
+                "value": "три уровня использования: Start, Build, Scale",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-06-26",
+                "value_date": "2026-06-26",
+                "date_precision": "day",
+                "subject": "Claude API"
+              }
             ]
           },
           {
@@ -193,14 +223,20 @@
             "date_precision": "day",
             "version": "claude-opus-4-7",
             "facts": [
-              [
-                "sunset_date",
-                "2026-07-24"
-              ],
-              [
-                "affected_product",
-                "claude-opus-4-7"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-07-24",
+                "value_date": "2026-07-24",
+                "date_precision": "day",
+                "subject": "claude-opus-4-7"
+              },
+              {
+                "kind": "affected_product",
+                "value": "claude-opus-4-7",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -231,6 +267,7 @@
               {
                 "kind": "affected_product",
                 "value": "Origin",
+                "subject": "",
                 "evidence": "Cursor can now host your code."
               }
             ]
@@ -247,10 +284,13 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "affected_product",
-                "Origin"
-              ]
+              {
+                "kind": "affected_product",
+                "value": "Origin",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -281,6 +321,7 @@
               {
                 "kind": "limit",
                 "value": "1000 центров затрат на предприятие",
+                "subject": "",
                 "evidence": "Cost center limit increased to 1,000 per enterprise"
               }
             ]
@@ -297,10 +338,13 @@
             "date_precision": "inferred",
             "version": null,
             "facts": [
-              [
-                "limit",
-                "1000 центров затрат на предприятие"
-              ]
+              {
+                "kind": "limit",
+                "value": "1000 центров затрат на предприятие",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -331,11 +375,13 @@
               {
                 "kind": "limit",
                 "value": "600 изображений или страниц PDF на запрос",
+                "subject": "",
                 "evidence": "raised the media limit from 100 to 600 images or PDF pages"
               },
               {
                 "kind": "effective_date",
                 "value": "2026-03-13",
+                "subject": "media limit",
                 "evidence": "March 13, 2026"
               }
             ]
@@ -352,14 +398,20 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "limit",
-                "600 изображений или страниц PDF на запрос"
-              ],
-              [
-                "effective_date",
-                "2026-03-13"
-              ]
+              {
+                "kind": "limit",
+                "value": "600 изображений или страниц PDF на запрос",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-03-13",
+                "value_date": "2026-03-13",
+                "date_precision": "day",
+                "subject": "media limit"
+              }
             ]
           }
         ],
@@ -390,16 +442,19 @@
               {
                 "kind": "price",
                 "value": "$2 / $10 за MTok",
+                "subject": "",
                 "evidence": "The introductory pricing for Claude Sonnet 5 ($2 / $10 per MTok)"
               },
               {
                 "kind": "price",
                 "value": "отменённое повышение до $3 / $15 за MTok",
+                "subject": "",
                 "evidence": "the previously scheduled increase to $3 / $15 per MTok"
               },
               {
                 "kind": "effective_date",
                 "value": "2026-08-10",
+                "subject": "Claude Sonnet 5",
                 "evidence": "August 10, 2026"
               }
             ]
@@ -416,18 +471,27 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "price",
-                "$2 / $10 за MTok"
-              ],
-              [
-                "price",
-                "отменённое повышение до $3 / $15 за MTok"
-              ],
-              [
-                "effective_date",
-                "2026-08-10"
-              ]
+              {
+                "kind": "price",
+                "value": "$2 / $10 за MTok",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "price",
+                "value": "отменённое повышение до $3 / $15 за MTok",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-08-10",
+                "value_date": "2026-08-10",
+                "date_precision": "day",
+                "subject": "Claude Sonnet 5"
+              }
             ]
           }
         ],
@@ -458,16 +522,19 @@
               {
                 "kind": "sunset_date",
                 "value": "2027-01-20",
+                "subject": "gpt-realtime",
                 "evidence": "removal from the API on January 20, 2027."
               },
               {
                 "kind": "affected_product",
                 "value": "gpt-realtime",
+                "subject": "",
                 "evidence": "Jan 20, 2027 | gpt-realtime | gpt-realtime-2.1"
               },
               {
                 "kind": "affected_product",
                 "value": "gpt-4o-audio",
+                "subject": "",
                 "evidence": "Jan 20, 2027 | gpt-4o-audio | gpt-audio-1.5"
               }
             ]
@@ -484,18 +551,27 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "sunset_date",
-                "2027-01-20"
-              ],
-              [
-                "affected_product",
-                "gpt-realtime"
-              ],
-              [
-                "affected_product",
-                "gpt-4o-audio"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "value_date": "2027-01-20",
+                "date_precision": "day",
+                "subject": "gpt-realtime"
+              },
+              {
+                "kind": "affected_product",
+                "value": "gpt-realtime",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "gpt-4o-audio",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -526,11 +602,13 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-06-01",
+                "subject": "gemini-2.0-flash",
                 "evidence": "gemini-2.0-flash | February 5, 2025 | June 1, 2026 | gemini-3.6-flash"
               },
               {
                 "kind": "affected_product",
                 "value": "gemini-2.0-flash-001",
+                "subject": "",
                 "evidence": "gemini-2.0-flash-001 | February 5, 2025 | June 1, 2026"
               }
             ]
@@ -547,14 +625,20 @@
             "date_precision": "day",
             "version": "gemini-2.0-flash",
             "facts": [
-              [
-                "sunset_date",
-                "2026-06-01"
-              ],
-              [
-                "affected_product",
-                "gemini-2.0-flash-001"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-06-01",
+                "value_date": "2026-06-01",
+                "date_precision": "day",
+                "subject": "gemini-2.0-flash"
+              },
+              {
+                "kind": "affected_product",
+                "value": "gemini-2.0-flash-001",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -585,16 +669,19 @@
               {
                 "kind": "effective_date",
                 "value": "2026-10-31",
+                "subject": "Evals",
                 "evidence": "Oct 31, 2026 | Existing evals become read-only."
               },
               {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
+                "subject": "Evals",
                 "evidence": "The Evals dashboard and API are scheduled to shut down."
               },
               {
                 "kind": "affected_product",
                 "value": "Evals",
+                "subject": "",
                 "evidence": "Deprecation announced for the Evals platform."
               }
             ]
@@ -611,18 +698,27 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "effective_date",
-                "2026-10-31"
-              ],
-              [
-                "sunset_date",
-                "2026-11-30"
-              ],
-              [
-                "affected_product",
-                "Evals"
-              ]
+              {
+                "kind": "effective_date",
+                "value": "2026-10-31",
+                "value_date": "2026-10-31",
+                "date_precision": "day",
+                "subject": "Evals"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-11-30",
+                "value_date": "2026-11-30",
+                "date_precision": "day",
+                "subject": "Evals"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Evals",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -653,21 +749,25 @@
               {
                 "kind": "version",
                 "value": "claude-fable-5",
+                "subject": "",
                 "evidence": "We've launched Claude Fable 5 (claude-fable-5)"
               },
               {
                 "kind": "limit",
                 "value": "1M token context window",
+                "subject": "",
                 "evidence": "Both models support a 1M token context window by default"
               },
               {
                 "kind": "limit",
                 "value": "128k max output tokens",
+                "subject": "",
                 "evidence": "128k max output tokens, and always-on adaptive thinking"
               },
               {
                 "kind": "effective_date",
                 "value": "2026-06-09",
+                "subject": "Claude Fable 5",
                 "evidence": "June 9, 2026"
               }
             ]
@@ -684,22 +784,34 @@
             "date_precision": "day",
             "version": "claude-fable-5",
             "facts": [
-              [
-                "version",
-                "claude-fable-5"
-              ],
-              [
-                "limit",
-                "1M token context window"
-              ],
-              [
-                "limit",
-                "128k max output tokens"
-              ],
-              [
-                "effective_date",
-                "2026-06-09"
-              ]
+              {
+                "kind": "version",
+                "value": "claude-fable-5",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "limit",
+                "value": "1M token context window",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "limit",
+                "value": "128k max output tokens",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-06-09",
+                "value_date": "2026-06-09",
+                "date_precision": "day",
+                "subject": "Claude Fable 5"
+              }
             ]
           }
         ],
@@ -730,16 +842,19 @@
               {
                 "kind": "effective_date",
                 "value": "2027-01-01",
+                "subject": "CheckAnnotation.databaseId",
                 "evidence": "Changes scheduled for 2027-01-01"
               },
               {
                 "kind": "affected_product",
                 "value": "CheckAnnotation.databaseId",
+                "subject": "",
                 "evidence": "A change will be made to CheckAnnotation.databaseId."
               },
               {
                 "kind": "affected_product",
                 "value": "Artifact.databaseId",
+                "subject": "",
                 "evidence": "A change will be made to Artifact.databaseId."
               }
             ]
@@ -756,18 +871,27 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "effective_date",
-                "2027-01-01"
-              ],
-              [
-                "affected_product",
-                "CheckAnnotation.databaseId"
-              ],
-              [
-                "affected_product",
-                "Artifact.databaseId"
-              ]
+              {
+                "kind": "effective_date",
+                "value": "2027-01-01",
+                "value_date": "2027-01-01",
+                "date_precision": "day",
+                "subject": "CheckAnnotation.databaseId"
+              },
+              {
+                "kind": "affected_product",
+                "value": "CheckAnnotation.databaseId",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Artifact.databaseId",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -798,6 +922,7 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-08-17",
+                "subject": "Workbench",
                 "evidence": "being sunset with access ending on August 17, 2026."
               }
             ]
@@ -814,11 +939,13 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-08-17",
+                "subject": "Workbench",
                 "evidence": "are being retired along with the Workbench on August 17, 2026."
               },
               {
                 "kind": "affected_product",
                 "value": "/v1/experimental/generate_prompt",
+                "subject": "",
                 "evidence": "/v1/experimental/generate_prompt"
               }
             ]
@@ -835,10 +962,13 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "sunset_date",
-                "2026-08-17"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-17",
+                "value_date": "2026-08-17",
+                "date_precision": "day",
+                "subject": "Workbench"
+              }
             ]
           },
           {
@@ -849,14 +979,20 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "sunset_date",
-                "2026-08-17"
-              ],
-              [
-                "affected_product",
-                "/v1/experimental/generate_prompt"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-17",
+                "value_date": "2026-08-17",
+                "date_precision": "day",
+                "subject": "Workbench"
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/generate_prompt",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -888,11 +1024,13 @@
               {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
+                "subject": "Agent Builder",
                 "evidence": "Nov 30, 2026 | Agent Builder is scheduled to shut down."
               },
               {
                 "kind": "affected_product",
                 "value": "Agent Builder",
+                "subject": "",
                 "evidence": "Deprecation announced for Agent Builder."
               }
             ]
@@ -909,14 +1047,20 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "sunset_date",
-                "2026-11-30"
-              ],
-              [
-                "affected_product",
-                "Agent Builder"
-              ]
+              {
+                "kind": "sunset_date",
+                "value": "2026-11-30",
+                "value_date": "2026-11-30",
+                "date_precision": "day",
+                "subject": "Agent Builder"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Agent Builder",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],
@@ -947,11 +1091,13 @@
               {
                 "kind": "affected_product",
                 "value": "Origin",
+                "subject": "",
                 "evidence": "Cursor can now host your code."
               },
               {
                 "kind": "price",
                 "value": "$999 в месяц на всех платных тарифах",
+                "subject": "",
                 "evidence": "all paid plans now cost $999 per month"
               }
             ]
@@ -968,10 +1114,13 @@
             "date_precision": "day",
             "version": null,
             "facts": [
-              [
-                "affected_product",
-                "Origin"
-              ]
+              {
+                "kind": "affected_product",
+                "value": "Origin",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
             ]
           }
         ],

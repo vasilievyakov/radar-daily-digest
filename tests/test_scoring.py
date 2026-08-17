@@ -757,3 +757,30 @@ class TestShippedConfig:
         assert all(0 <= s.score <= 100 for s in ranked)
         assert all(s.score_rationale for s in ranked)
         assert all(find_unsupported_quantifiers(s.score_rationale) == [] for s in ranked)
+
+
+class TestClusterVendorSurvives:
+    """The vendor must reach the cluster: without it retrieval matches nothing."""
+
+    def test_vendor_lookup_uses_the_item_url_not_the_group_key(self):
+        from radar.adapters.base import CollectedItem
+        from radar.cluster import cluster_items
+
+        item = CollectedItem(
+            url="https://docs.claude.com/deprecations#opus",
+            title="Anthropic отключает claude-3-opus",
+            raw_text="body",
+        )
+        [cluster] = cluster_items([item], vendor_of={item.url: "anthropic"})
+        assert cluster.vendor == "anthropic"
+
+    def test_vendor_can_also_arrive_on_the_item(self):
+        from radar.adapters.base import CollectedItem
+        from radar.cluster import cluster_items
+
+        item = CollectedItem(
+            url="https://example.test/a", title="Заголовок", raw_text="body",
+            extra={"vendor": "openai"},
+        )
+        [cluster] = cluster_items([item])
+        assert cluster.vendor == "openai"

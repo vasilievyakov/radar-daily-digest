@@ -199,8 +199,8 @@ sources:
     backfill_supported: false
     min_expected_items: 10
 
-  # http=200, 1.6 МБ, 791 запись. Версии Admin API живут ровно год, и лента
-  # объявляет дату, после которой версия перестаёт отвечать.
+  # http=200, 1.6 МБ, 791 запись, 539 отметок pubDate. Лента ведёт изменения
+  # Admin API и Storefront API, включая снятие версий.
   - id: shopify_changelog_feed
     vendor: shopify
     type: rss

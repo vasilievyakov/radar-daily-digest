@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sqlite3
+import threading
+import uuid
+import shutil
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +86,57 @@ def _duration(seconds: float) -> str:
     return f"{minutes} мин {secs} с" if minutes else f"{secs} с"
 
 
+class _CallLog:
+    """Thread-safe stand-in for `RunLog` that the model backend writes to.
+
+    Two problems, one object. The real run log writes to a sqlite connection
+    bound to the thread that opened it, and enrichment runs in a pool. And
+    `EnrichResult` reports cost but not tokens, so the only place tokens exist
+    is inside the backend — which will hand them over to anything that looks
+    like a run log. Calls are collected here and written once, from the main
+    thread, after the run.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls: list[dict[str, Any]] = []
+        self.notes: list[str] = []
+
+    def model_call(self, **row: Any) -> None:
+        with self._lock:
+            self.calls.append(row)
+
+    def note(self, message: str) -> None:
+        with self._lock:
+            self.notes.append(message)
+
+    def write(self, conn: sqlite3.Connection, run_id: str) -> tuple[int, int]:
+        """Persist the collected calls. Returns (tokens in, tokens out)."""
+        tokens_in = tokens_out = 0
+        with conn:
+            for row in self.calls:
+                tokens_in += int(row.get("tokens_in", 0) or 0)
+                tokens_out += int(row.get("tokens_out", 0) or 0)
+                conn.execute(
+                    "INSERT INTO model_calls (call_id, run_id, stage, model, provider, "
+                    "tokens_in, tokens_out, cost_usd, cached, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        uuid.uuid4().hex,
+                        run_id,
+                        str(row.get("stage", "enrich")),
+                        str(row.get("model", "unknown")),
+                        row.get("provider"),
+                        int(row.get("tokens_in", 0) or 0),
+                        int(row.get("tokens_out", 0) or 0),
+                        float(row.get("cost_usd", 0.0) or 0.0),
+                        int(bool(row.get("cached", False))),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+        return tokens_in, tokens_out
+
+
 def _cost_profile(config: ThemeConfig) -> str:
     """Which price model the estimate should use.
 
@@ -112,17 +165,21 @@ def _cost_profile(config: ThemeConfig) -> str:
 
 
 def _build_enricher(
-    config: ThemeConfig, args: argparse.Namespace, fetcher: Fetcher
+    config: ThemeConfig,
+    args: argparse.Namespace,
+    fetcher: Fetcher,
+    call_log: _CallLog,
 ) -> Any:
     """The one place that touches stage 4's implementation.
 
     Backfill itself depends only on the `Enricher` protocol; assembling the
     concrete enricher is a wiring decision and belongs here.
 
-    Neither the run log nor the budget is handed over. The run log writes to a
-    sqlite connection bound to the calling thread, and enrichment runs in a
-    pool; the ceiling belongs to backfill, and a second counter inside the
-    enricher would charge every call twice.
+    The backend logs its calls into `call_log` rather than the real run log:
+    the run log's connection belongs to the calling thread and enrichment runs
+    in a pool. The budget is not handed over at all — the ceiling belongs to
+    backfill, and a second counter inside the enricher would charge every call
+    twice.
     """
     from radar.cache import ModelCache
     from radar.enrich import LlmEnricher
@@ -132,6 +189,7 @@ def _build_enricher(
     backend = make_backend(
         config,
         cache=ModelCache(args.cache),
+        run_log=call_log,
         timeout=float(llm.get("timeout_seconds", 180)),
         max_schema_retries=int(llm.get("max_schema_retries", 2)),
     )
@@ -334,12 +392,16 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         concurrency=args.concurrency,
         batch_size=args.batch_size,
         cost_profile=_cost_profile(config),
+        log_model_calls=False,  # the backend writes richer rows via _CallLog
         resume=args.resume,
         dry_run=args.dry_run,
         min_trend_members=args.min_trend_members,
     )
     fetcher = _fetcher(config, args.cache)
-    enricher = None if args.dry_run else _build_enricher(config, args, fetcher)
+    call_log = _CallLog()
+    enricher = (
+        None if args.dry_run else _build_enricher(config, args, fetcher, call_log)
+    )
 
     base = f"python -m radar.cli backfill --limit-usd {limit_usd:g}"
     if args.priority:
@@ -359,6 +421,11 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     except BudgetNotSet as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if not report.dry_run:
+        tokens_in, tokens_out = call_log.write(conn, report.run_id)
+        report.tokens_in += tokens_in
+        report.tokens_out += tokens_out
 
     print()
     if report.dry_run:
@@ -487,47 +554,56 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("ПРОВЕРКА ОКРУЖЕНИЯ")
     print(RULE)
 
+    def line(label: str, value: str) -> None:
+        print(f"  {label + ':':<26}{value}")
+
+    config: ThemeConfig | None = None
+    try:
+        config = ThemeConfig.load(args.config)
+    except ConfigError:
+        ok = False
+
     binary = os.environ.get(CLI_BIN_ENV, "").strip() or shutil.which("claude")
-    print(f"  claude в PATH:            {binary or 'не найден'}")
+    line("claude в PATH", binary or "не найден")
     key = os.environ.get(API_KEY_ENV, "").strip()
-    print(
-        f"  {API_KEY_ENV}:      "
-        + (f"задан, {len(key)} символов" if key else "не задан")
-    )
+    line(API_KEY_ENV, f"задан, {len(key)} символов" if key else "не задан")
     if not binary and not key:
         ok = False
         print("    ни одного бэкенда модели: нужен claude в PATH или ключ OpenRouter")
     github = os.environ.get("GITHUB_TOKEN", "").strip()
-    print(
-        "  GITHUB_TOKEN:             "
-        + (
-            f"задан, {len(github)} символов"
-            if github
-            else "не задан — GitHub Releases пойдёт по лимиту 60 запросов в час"
-        )
+    line(
+        "GITHUB_TOKEN",
+        f"задан, {len(github)} символов"
+        if github
+        else "не задан — GitHub Releases пойдёт по лимиту 60 запросов в час",
     )
-
-    try:
-        config = ThemeConfig.load(args.config)
+    if config is not None:
+        line(
+            "модель пойдёт через",
+            "OpenRouter, цена по прайсу токенов"
+            if _cost_profile(config) == COST_PROFILE_TOKENS
+            else "claude CLI, около 0.008 USD за прогретый вызов",
+        )
         backfillable = config.backfillable_sources()
         by_priority: dict[int, int] = {}
         for source in backfillable:
             by_priority[source.priority] = by_priority.get(source.priority, 0) + 1
         spread = ", ".join(f"п{p}: {n}" for p, n in sorted(by_priority.items()))
-        print(
-            f"  конфиг {args.config}: источников {len(config.sources)}, "
-            f"бэкфиллятся {len(backfillable)} ({spread})"
+        line(
+            "конфиг",
+            f"{args.config}: источников {len(config.sources)}, "
+            f"бэкфиллятся {len(backfillable)} ({spread})",
         )
-    except ConfigError as exc:
-        ok = False
-        print(f"  конфиг {args.config}: ОШИБКА — {exc}")
+    else:
+        line("конфиг", f"{args.config}: не читается")
 
     try:
         conn = init_db(args.db)
         state = dump_state(conn)
-        print(
-            f"  база {args.db}: записей {state['event_statements']}, "
-            f"прогонов {state['runs']}, сигналов {state['signals']}"
+        line(
+            "база",
+            f"{args.db}: записей {state['event_statements']}, "
+            f"прогонов {state['runs']}, сигналов {state['signals']}",
         )
         unfinished = find_unfinished_run(conn)
         if unfinished:
@@ -535,18 +611,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         conn.close()
     except sqlite3.Error as exc:
         ok = False
-        print(f"  база {args.db}: ОШИБКА — {exc}")
+        line("база", f"{args.db}: ОШИБКА — {exc}")
 
     cache_root = Path(args.cache)
     for namespace in ("model", "http"):
         folder = cache_root / namespace
         count = sum(1 for _ in folder.rglob("*.json")) if folder.exists() else 0
-        print(f"  кэш {namespace}: {count} записей")
+        line(f"кэш {namespace}", f"{count} записей")
 
     logs = Path(args.logs)
-    print(
-        f"  журналы {logs}: "
-        + (f"{len(list(logs.glob('*.jsonl')))} файлов" if logs.exists() else "пусто")
+    line(
+        "журналы",
+        f"{logs}: {len(list(logs.glob('*.jsonl')))} файлов"
+        if logs.exists()
+        else f"{logs}: пусто",
     )
 
     print(RULE)

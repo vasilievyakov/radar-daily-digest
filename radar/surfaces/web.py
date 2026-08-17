@@ -31,12 +31,15 @@ from radar.db import connect, corpus_readiness, dump_state, read_signals
 from radar.models import (
     ChangeType,
     ContextLabel,
+    DeltaStatus,
     DatePrecision,
     Fact,
     FactKind,
     Precedent,
+    RunSummary,
     Signal,
     SignalType,
+    UpcomingDeadline,
 )
 
 # -- vocabulary --------------------------------------------------------
@@ -111,6 +114,17 @@ CHANGE_TYPE_LABELS = {
     ChangeType.OTHER: "прочее",
 }
 
+# Column headers in the density table, where the full wording wraps.
+CHANGE_TYPE_COLUMNS = {
+    ChangeType.RELEASE: "релизы",
+    ChangeType.BREAKING_CHANGE: "ломающие",
+    ChangeType.DEPRECATION: "отключения",
+    ChangeType.PRICING: "цены",
+    ChangeType.LIMITS: "лимиты",
+    ChangeType.SECURITY: "безопасность",
+    ChangeType.OTHER: "прочее",
+}
+
 FACT_KIND_LABELS = {
     FactKind.VERSION: "Версия",
     FactKind.EFFECTIVE_DATE: "Дата вступления в силу",
@@ -121,12 +135,6 @@ FACT_KIND_LABELS = {
 }
 
 DATE_FACT_KINDS = (FactKind.EFFECTIVE_DATE, FactKind.SUNSET_DATE)
-
-CONTEXT_SENTENCES = {
-    ContextLabel.RECURRING: "Событие повторяется в корпусе.",
-    ContextLabel.TREND_MEMBER: "Событие входит в отслеживаемый ряд.",
-    ContextLabel.ESCALATION: "Событие продолжает ряд с усилением.",
-}
 
 STAGE_LABELS = {
     "collect": "Сбор",
@@ -154,24 +162,6 @@ RUN_STATUS_LABELS = {
     "running": "Прогон выполняется",
     "failed": "Прогон не завершился",
     "partial": "Прогон завершён частично",
-}
-
-STAT_LABELS = {
-    "sources_checked": "Проверено источников",
-    "sources_total": "Источников в конфигурации",
-    "sources_ok": "Источников ответило",
-    "sources_failed": "Источников не ответило",
-    "sources_empty": "Источников ответило без записей",
-    "items_collected": "Собрано материалов",
-    "items_total": "Собрано материалов",
-    "items_filtered": "Отклонено материалов",
-    "items_rejected": "Отклонено материалов",
-    "items_kept": "Оставлено материалов",
-    "clusters": "Сюжетов после дедупликации",
-    "clusters_total": "Сюжетов после дедупликации",
-    "signals": "Опубликовано сигналов",
-    "model_calls": "Вызовов модели",
-    "duplicates": "Повторов",
 }
 
 MISSING_SUNSET_DATE = "дата отключения в источнике не указана"
@@ -278,7 +268,7 @@ p { margin: 0 0 0.9rem; }
 .card { border-top: 1px solid var(--line); padding: 1.7rem 0 0.4rem; }
 .card.lead { border-top: 2px solid var(--line-strong); padding-top: 1.9rem; }
 .card.lead h2 { font-size: 1.6rem; margin-bottom: 0.7rem; }
-.lede .when { color: var(--ink-soft); }
+.lede .when { color: var(--ink); }
 .why { color: var(--ink); }
 .when-missing { font-family: var(--sans); font-size: 0.92rem; color: var(--ink-soft); }
 .label { font-family: var(--sans); font-size: 0.85rem; color: var(--ink-faint); }
@@ -526,7 +516,11 @@ def fmt_date(
     today: date,
     precision: DatePrecision = DatePrecision.DAY,
 ) -> str:
-    """Every date carries the distance to it (voice 4)."""
+    """Every date carries the distance to it (voice 4).
+
+    Except a date whose year was restored from context: counting days to a
+    guessed year would be false precision, so the mark replaces the count.
+    """
     if value is None:
         return ""
     if precision is DatePrecision.YEAR:
@@ -534,12 +528,11 @@ def fmt_date(
     if precision is DatePrecision.MONTH:
         return f"{MONTHS_NOMINATIVE[value.month - 1]} {value.year}"
     head = f"{value.day} {MONTHS_GENITIVE[value.month - 1]}"
+    if precision is DatePrecision.INFERRED:
+        return f"{head} ({INFERRED_YEAR_NOTE})"
     if value.year != today.year:
         head += f" {value.year}"
-    text = f"{head}, {distance_phrase(value, today)}"
-    if precision is DatePrecision.INFERRED:
-        text += f" ({INFERRED_YEAR_NOTE})"
-    return text
+    return f"{head}, {distance_phrase(value, today)}"
 
 
 # -- signal reading (display only) -------------------------------------
@@ -548,14 +541,12 @@ def fmt_date(
 def signal_date(signal: Signal) -> tuple[date | None, DatePrecision]:
     """The date a card leads with: the first dated fact, in the order given.
 
-    Order comes from the core. Picking one is presentation; choosing which
-    facts exist is not this surface's business.
+    The parsed value comes from the fact itself (`value_date`). A surface that
+    reparses the string would word the same day differently from the others.
     """
     for fact in signal.facts:
-        if fact.kind in DATE_FACT_KINDS:
-            parsed, precision = parse_date_value(fact.value)
-            if parsed is not None:
-                return parsed, precision
+        if fact.kind in DATE_FACT_KINDS and fact.value_date is not None:
+            return fact.value_date, fact.date_precision
     return None, DatePrecision.DAY
 
 
@@ -574,10 +565,12 @@ def signal_when(signal: Signal, today: date) -> str:
 
 def render_fact(fact: Fact, today: date) -> str:
     label = FACT_KIND_LABELS.get(fact.kind, str(fact.kind))
-    value = clean(fact.value)
-    parsed, precision = parse_date_value(fact.value)
-    if parsed is not None and fact.kind in DATE_FACT_KINDS:
-        value = fmt_date(parsed, today, precision)
+    if fact.value_date is not None:
+        value = fmt_date(fact.value_date, today, fact.date_precision)
+        if fact.subject:
+            value = f"{value} — {clean(fact.subject)}"
+    else:
+        value = clean(fact.value)
     parts = [
         '<div class="fact">',
         f'<p class="fact-head"><span class="kind">{esc(label)}:</span> '
@@ -623,6 +616,10 @@ def render_precedent(precedent: Precedent, today: date) -> str:
 def render_context(signal: Signal, today: date) -> str:
     """The DR-8 moment: the claim, and the records it rests on, one click away.
 
+    The sentence is `context_note`, written by the core. A surface composing
+    its own would be retelling the corpus, which SUR-2 forbids, and three
+    surfaces would word one claim three ways.
+
     `not_found_in_corpus` prints nothing (voice 8): a label that changes no
     reading teaches the reader to skip labels.
     """
@@ -631,12 +628,13 @@ def render_context(signal: Signal, today: date) -> str:
         return ""
     if not signal.precedents:
         return ""
-    sentence = clean(signal.delta_note) or CONTEXT_SENTENCES.get(label, "")
+    note = clean(signal.context_note)
     more = "Показать " + spelled_count_phrase(len(signal.precedents), RECORD_FORMS)
     items = "\n".join(render_precedent(p, today) for p in signal.precedents)
+    head = f"{esc(note)} " if note else ""
     return (
         '<details class="ctx">\n'
-        f'<summary>{esc(sentence)} <span class="more">{esc(more)}</span></summary>\n'
+        f'<summary>{head}<span class="more">{esc(more)}</span></summary>\n'
         f'<ol class="precedents">\n{items}\n</ol>\n'
         "</details>"
     )
@@ -700,71 +698,76 @@ def render_card(signal: Signal, today: date, *, lead: bool) -> str:
     )
 
 
-def render_stats_details(stats: dict[str, int]) -> str:
-    if not stats:
+def render_run_summary_details(summary: RunSummary | None) -> str:
+    """Proof of the check, folded away: it is evidence, not content (voice 2)."""
+    if summary is None:
         return ""
-    rows = "\n".join(
-        f"<tr><td>{esc(STAT_LABELS.get(key, key.replace('_', ' ')))}</td>"
-        f'<td class="num">{esc(fmt_int(value))}</td></tr>'
-        for key, value in stats.items()
+    rows = [
+        ("Проверено источников", fmt_int(summary.sources_checked)),
+        ("Собрано материалов", fmt_int(summary.materials_collected)),
+        ("Отклонено материалов", fmt_int(summary.materials_filtered)),
+    ]
+    body = "\n".join(
+        f"<tr><td>{esc(label)}</td><td class=\"num\">{esc(value)}</td></tr>"
+        for label, value in rows
     )
     return (
         "<details>\n"
         '<summary><span class="more">Показать статистику прогона</span></summary>\n'
-        f'<div class="scroll"><table>\n{rows}\n</table></div>\n'
+        f'<div class="scroll"><table>\n{body}\n</table></div>\n'
         "</details>"
     )
 
 
-def checked_sentence(stats: dict[str, int]) -> str:
+def checked_sentence(summary: RunSummary | None) -> str:
     """«Проверено 14 источников, 23 материала отклонено.» (voice 2)"""
-    sources = _first_stat(stats, ("sources_checked", "sources_total", "sources_ok"))
-    rejected = _first_stat(stats, ("items_filtered", "items_rejected"))
-    parts: list[str] = []
-    if sources is not None:
-        parts.append("Проверено " + count_phrase(sources, SOURCE_FORMS))
-    if rejected is not None:
-        verb = (
-            "отклонён"
-            if plural(rejected, MATERIAL_FORMS) == "материал"
-            else "отклонено"
-        )
-        parts.append(f"{count_phrase(rejected, MATERIAL_FORMS)} {verb}")
-    return ", ".join(parts) + "." if parts else ""
+    if summary is None:
+        return ""
+    parts = [f"Проверено {count_phrase(summary.sources_checked, SOURCE_FORMS)}"]
+    rejected = summary.materials_filtered
+    verb = "отклонён" if plural(rejected, MATERIAL_FORMS) == "материал" else "отклонено"
+    parts.append(f"{count_phrase(rejected, MATERIAL_FORMS)} {verb}")
+    return ", ".join(parts) + "."
 
 
-def _first_stat(stats: dict[str, int], keys: tuple[str, ...]) -> int | None:
-    for key in keys:
-        if key in stats:
-            return int(stats[key])
-    return None
-
-
-def upcoming_entries(signal: Signal, today: date) -> list[tuple[date, str, str | None]]:
+def upcoming_entries(signal: Signal, today: date) -> list[UpcomingDeadline]:
     """Deadlines already extracted, nearest first (voice 2).
 
-    Nothing is computed here: dates come from facts and corpus records the core
-    attached to the quiet day.
+    `upcoming` is the contract field for this block and wins outright: its
+    wording is meant for a reader, while a fact carries the vendor's quote.
+    Facts are the fallback for a signal published without the field. Within
+    either source, one day and one subject appear once.
     """
-    entries: list[tuple[date, str, str | None]] = []
-    from_corpus: set[date] = set()
-    for precedent in signal.precedents:
-        if precedent.event_date and precedent.event_date >= today:
-            entries.append(
-                (precedent.event_date, clean(precedent.text), precedent.source_url)
-            )
-            from_corpus.add(precedent.event_date)
+    entries: list[UpcomingDeadline] = []
+    seen: set[tuple[date, str]] = set()
+
+    def add(item: UpcomingDeadline) -> None:
+        key = (item.when, clean(item.what).lower())
+        if key in seen:
+            return
+        seen.add(key)
+        entries.append(item)
+
+    for item in signal.upcoming:
+        if item.when >= today:
+            add(item)
+    if entries:
+        return sorted(entries, key=lambda item: item.when)
+
     for fact in signal.facts:
-        if fact.kind not in DATE_FACT_KINDS:
+        if fact.kind not in DATE_FACT_KINDS or fact.value_date is None:
             continue
-        value, _ = parse_date_value(fact.value)
-        # A corpus record names the deadline in the reader's language; the raw
-        # quote would repeat the same day in the vendor's.
-        if value is None or value < today or value in from_corpus:
+        if fact.value_date < today:
             continue
-        text = clean(fact.evidence) or FACT_KIND_LABELS.get(fact.kind, str(fact.kind))
-        entries.append((value, text, fact.source_url))
-    return sorted(entries, key=lambda item: item[0])
+        add(
+            UpcomingDeadline(
+                when=fact.value_date,
+                what=clean(fact.subject) or clean(fact.evidence),
+                source_url=fact.source_url,
+                date_precision=fact.date_precision,
+            )
+        )
+    return sorted(entries, key=lambda item: item.when)
 
 
 def render_upcoming(signal: Signal, today: date) -> str:
@@ -773,13 +776,18 @@ def render_upcoming(signal: Signal, today: date) -> str:
         # No deadlines in the corpus means no heading either (voice 2).
         return ""
     items = []
-    for when, text, url in entries:
-        tail = f" — {esc(text)}" if text else ""
-        source = f' <span class="src">{link(url)}</span>' if url else ""
-        items.append(
-            f'<li><span class="when">{esc(fmt_date(when, today))}</span>{tail}{source}</li>'
+    for item in entries:
+        when = fmt_date(item.when, today, item.date_precision)
+        tail = f" — {esc(clean(item.what))}" if item.what else ""
+        source = (
+            f' <span class="src">{link(item.source_url)}</span>'
+            if item.source_url
+            else ""
         )
-    return '<h3>Ближайшее</h3>\n<ul class="upcoming">\n' + "\n".join(items) + "\n</ul>"
+        items.append(f'<li><span class="when">{esc(when)}</span>{tail}{source}</li>')
+    return (
+        '<h3>Ближайшее</h3>\n<ul class="upcoming">\n' + "\n".join(items) + "\n</ul>"
+    )
 
 
 # -- page shell --------------------------------------------------------
@@ -864,7 +872,7 @@ class StageCost:
 
 
 @dataclass(frozen=True)
-class RunSummary:
+class RunHistoryRow:
     run_id: str
     for_date: date | None
     status: str
@@ -891,7 +899,7 @@ class RunLogView:
     usd: float = 0.0
     notes: list[str] = field(default_factory=list)
     delivery: list[dict[str, Any]] = field(default_factory=list)
-    history: list[RunSummary] = field(default_factory=list)
+    history: list[RunHistoryRow] = field(default_factory=list)
 
     @property
     def failed_sources(self) -> list[SourceRow]:
@@ -981,7 +989,7 @@ def load_run_log(
         )
     ]
     history = [
-        RunSummary(
+        RunHistoryRow(
             run_id=row["run_id"],
             for_date=_as_date(row["for_date"]),
             status=row["status"],
@@ -1081,25 +1089,26 @@ def load_corpus(
 # -- digest page -------------------------------------------------------
 
 
-def _digest_footer(
-    signals: list[Signal],
-    run: RunLogView | None,
-    links: PageLinks,
-) -> str:
-    """Unanswered sources are a working situation, reported calmly (voice 5)."""
+def _digest_footer(signals: list[Signal], links: PageLinks) -> str:
+    """Unanswered sources are a working situation, reported calmly (voice 5).
+
+    The names travel inside the signal (`run_summary`), so the page never
+    reaches into the run log tables to build its own footer.
+    """
     lines: list[str] = []
-    if run is not None:
-        failed = run.failed_sources
-        if failed:
-            names = ", ".join(esc(s.source_id) for s in failed)
-            word = spelled_count_phrase(len(failed), SOURCE_FORMS, NUMERALS_MASCULINE)
-            verb = "не ответил" if len(failed) == 1 else "не ответили"
+    summary = next((s.run_summary for s in signals if s.run_summary), None)
+    if summary is not None:
+        if summary.sources_failed:
+            names = ", ".join(esc(name) for name in summary.sources_failed)
+            word = spelled_count_phrase(
+                len(summary.sources_failed), SOURCE_FORMS, NUMERALS_MASCULINE
+            )
+            verb = "не ответил" if len(summary.sources_failed) == 1 else "не ответили"
             lines.append(f"{word.capitalize()} {verb}: {names}.")
-        for source in run.empty_sources:
-            lines.append(f"{esc(source.source_id)} ответил, но ничего не отдал.")
-    resolved = [
-        s for s in signals if s.delta_status and str(s.delta_status) == "resolved"
-    ]
+        for name in summary.sources_empty:
+            # HTTP 200 with nothing in it is a different fault, named apart.
+            lines.append(f"{esc(name)} ответил, но ничего не отдал.")
+    resolved = [s for s in signals if s.delta_status is DeltaStatus.RESOLVED]
     for signal in resolved:
         tail = ""
         if signal.days_tracked > 1:
@@ -1115,7 +1124,6 @@ def render_digest(
     signals: list[Signal],
     *,
     today: date,
-    run: RunLogView | None = None,
     links: PageLinks = DEFAULT_LINKS,
 ) -> str:
     """One page for the run, whatever the run turned out to be.
@@ -1130,7 +1138,7 @@ def render_digest(
     for_date = ordered[0].for_date if ordered else today
 
     if failures:
-        body = _failure_body(failures[0], today, links)
+        body = _failure_body(failures[0], today)
         title = "Прогон не завершился"
     elif items:
         body = _items_body(items, today)
@@ -1149,7 +1157,7 @@ def render_digest(
         f'<p class="when-line">{esc(fmt_date(for_date, today))}</p>\n'
         "</header>"
     )
-    footer = _digest_footer(ordered, run, links)
+    footer = _digest_footer(ordered, links)
     return document(title, f"{head}\n{body}\n{footer}", current="digest", links=links)
 
 
@@ -1181,30 +1189,35 @@ def _quiet_body(signal: Signal, today: date) -> str:
     if signal.summary:
         parts.append(f'<p class="lead-note">{esc(clean(signal.summary))}</p>')
     parts.append(render_upcoming(signal, today))
-    sentence = checked_sentence(signal.stats)
-    if sentence:
-        parts.append(f'<p class="meta-row">{esc(sentence)}</p>')
-    parts.append(render_stats_details(signal.stats))
+    checked = checked_sentence(signal.run_summary)
+    if checked:
+        parts.append(f'<p class="meta-row">{esc(checked)}</p>')
+    parts.append(render_run_summary_details(signal.run_summary))
     parts.append(f'<p class="sig">{esc(signal.signal_id)}</p>')
     return "\n".join(part for part in parts if part)
 
 
-def _failure_body(signal: Signal, today: date, links: PageLinks) -> str:
+def _failure_body(signal: Signal, today: date) -> str:
     """A system that reports its own failure earns more than one that hides it."""
-    reason = clean(signal.failure_reason)
     parts: list[str] = []
+    reason = clean(signal.failure_reason)
+    stage = STAGE_LABELS.get(signal.failure_stage or "", clean(signal.failure_stage))
     if reason:
         parts.append(f'<p class="lead-note">{esc(sentence(reason))}</p>')
+    if stage:
+        parts.append(f'<p class="meta-row">Стадия: {esc(stage)}.</p>')
     if signal.summary:
         parts.append(f"<p>{esc(clean(signal.summary))}</p>")
-    collected = _first_stat(signal.stats, ("items_collected", "items_total"))
-    if collected is not None:
-        parts.append(
-            f"<p>Собрано {esc(count_phrase(collected, MATERIAL_FORMS))}, "
-            "обработать не удалось.</p>"
-        )
+    summary = signal.run_summary
+    if summary is not None:
+        collected = count_phrase(summary.materials_collected, MATERIAL_FORMS)
+        line = f"Собрано {esc(collected)}, обработать не удалось."
+        if summary.last_success_date is not None:
+            when = fmt_date(summary.last_success_date, today)
+            line += f" Последняя удачная сводка — {esc(when)}."
+        parts.append(f"<p>{line}</p>")
     parts.append(render_upcoming(signal, today))
-    parts.append(render_stats_details(signal.stats))
+    parts.append(render_run_summary_details(summary))
     parts.append(f'<p class="sig">{esc(signal.signal_id)}</p>')
     return "\n".join(part for part in parts if part)
 
@@ -1328,7 +1341,7 @@ def _cost_block(run: RunLogView) -> str:
     return "\n".join(parts)
 
 
-def _history_block(history: list[RunSummary], today: date, current: str) -> str:
+def _history_block(history: list[RunHistoryRow], today: date, current: str) -> str:
     if len(history) < 2:
         return ""
     rows = []
@@ -1444,7 +1457,10 @@ def _density_table(corpus: CorpusView) -> str:
         totals[cell.vendor] = totals.get(cell.vendor, 0) + cell.count
     vendors = sorted(totals, key=lambda v: (-totals[v], v))
     # ChangeType keys are enum members; the label lookup takes the raw value.
-    header = "".join(f'<th class="num">{esc(_change_label(t))}</th>' for t in present)
+    header = "".join(
+        f'<th class="num">{esc(_change_label(t, CHANGE_TYPE_COLUMNS))}</th>'
+        for t in present
+    )
     rows = []
     for vendor in vendors:
         cells = []
@@ -1473,10 +1489,11 @@ def _density_table(corpus: CorpusView) -> str:
     )
 
 
-def _change_label(value: str) -> str:
+def _change_label(value: str, labels: dict[ChangeType, str] | None = None) -> str:
+    labels = labels or CHANGE_TYPE_LABELS
     for member in ChangeType:
         if str(member) == value:
-            return CHANGE_TYPE_LABELS[member]
+            return labels[member]
     return value
 
 
@@ -1490,7 +1507,8 @@ def render_corpus(
     depth = ""
     if corpus.earliest and corpus.latest:
         depth = (
-            f"От {fmt_date(corpus.earliest, today)} до {fmt_date(corpus.latest, today)}. "
+            f"От {fmt_date(corpus.earliest, today)}, "
+            f"до {fmt_date(corpus.latest, today)}. "
             f"Глубина {count_phrase(corpus.depth_days or 0, DAY_FORMS)}."
         )
     head = (
@@ -1565,7 +1583,7 @@ def build_site(
     pages = {
         "digest": (
             out / links.digest,
-            render_digest(signals, today=today, run=run, links=links),
+            render_digest(signals, today=today, links=links),
         ),
         "run_log": (out / links.run_log, render_run_log(run, today=today, links=links)),
         "corpus": (out / links.corpus, render_corpus(corpus, today=today, links=links)),

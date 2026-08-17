@@ -120,7 +120,20 @@ class ExtractedFact(BaseModel):
         json_schema_extra={"enum": [str(k) for k in FactKind]},
         description="one of: version, effective_date, sunset_date, price, limit, affected_product",
     )
-    value: str = Field(default="", description="the fact itself, normalized and short")
+    value: str = Field(
+        default="",
+        description=(
+            "the fact itself, short. For effective_date and sunset_date write "
+            "it as YYYY-MM-DD, or YYYY-MM when the material states no day"
+        ),
+    )
+    subject: str = Field(
+        default="",
+        description=(
+            "what the fact is about, e.g. claude-3-opus, copied as the material "
+            "prints it. Required for effective_date and sunset_date"
+        ),
+    )
     evidence: str = Field(
         default="",
         description=f"verbatim quote from the material, at most {MAX_EVIDENCE_WORDS} words",
@@ -213,7 +226,9 @@ prose and you never ask a question back.
    2026-06-05 with a sunset_date fact of 2026-08-05. When the material names no
    announcement date and the only date it prints is the day the change takes
    effect, that day is the event date. When it prints a date with no year, put
-   the printed form in event_date_text and leave event_date empty.
+   the printed form in event_date_text and leave event_date empty. Write the
+   value of an effective_date or sunset_date fact as YYYY-MM-DD, and name what
+   that date applies to in the fact's subject.
 
 6. STATEMENTS ARE WRITTEN IN LITERARY RUSSIAN, one to three sentences, naming
    the vendor, the product and what changed. No emoji, no marketing adjectives,
@@ -678,12 +693,22 @@ class LlmEnricher:
                     RejectedFact(str(kind), raw.value, raw.evidence, "value_empty")
                 )
                 continue
+            value_date, precision = (
+                _fact_date(raw.value, raw.evidence, item)
+                if kind in DATE_FACT_KINDS
+                else (None, DatePrecision.DAY)
+            )
             candidates.append(
                 Fact(
                     kind=kind,
                     value=raw.value.strip(),
                     source_url=item.url,
                     evidence=raw.evidence.strip(),
+                    # Parsed once here so no surface reparses the string and
+                    # words the same day differently from its neighbour.
+                    value_date=value_date,
+                    date_precision=precision,
+                    subject=self._subject_of(raw, event, kind, text),
                 )
             )
         # The single check that turns FR-4.3 from an instruction into a
@@ -694,6 +719,26 @@ class LlmEnricher:
             for f, reason in dropped
         ]
         return kept, rejected
+
+    def _subject_of(
+        self, raw: ExtractedFact, event: ExtractedEvent, kind: FactKind, text: str
+    ) -> str | None:
+        """What a date is about, taken from the page rather than composed.
+
+        The quiet-day block prints the subject next to a deadline, so a label
+        the model assembled out of two phrases would read as a product that
+        does not exist. The fall back to the event's product applies to dates
+        only: that block is the only reader, and a subject invented for a
+        price would just repeat the headline.
+        """
+        candidates = (
+            (raw.subject, event.product) if kind in DATE_FACT_KINDS else (raw.subject,)
+        )
+        for candidate in candidates:
+            name = (candidate or "").strip()
+            if name and verify_evidence(name, text)[0]:
+                return name
+        return None
 
     def _statement_of(
         self,
@@ -927,6 +972,29 @@ def _parse_stated_date(value: str) -> tuple[date | None, DatePrecision]:
     if match.group("m"):
         return parsed, DatePrecision.MONTH
     return parsed, DatePrecision.YEAR
+
+
+def _fact_date(
+    value: str, evidence: str, item: CollectedItem
+) -> tuple[date | None, DatePrecision]:
+    """Machine form of a dated fact, for the surfaces that count days.
+
+    `value` stays as extracted, because delta and scoring already read it as
+    ISO. A year recovered from the collector is marked INFERRED so nothing
+    downstream renders "через 59 дней" off a guess.
+    """
+    for text in (value, evidence):
+        parsed = parse_date_fragment((text or "").strip())
+        if parsed is None:
+            continue
+        if parsed.value is not None:
+            return parsed.value, parsed.precision
+        if parsed.year_missing:
+            year = _year_source(item)
+            if year is None:
+                return None, DatePrecision.INFERRED
+            return parsed.with_year(year).value, DatePrecision.INFERRED
+    return None, DatePrecision.DAY
 
 
 def _fallback_date(item: CollectedItem) -> tuple[date | None, DatePrecision]:

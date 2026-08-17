@@ -878,6 +878,70 @@ class TestSelection:
         )
 
 
+# -- the run log -------------------------------------------------------
+
+
+class TestRunLog:
+    def test_backfill_logs_a_call_per_material_by_default(self, db, env):
+        config = make_config(source_ids=("alpha",))
+        env.install({"alpha": [make_item("alpha", i) for i in range(3)]})
+        report = env.run(db, config, FakeEnricher(), limit_usd=1.0)
+
+        rows_ = [
+            dict(r)
+            for r in db.execute(
+                "SELECT model, cost_usd, cached FROM model_calls WHERE run_id = ?",
+                (report.run_id,),
+            )
+        ]
+        assert len(rows_) == 3
+        assert {row["model"] for row in rows_} == {MODEL}
+        assert sum(row["cost_usd"] for row in rows_) == pytest.approx(report.spent_usd)
+
+    def test_the_backend_may_own_the_call_rows_instead(self, db, env):
+        """When the backend writes its own rows the run must not add a second
+        set: that would count every call twice."""
+        config = make_config(source_ids=("alpha",))
+        env.install({"alpha": [make_item("alpha", i) for i in range(3)]})
+        report = env.run(
+            db, config, FakeEnricher(), limit_usd=1.0, log_model_calls=False
+        )
+        assert db.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0] == 0
+        # The run row still carries the money, which is what a resume reads.
+        cost = db.execute(
+            "SELECT cost_usd FROM runs WHERE run_id = ?", (report.run_id,)
+        ).fetchone()[0]
+        assert cost == pytest.approx(report.spent_usd)
+
+    def test_call_log_carries_tokens_into_model_calls(self, db):
+        from radar.cli import _CallLog
+
+        log = _CallLog()
+        log.model_call(
+            stage="enrich",
+            model=MODEL,
+            provider="anthropic",
+            tokens_in=15918,
+            tokens_out=812,
+            cost_usd=0.0079,
+            cached=False,
+        )
+        log.model_call(
+            stage="enrich", model=MODEL, tokens_in=100, tokens_out=20, cost_usd=0.0
+        )
+        assert log.write(db, "backfill-test") == (16018, 832)
+
+        rows_ = [
+            dict(r)
+            for r in db.execute(
+                "SELECT * FROM model_calls WHERE run_id = ?", ("backfill-test",)
+            )
+        ]
+        assert len(rows_) == 2
+        assert rows_[0]["tokens_in"] == 15918
+        assert rows_[0]["provider"] == "anthropic"
+
+
 # -- cost profiles -----------------------------------------------------
 
 

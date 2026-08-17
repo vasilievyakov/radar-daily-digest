@@ -32,7 +32,9 @@ from radar.cluster import cluster_items, make_cluster_id, title_signature
 from radar.collect import ADAPTERS, build_adapter, collect_source
 from radar.config import ThemeConfig
 from radar.db import corpus_readiness, init_db
+from radar.enrich import cache_prefix_for
 from radar.fetch import Fetcher
+from radar.filter import build_cache_prefix
 from radar.models import (
     ChangeType,
     ContextLabel,
@@ -278,6 +280,16 @@ class TestNormalizationOnTheNewDictionary:
         assert local.vendor("Anthropic") is None
         assert dict(local.report_unknown()) == {"Anthropic": 1}
 
+    def test_every_source_speaks_for_a_vendor_the_dictionary_knows(
+        self, config, normalizer
+    ):
+        """`SourceConfig.vendor` is authoritative downstream, so a source whose
+        vendor is missing from the dictionary would file its whole history
+        under an id retrieval can never match."""
+        for source in config.enabled_sources():
+            assert source.vendor, source.id
+            assert normalizer.vendor(source.vendor) == source.vendor, source.id
+
     def test_labels_come_from_the_config(self, normalizer):
         assert normalizer.label("google_cloud") == "Google Cloud"
         assert normalizer.label("rabbitmq") == "RabbitMQ"
@@ -356,6 +368,43 @@ class TestVocabularyIsCode:
         assert set(config.enrichment["fact_kinds"]) <= known
         assert "migration_deadline" not in known
         assert "affected_region" not in known
+
+
+# -- 3b. The two stages that do call a model, up to the call ----------------
+
+
+class TestPromptsAreBuiltFromTheTheme:
+    """Stages 3 and 4 cannot be run here, but their theme-shaped half can.
+
+    Both build a cache prefix out of the config and nothing else. If a domain
+    word were hardcoded in a prompt, it would show up in these strings.
+    """
+
+    def test_the_filter_prefix_carries_this_theme_and_only_this_theme(
+        self, config, ai_config
+    ):
+        prefix = build_cache_prefix(config)
+        assert config.name in prefix
+        assert "Cloudflare" in prefix and "PostgreSQL" in prefix
+        assert "квот" in prefix  # exclusion and relevance criteria, verbatim
+        for vendor_id in config.vendor_ids:
+            assert vendor_id in prefix
+        for stale in ("anthropic", "cursor", "llamaindex"):
+            assert stale not in prefix
+        assert build_cache_prefix(ai_config) != prefix
+
+    def test_the_enrichment_prefix_carries_the_configured_fact_kinds(self, config):
+        prefix = cache_prefix_for(config)
+        assert config.name in prefix
+        for kind in config.enrichment["fact_kinds"]:
+            assert kind in prefix
+        for change_type in config.change_type_ids:
+            assert change_type in prefix
+
+    def test_the_prefix_is_byte_stable_across_calls(self, config):
+        """A prefix that varies turns every cached read into a paid write."""
+        assert build_cache_prefix(config) == build_cache_prefix(config)
+        assert cache_prefix_for(config) == cache_prefix_for(config)
 
 
 # -- 4. Clustering -----------------------------------------------------------

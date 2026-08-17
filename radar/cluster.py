@@ -174,10 +174,15 @@ def cluster_items(
     groups: dict[tuple[str | None, str | None, str], list[CollectedItem]] = defaultdict(
         list
     )
-    for url, url_items in by_url.items():
+    for url_items in by_url.values():
         head = url_items[0]
-        vendor = vendor_of.get(url, head.vendor_hint)
-        change_type = change_type_of.get(url)
+        # Looked up by the item's own URL, not by the group key: the key is a
+        # content hash, so a lookup by it silently returned nothing and every
+        # cluster came out without a vendor. Retrieval needs the vendor
+        # (FR-6.13), so the miss would have been invisible until the corpus
+        # answered "no precedents" for everything.
+        vendor = vendor_of.get(head.url) or head.extra.get("vendor") or head.vendor_hint
+        change_type = change_type_of.get(head.url) or head.extra.get("change_type")
         groups[(vendor, change_type, title_signature(head.title))].extend(url_items)
 
     clusters: list[Cluster] = []
