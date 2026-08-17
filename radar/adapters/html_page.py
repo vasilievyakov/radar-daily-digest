@@ -32,8 +32,7 @@ from datetime import date, datetime, timedelta
 from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype
 from bs4 import NavigableString, ProcessingInstruction, Tag
 
-from radar.adapters.base import Adapter, CollectedItem, SourceConfig
-from radar.fetch import Fetcher
+from radar.adapters.base import Adapter, CollectedItem
 from radar.models import DatePrecision
 
 PARSER_SECTIONS = "dated_sections"
@@ -620,9 +619,6 @@ class HtmlPageAdapter(Adapter):
     """Documentation page split into dated sections."""
 
     type = "html_scrape"
-
-    def __init__(self, source: SourceConfig, fetcher: Fetcher) -> None:
-        super().__init__(source, fetcher)
 
     def collect(self, since: datetime | None = None) -> list[CollectedItem]:
         items = self._parse()

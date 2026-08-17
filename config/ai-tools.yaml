@@ -114,17 +114,18 @@ sources:
     backfill_depth_days: 360
     min_expected_items: 10
 
-  # Рендерится на клиенте: HTTP 200, 499 КБ, ноль извлекаемых дат.
-  # Оставлен включённым намеренно как реальный кейс отказа вида
-  # "успешный ответ с нулём результатов" (FR-1.4, DR-5).
+  # docs.cursor.com/changelog отдаёт 499 КБ и ноль извлекаемых дат: это тупик,
+  # а не клиентский рендеринг. Рабочий адрес — cursor.com/changelog, 190 КБ
+  # с датами в обычном curl. Записей мало, отсюда min_expected_items: 3.
   - id: cursor_changelog
     type: html_scrape
-    url: https://docs.cursor.com/changelog
+    url: https://cursor.com/changelog
     priority: 1
     enabled: true
     parser_hint: dated_sections
-    backfill_supported: false
-    min_expected_items: 5
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
 
   # Приоритет 3: GitHub Releases, полная история через пагинацию.
   - id: gh_anthropics_claude_code
@@ -154,13 +155,15 @@ sources:
     backfill_depth_days: 360
     min_expected_items: 5
 
+  # Releases through package tags rather than GitHub Releases: 2 in six months,
+  # 7 in twelve, bodies around 200 characters. Kept as a valid but thin source.
   - id: gh_modelcontextprotocol_servers
     type: github_releases
     url: https://github.com/modelcontextprotocol/servers
     priority: 3
     enabled: true
     backfill_supported: true
-    backfill_depth_days: 360
+    backfill_depth_days: 540
     min_expected_items: 1
 
   - id: gh_n8n
@@ -203,6 +206,15 @@ trends:
   dormant_after_days: 90
 
 scoring:
+  # Vendors and products the reader actually builds on. Drives the stack
+  # overlap factor; without it that factor never fires.
+  active_stack:
+    - anthropic
+    - openai
+    - cursor
+    - n8n
+    - mcp
+  urgency_horizon_days: 90
   weights:
     change_type:
       breaking_change: 30
@@ -234,3 +246,18 @@ delivery:
   timezone: "Europe/Moscow"
   max_items_telegram: 5
   quiet_day_message: true
+
+# Stage to model routing. Scoring is arithmetic over the weights above and
+# deliberately has no model: weights stop being weights once a model applies
+# them (FR-6.3).
+models:
+  cluster: null
+  filter: anthropic/claude-sonnet-5
+  enrich: anthropic/claude-opus-5
+  trends: anthropic/claude-opus-5
+  score: null
+  embeddings: openai/text-embedding-3-small
+
+budget:
+  max_usd_per_run: 0.50
+  max_usd_per_backfill: 15.00
