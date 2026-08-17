@@ -544,16 +544,53 @@ class TestEvidenceVerification:
             ("event_date", "date_not_in_source")
         ]
 
-    def test_date_without_a_quote_needs_the_collector_to_agree(self, config):
+    def test_a_date_the_page_prints_is_taken_without_a_pointer(self, config):
+        """The bulk model often skips event_date_text; the page still has the date."""
         payload = {"events": [event(event_date="2026-06-26", event_date_text="")]}
-        agreeing = make_item(event_date=date(2026, 6, 26))
-        result = enricher(config, FakeBackend(payload)).enrich(agreeing, make_source())
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
         assert result.statements[0].event_date == date(2026, 6, 26)
+        assert result.rejected_facts == []
 
-        alone = make_item()
-        other = enricher(config, FakeBackend(payload)).enrich(alone, make_source())
-        assert other.statements[0].event_date is None
-        assert other.rejected_facts[0].reason == "date_without_quote"
+    def test_a_date_printed_nowhere_is_refused(self, config):
+        payload = {"events": [event(event_date="2026-12-01", event_date_text="")]}
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(), make_source()
+        )
+        assert result.statements[0].event_date is None
+        assert result.rejected_facts[0].reason == "date_without_quote"
+
+    def test_the_collector_can_vouch_for_a_date_the_body_does_not_print(self, config):
+        payload = {"events": [event(event_date="2026-06-30", event_date_text="")]}
+        result = enricher(config, FakeBackend(payload)).enrich(
+            make_item(event_date=date(2026, 6, 30)), make_source()
+        )
+        assert result.statements[0].event_date == date(2026, 6, 30)
+
+    def test_a_date_is_recognised_in_every_form_a_changelog_prints_it(self, config):
+        for body, iso in (
+            ("Shipped on 2026-06-26 for everyone.", "2026-06-26"),
+            ("Shipped on June 26, 2026 for everyone.", "2026-06-26"),
+            ("Shipped on Jun 26, 2026 for everyone.", "2026-06-26"),
+            ("Shipped on 26 June 2026 for everyone.", "2026-06-26"),
+            ("Jun.26 Improvement shipped for everyone.", "2026-06-26"),
+        ):
+            payload = {
+                "events": [
+                    event(
+                        event_date=iso,
+                        event_date_text="",
+                        evidence="Shipped",
+                        facts=[],
+                    )
+                ]
+            }
+            result = enricher(config, FakeBackend(payload)).enrich(
+                make_item(text=body + " Shipped."), make_source()
+            )
+            assert result.statements, body
+            assert result.statements[0].event_date == date.fromisoformat(iso), body
 
 
 class TestFactDateFields:

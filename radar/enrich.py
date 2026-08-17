@@ -205,13 +205,14 @@ prose and you never ask a question back.
    plausible guess is a defect, and inventing a year for a date printed without
    one is the most common way to produce it.
 
-3. EVERY FACT AND EVERY STATEMENT CARRIES EVIDENCE: a quote copied character
-   for character from the material, in its language, at most
-   {MAX_EVIDENCE_WORDS} words. Copy one continuous run of text. Do not paraphrase
-   it, do not translate it, do not repair spelling or punctuation, do not stitch
-   a table header onto a table row or two distant fragments onto each other.
-   The quote must contain the value it supports. A quote that cannot be found
-   verbatim in the material is discarded, and producing it was wasted work.
+3. EVERY FACT AND EVERY STATEMENT CARRIES EVIDENCE: a quote of at most
+   {MAX_EVIDENCE_WORDS} words, copied character for character from the
+   material and in its language. Copy one continuous run of text. Do not
+   paraphrase it, do not translate it, do not repair spelling or punctuation,
+   do not stitch a table header onto a table row, or two distant fragments
+   onto each other. The quote must contain the value it supports. A quote that
+   cannot be found verbatim in the material is discarded, and producing it was
+   wasted work.
 
 4. ONE EVENT PER CHANGE, NOT PER AFFECTED ITEM. A material announcing three
    changes yields three events, each with its own statement, type, date and
@@ -847,14 +848,13 @@ class LlmEnricher:
         stated, precision = _parse_stated_date(event.event_date)
 
         if not printed:
-            # No pointer into the page. The ISO value stands only if the page
-            # prints it literally, or if the collector read the same date off
-            # the page structure.
+            # No pointer into the page, which the weaker bulk model routinely
+            # omits even when its date is right. So the date is looked for on
+            # the page in the forms changelogs actually print, and only a date
+            # that appears nowhere is treated as invented.
             if stated is None:
                 return _fallback_date(item)
-            if verify_evidence(event.event_date.strip(), text)[0] or (
-                item.event_date == stated
-            ):
+            if item.event_date == stated or _date_is_printed(stated, precision, text):
                 return stated, precision
             rejected.append(
                 RejectedFact("event_date", event.event_date, "", "date_without_quote")
@@ -972,6 +972,47 @@ def _parse_stated_date(value: str) -> tuple[date | None, DatePrecision]:
     if match.group("m"):
         return parsed, DatePrecision.MONTH
     return parsed, DatePrecision.YEAR
+
+
+_MONTHS_EN = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def _printed_forms(value: date, precision: DatePrecision) -> list[str]:
+    """How the tracked changelogs spell one date.
+
+    Hardcoded English rather than `calendar.month_name`, which follows the
+    process locale and would make extraction depend on the machine.
+    """
+    month = _MONTHS_EN[value.month - 1]
+    if precision in (DatePrecision.MONTH, DatePrecision.YEAR):
+        return [f"{value:%Y-%m}", f"{month} {value.year}", str(value.year)]
+    return [
+        value.isoformat(),
+        f"{month} {value.day}, {value.year}",
+        f"{month[:3]} {value.day}, {value.year}",
+        f"{value.day} {month} {value.year}",
+        f"{month} {value.day}",
+        f"{month[:3]}.{value.day}",
+    ]
+
+
+def _date_is_printed(value: date, precision: DatePrecision, text: str) -> bool:
+    return any(
+        verify_evidence(form, text)[0] for form in _printed_forms(value, precision)
+    )
 
 
 def _fact_date(

@@ -296,8 +296,27 @@ class DailyRun:
         for position, scored in enumerate(ranked, 1):
             tier = assign_tier(scored.breakdown.score, self.config.data)
             if tier is Tier.BACKGROUND:
-                # Below the digest threshold the core still knows about it; it
-                # simply does not become something a surface will show.
+                # Below the threshold, and therefore recorded. FR-8.3 asks for
+                # every dropped material with a reason, and "fell under the
+                # publication threshold" is a reason. Without this the funnel
+                # on the run-log page stops adding up, and a reader checking
+                # the arithmetic finds material that vanished without trace.
+                self.log.filtered(
+                    url=scored.signal.primary_url or scored.signal.signal_id,
+                    title=scored.signal.headline,
+                    reason_code="ниже_порога_публикации",
+                    stage="score",
+                    note=f"оценка {scored.breakdown.score}, порог "
+                    f"{self.config.scoring.get('digest_threshold')}",
+                )
+                self.journal.record(
+                    EventKind.ITEM_FILTERED,
+                    actor="score",
+                    target=scored.signal.signal_id,
+                    outcome=Outcome.SKIPPED,
+                    reason="ниже_порога_публикации",
+                    score=scored.breakdown.score,
+                )
                 continue
             out.append(
                 scored.signal.model_copy(

@@ -236,3 +236,43 @@ class TestIdempotency:
             ids.append({s.signal_id for s in read_signals(conn, "run-fixed")})
         # Both runs published something, and nothing accumulated.
         assert all(ids) and len(ids[0]) == len(ids[1])
+
+
+class TestFunnelAddsUp:
+    """FR-8.3: everything dropped is recorded with a reason.
+
+    The run-log page is the one artifact whose whole job is to earn trust, and
+    a reader subtracts its numbers in their head. Material that leaves the
+    funnel without a line in the log is the fastest way to lose that argument.
+    """
+
+    def test_material_below_the_threshold_is_recorded_not_vanished(self, env, monkeypatch):
+        conn, config, fetcher, tmp = env
+        # Thresholds high enough that nothing clears them.
+        raised = dict(config.data)
+        raised["scoring"] = {**config.scoring, "publish_threshold": 99, "digest_threshold": 98}
+        config.data = raised
+
+        run = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        result = run.execute()
+
+        dropped = conn.execute(
+            "SELECT reason_code, stage FROM filtered_items WHERE run_id = ? AND stage = 'score'",
+            (result.run_id,),
+        ).fetchall()
+        assert dropped
+        assert dropped[0][0] == "ниже_порога_публикации"
+
+    def test_the_note_says_the_score_and_the_threshold(self, env):
+        conn, config, fetcher, tmp = env
+        raised = dict(config.data)
+        raised["scoring"] = {**config.scoring, "publish_threshold": 99, "digest_threshold": 98}
+        config.data = raised
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+        note = conn.execute(
+            "SELECT reason_note FROM filtered_items WHERE run_id = ? AND stage = 'score'",
+            (result.run_id,),
+        ).fetchone()[0]
+        assert "оценка" in note and "порог" in note
