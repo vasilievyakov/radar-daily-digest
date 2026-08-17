@@ -13,6 +13,7 @@ import pytest
 from radar.adapters.base import SourceConfig
 from radar.adapters.html_page import (
     HtmlPageAdapter,
+    date_stated_alone,
     extract_json_index,
     extract_page_text,
     parse_date_fragment,
@@ -247,7 +248,7 @@ LANGCHAIN_UPDATE = """
 """
 
 LANGCHAIN_PAGE = (
-    "<html><body><main><div id=\"content-area\">"
+    '<html><body><main><div id="content-area">'
     "<p>Weekly updates to LangSmith Cloud and LangSmith Fleet.</p>"
     + LANGCHAIN_UPDATE.format(
         anchor="august-3-10-2026",
@@ -288,7 +289,7 @@ LANGCHAIN_PAGE = (
 # docs.langchain.com/langsmith/self-hosted-changelog: the same Mintlify block
 # with an ISO date for a label and the release as the heading.
 LANGSMITH_PAGE = (
-    "<html><body><main><div id=\"content-area\">"
+    '<html><body><main><div id="content-area">'
     "<p>Self-hosted LangSmith is an add-on to the Enterprise plan.</p>"
     + LANGCHAIN_UPDATE.format(
         anchor="2026-08-16",
@@ -303,7 +304,7 @@ LANGSMITH_PAGE = (
         heading_id="langsmith-0-16-0",
         heading="langsmith-0.16.0",
         body=(
-            "<h3 id=\"breaking-changes\">​Breaking changes</h3>"
+            '<h3 id="breaking-changes">​Breaking changes</h3>'
             "<p>The bundled Redis chart is removed; point the deployment at an"
             " external Redis before upgrading.</p>"
         ),
@@ -456,8 +457,19 @@ GITHUB_MONTH = """
 """
 
 _MONTH_NAMES = [
-    "", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ]
 
 
@@ -592,6 +604,52 @@ class TestParseDateFragment:
     def test_no_date_at_all(self):
         assert parse_date_fragment("Model status") is None
         assert parse_date_fragment("claude-3-5-haiku-20241022") is None
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            # An ISO timestamp is what an embedded index states.
+            ("2026-06-01T07:00:00.000Z", date(2026, 6, 1)),
+            # github.blog abbreviates with a dot instead of a space.
+            ("Aug.14 Improvement", None),
+            # A week is dated from the day it starts.
+            ("August 3-10, 2026", date(2026, 8, 3)),
+            ("July 27-31, 2026", date(2026, 7, 27)),
+            ("June 29 - July 3, 2026", date(2026, 6, 29)),
+            # The year stated at the end of a range is the year it ends in.
+            ("December 29 - January 2, 2026", date(2025, 12, 29)),
+            # platform.openai.com puts a comma between month and year.
+            ("June, 2025", date(2025, 6, 1)),
+        ],
+    )
+    def test_shapes_the_configured_pages_actually_use(self, text, expected):
+        parsed = parse_date_fragment(text)
+        assert parsed is not None
+        assert parsed.value == expected
+
+    def test_a_dotted_month_still_refuses_to_invent_the_year(self):
+        parsed = parse_date_fragment("Aug.14 Improvement")
+        assert parsed is not None
+        assert parsed.value is None and parsed.year_missing
+        assert parsed.month == 8 and parsed.day == 14
+
+    def test_a_range_keeps_day_precision(self):
+        parsed = parse_date_fragment("August 3-10, 2026")
+        assert parsed is not None
+        assert parsed.precision is DatePrecision.DAY
+        assert parsed.text == "August 3-10, 2026"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "gpt-4o-2024-08-06",
+            "Released gpt-realtime-mini-2025-12-15 today",
+            "web_search_20260209",
+        ],
+    )
+    def test_a_date_glued_to_an_identifier_is_not_stated_alone(self, text):
+        parsed = parse_date_fragment(text)
+        assert parsed is None or not date_stated_alone(text, parsed)
 
 
 # --------------------------------------------------------------------------
@@ -756,7 +814,6 @@ class TestMissingYear:
         assert {item.title for item in items} == {"Jan 5", "Dec 14"}
 
 
-
 # --------------------------------------------------------------------------
 # a date label outside the headings
 # --------------------------------------------------------------------------
@@ -859,20 +916,27 @@ class TestMonthThenDay:
 
     def test_the_month_heading_is_not_an_item_of_its_own(self):
         items = make_adapter(OPENAI_CHANGELOG_PAGE, hint="month_then_day").collect()
-        assert all(item.title not in ("August, 2026", "December, 2025") for item in items)
+        assert all(
+            item.title not in ("August, 2026", "December, 2025") for item in items
+        )
 
     def test_a_december_badge_does_not_borrow_the_year_of_the_badge_above(self):
         # "Dec 14" sits under "December, 2025" while the entry above it is
         # August 2026. Borrowing from the neighbour would date it 2026-12-14.
         items = make_adapter(OPENAI_CHANGELOG_PAGE, hint="month_then_day").collect()
-        december = next(item for item in items if item.date_precision is DatePrecision.DAY
-                        and item.event_date.month == 12)
+        december = next(
+            item
+            for item in items
+            if item.date_precision is DatePrecision.DAY and item.event_date.month == 12
+        )
         assert december.event_date == date(2025, 12, 14)
         assert december.extra["year_from_heading"] == "December, 2025"
 
     def test_an_entry_stops_at_the_next_month_heading(self):
         items = make_adapter(OPENAI_CHANGELOG_PAGE, hint="month_then_day").collect()
-        august_last = next(item for item in items if item.event_date == date(2026, 8, 6))
+        august_last = next(
+            item for item in items if item.event_date == date(2026, 8, 6)
+        )
         assert "December, 2025" not in august_last.raw_text
         assert "deprecation header" not in august_last.raw_text
 
@@ -948,6 +1012,21 @@ class TestEmbeddedJsonIndex:
         items = make_adapter(MCP_VERSIONING_PAGE).collect()
         assert all("Architecture" not in item.title for item in items)
         assert all("Specification" != item.title for item in items)
+
+    def test_the_fuller_reading_wins_when_both_are_guesses(self):
+        # The page renders two entries and also ships a one-record navigation
+        # payload. Taking the first non-empty reading would keep the payload.
+        html = LANGSMITH_PAGE.replace(
+            "</body>",
+            '<script>{\\"title\\":\\"2026-08-16\\",'
+            '\\"href\\":\\"/langsmith/self-hosted-changelog\\"}</script></body>',
+        )
+        items = make_adapter(html).collect()
+        assert [item.event_date for item in items] == [
+            date(2026, 8, 16),
+            date(2026, 8, 12),
+        ]
+        assert "langsmith-0.16.7" in items[0].raw_text
 
 
 # --------------------------------------------------------------------------
@@ -1041,14 +1120,18 @@ class TestMonthlyArchiveBackfill:
         assert [url for url in fetcher.calls if url in expected] == expected
 
     def test_a_year_of_archive_is_more_than_a_year_of_the_index(self):
-        adapter = HtmlPageAdapter(github_source(backfill_depth_days=365), github_archive())
+        adapter = HtmlPageAdapter(
+            github_source(backfill_depth_days=365), github_archive()
+        )
         items = adapter.backfill()
         assert len(items) > 20
         months = {(item.event_date.year, item.event_date.month) for item in items}
         assert len(months) >= 12
 
     def test_the_current_month_is_not_collected_twice(self):
-        adapter = HtmlPageAdapter(github_source(backfill_depth_days=365), github_archive())
+        adapter = HtmlPageAdapter(
+            github_source(backfill_depth_days=365), github_archive()
+        )
         items = adapter.backfill()
         assert len({(item.event_date, item.raw_text) for item in items}) == len(items)
 
@@ -1073,6 +1156,7 @@ class TestMonthlyArchiveBackfill:
         source.backfill_url_template = None
         HtmlPageAdapter(source, fetcher).backfill()
         assert fetcher.calls == ["https://github.blog/changelog/"]
+
 
 # --------------------------------------------------------------------------
 # raw_text is quotable
@@ -1121,7 +1205,9 @@ class TestRawTextIsVerbatim:
     def test_a_quote_from_a_week_verifies_against_the_week(self):
         items = make_adapter(LANGCHAIN_PAGE).collect()
         august = next(i for i in items if i.title.startswith("August 3-10"))
-        ok, reason = verify_evidence("scheduled for removal on 2026-08-20", august.raw_text)
+        ok, reason = verify_evidence(
+            "scheduled for removal on 2026-08-20", august.raw_text
+        )
         assert ok, reason
 
     def test_a_quote_taken_from_a_section_verifies_against_it(self):

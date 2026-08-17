@@ -1,28 +1,36 @@
 """Backfill: the one paid, one-off fill of the corpus (PRD 6).
 
-Three properties decide whether the money spent here is recoverable.
+Four properties decide whether the money spent here is recoverable.
 
 * **A ceiling is mandatory** (FR-6.8). There is no default and no fallback to
   "unlimited": a run without a limit is refused before the first fetch. The
   limit is checked before every call, not recorded after it.
-* **It resumes.** Checkpoints are written per source, not once for the whole
-  process, so a run killed on the two hundredth material continues from the
-  first unfinished source instead of from zero. Spend already recorded on the
-  run is carried into the resumed run's budget, so the limit covers the whole
-  effort rather than each attempt separately.
+* **The unit of work is a source, not a material.** One worker owns one source
+  and walks its materials in order; several sources run at once. That makes a
+  checkpoint mean something ("this source is done, or it was never started"),
+  so resuming never has to remember a position inside a source; it keeps the
+  polite per-domain interval intact, because nobody else is touching that
+  domain; and it takes the races out of `statement_index`.
+* **It resumes.** Checkpoints are written per source, so a run killed on the
+  two hundredth material continues from the first unfinished source. An
+  unfinished source restarts whole, which the model cache makes nearly free.
+  Spend already recorded on the run carries into the resumed run's budget, so
+  the limit covers the whole effort rather than each attempt separately.
 * **It is idempotent** (FR-6.7). The corpus key is the canonical source URL
-  plus the position of the event inside its material, and it is enforced by
-  the UNIQUE index rather than by a lookup: `INSERT OR IGNORE` cannot race.
-  Materials already in the corpus are not sent to the model at all, so a
-  repeat run neither duplicates nor pays twice.
+  plus the position of the event inside its material, enforced by the UNIQUE
+  index rather than by a lookup: `INSERT OR IGNORE` cannot race. Materials
+  already in the corpus are never sent to the model, so a repeat run neither
+  duplicates nor pays twice.
 
 Enrichment is reached only through the `Enricher` protocol from
 radar.contracts. This module never imports radar.enrich: stage 4 is written in
-parallel with this one, and the two meet at the contract or not at all.
+parallel with this one, and the two meet at the contract or not at all. Model
+routing (`models.enrich` versus `models.enrich_critical`) belongs to that
+stage; backfill only reports what each model cost.
 
-Backfill deliberately runs a shorter pipeline than the daily run: collect,
-enrich, index, then one trend pass over the whole corpus (FR-6.9). No
-relevance filter, no scoring, no publication, no delivery (FR-6.3, FR-6.4).
+Backfill runs a shorter pipeline than the daily run: collect, enrich, index,
+then one trend pass over the whole corpus (FR-6.9). No relevance filter, no
+scoring, no publication, no delivery (FR-6.3, FR-6.4).
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Callable
@@ -55,13 +63,10 @@ from radar.trends import (
 INGEST_MODE = "backfill"
 RUN_PREFIX = "backfill-"
 STAGE_COLLECT = "collect"
-SOURCE_STAGE_PREFIX = "source:"
+STAGE_ENRICH = "enrich"
 STAGE_TRENDS = "trends"
-
-# FR-6.1: v1 backfills priority 1-3 only. Media and aggregators fill the
-# corpus by themselves over weeks of daily runs, and scraping their archives
-# is the most reliable way to run out of both money and evening.
-MAX_BACKFILL_PRIORITY = 3
+# Checkpoint stage per source: "backfill:github_changelog".
+SOURCE_STAGE_PREFIX = "backfill:"
 
 DEFAULT_CONCURRENCY = 8
 
@@ -73,8 +78,8 @@ OUTPUT_TOKENS_PER_MATERIAL = 700
 CHARS_PER_TOKEN = 4
 MAX_MATERIAL_TOKENS = 24000
 
-# List prices in USD per million tokens (input, output), August 2026.
-# Kept here rather than in the theme config because it is a property of the
+# List prices in USD per million tokens (input, output), August 2026. Kept
+# here rather than in the theme config because it is a property of the
 # provider, not of the theme; `llm.pricing` in the config overrides any row.
 PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "anthropic/claude-fable-5": (10.0, 50.0),
@@ -117,6 +122,7 @@ def resolve_limit(limit_usd: float | None, config: ThemeConfig) -> float:
 
 
 def resolve_concurrency(concurrency: int | None, config: ThemeConfig) -> int:
+    """Number of sources processed at once, from `llm.concurrency`."""
     if concurrency is None:
         concurrency = int(config.section("llm").get("concurrency", DEFAULT_CONCURRENCY))
     return max(1, int(concurrency))
@@ -177,6 +183,7 @@ class SharedBudget(Budget):
 class BackfillOptions:
     limit_usd: float | None = None
     source_ids: list[str] | None = None
+    priorities: list[int] | None = None
     concurrency: int | None = None
     resume: bool = False
     dry_run: bool = False
@@ -186,9 +193,11 @@ class BackfillOptions:
 @dataclass(slots=True)
 class SourcePlan:
     source_id: str
+    priority: int = 5
     status: str = "ok"
     collected: int = 0
     pending: int = 0
+    processed: int = 0
     already_ingested: int = 0
     estimated_usd: float = 0.0
     spent_usd: float = 0.0
@@ -210,6 +219,7 @@ class BackfillReport:
     sources_total: int = 0
     sources_completed: int = 0
     sources_skipped: int = 0
+    sources_unfinished: int = 0
     materials_collected: int = 0
     materials_pending: int = 0
     materials_processed: int = 0
@@ -223,6 +233,8 @@ class BackfillReport:
     estimated_usd: float = 0.0
     cache_hits: int = 0
     budget_exhausted: bool = False
+    interrupted: bool = False
+    cost_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
     plans: list[SourcePlan] = field(default_factory=list)
     cells: list[dict[str, Any]] = field(default_factory=list)
     readiness: dict[str, Any] = field(default_factory=dict)
@@ -234,18 +246,31 @@ class BackfillReport:
     def remaining_usd(self) -> float:
         return max(0.0, self.limit_usd - self.spent_usd)
 
+    @property
+    def complete(self) -> bool:
+        return not (
+            self.budget_exhausted or self.interrupted or self.sources_unfinished
+        )
+
 
 # -- helpers ----------------------------------------------------------
 
 
-def _source_stage(source_id: str) -> str:
+def source_stage(source_id: str) -> str:
     return f"{SOURCE_STAGE_PREFIX}{source_id}"
 
 
 def select_sources(
-    config: ThemeConfig, source_ids: list[str] | None = None
+    config: ThemeConfig,
+    source_ids: list[str] | None = None,
+    priorities: list[int] | None = None,
 ) -> list[SourceConfig]:
-    """Named sources are honoured as asked; the default set obeys FR-6.1."""
+    """Named sources are honoured as asked; otherwise every backfillable one.
+
+    FR-6.1 draws the line by source type, and the config already encodes it:
+    media and aggregators are not `backfill_supported`. `--priority` narrows
+    further, which is how one evening's run is aimed at the registries.
+    """
     if source_ids:
         chosen: list[SourceConfig] = []
         for sid in source_ids:
@@ -253,10 +278,12 @@ def select_sources(
             if source is None:
                 raise ValueError(f"источник не найден в конфиге: {sid}")
             chosen.append(source)
-        return chosen
-    return [
-        s for s in config.backfillable_sources() if s.priority <= MAX_BACKFILL_PRIORITY
-    ]
+    else:
+        chosen = list(config.backfillable_sources())
+    if priorities:
+        wanted = set(priorities)
+        chosen = [s for s in chosen if s.priority in wanted]
+    return chosen
 
 
 def ingested_urls(conn: sqlite3.Connection) -> set[str]:
@@ -286,7 +313,7 @@ def _prior_cost(conn: sqlite3.Connection, run_id: str) -> float:
 def persist_statements(
     conn: sqlite3.Connection, results: list[EnrichResult]
 ) -> tuple[int, int]:
-    """Write a batch to the corpus. Returns (inserted, ignored as duplicate).
+    """Write one source's harvest to the corpus. Returns (inserted, ignored).
 
     The index is the position of the event inside its material and is
     recomputed the same way on every run, which is what makes the UNIQUE key
@@ -328,9 +355,9 @@ def persist_statements(
                         index,
                         statement.evidence,
                         (statement.ingested_at or now).isoformat(),
-                        # Forced here rather than trusted from the enricher:
-                        # the writer owns the provenance of its own rows
-                        # (FR-6.4).
+                        # Stamped by the writer rather than trusted from the
+                        # enricher: the row's provenance belongs to whoever
+                        # puts it in the corpus (FR-6.4).
                         INGEST_MODE,
                         statement.extractor_model,
                         statement.prompt_version,
@@ -360,7 +387,7 @@ def refresh_trends(
     return accepted, rejected, saved
 
 
-def _candidate_row(candidate: TrendCandidate) -> dict[str, Any]:
+def candidate_row(candidate: TrendCandidate) -> dict[str, Any]:
     return {
         "vendor": candidate.vendor,
         "change_type": candidate.change_type,
@@ -383,6 +410,22 @@ def corpus_cells(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 # -- the run ----------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _SourceWork:
+    source: SourceConfig
+    items: list[CollectedItem]
+    estimates: list[float]
+
+
+@dataclass(slots=True)
+class _SourceResult:
+    source_id: str
+    results: list[EnrichResult] = field(default_factory=list)
+    stopped: bool = False
+    exhausted: bool = False
+    error: str | None = None
 
 
 def run_backfill(
@@ -408,35 +451,41 @@ def run_backfill(
     if not options.dry_run and enricher is None:
         raise ValueError("нужен обогатитель: без него запускается только --dry-run")
 
+    sources = select_sources(config, options.source_ids, options.priorities)
+
+    if options.dry_run:
+        report = BackfillReport(
+            run_id="dry-run",
+            limit_usd=limit_usd,
+            dry_run=True,
+            concurrency=concurrency,
+            sources_total=len(sources),
+        )
+        return _dry_run(conn, config, fetcher, sources, report, started)
+
     resumed_id = find_unfinished_run(conn) if options.resume and not run_id else None
     run_id = run_id or resumed_id or f"{RUN_PREFIX}{new_run_id()}"
     journal = journal or Journal(conn, log_dir=log_dir, run_id=run_id)
-    # Spend already recorded on this run carries over, so `--limit-usd` bounds
+    # Spend already recorded on this run carries over, so --limit-usd bounds
     # the whole backfill and not each restart of it.
     prior_cost = _prior_cost(conn, run_id) if resumed_id else 0.0
 
     report = BackfillReport(
         run_id=run_id,
         limit_usd=limit_usd,
-        dry_run=options.dry_run,
         resumed=resumed_id is not None,
         concurrency=concurrency,
+        sources_total=len(sources),
         spent_usd=prior_cost,
     )
-
-    sources = select_sources(config, options.source_ids)
-    report.sources_total = len(sources)
     if not sources:
         report.notes.append("нет источников, пригодных для бэкфилла")
         report.duration_s = time.monotonic() - started
         return report
 
-    if options.dry_run:
-        return _dry_run(conn, config, fetcher, sources, report, emit, started)
-
     run_log = RunLog(conn, run_id, for_date or datetime.now(UTC).date())
     run_log.cost_usd = prior_cost
-    run_log.note(f"backfill, лимит {limit_usd:.2f} USD, параллель {concurrency}")
+    run_log.note(f"backfill, лимит {limit_usd:.2f} USD, источников разом {concurrency}")
     budget = SharedBudget(limit_usd)
     budget.spent_usd = prior_cost
 
@@ -454,13 +503,25 @@ def run_backfill(
         )
 
     done_stages = journal.completed_stages(run_id)
-    pending_sources = [s for s in sources if _source_stage(s.id) not in done_stages]
+    pending_sources = [s for s in sources if source_stage(s.id) not in done_stages]
     report.sources_skipped = len(sources) - len(pending_sources)
     report.sources_completed = report.sources_skipped
     if report.sources_skipped:
-        emit(f"Пропускаю {report.sources_skipped} источников: уже отмечены чекпоинтом.")
+        emit(f"Пропускаю {report.sources_skipped} источников: уже есть чекпоинт.")
 
-    # -- collect
+    plans: dict[str, SourcePlan] = {
+        s.id: SourcePlan(source_id=s.id, priority=s.priority) for s in sources
+    }
+    for source in sources:
+        if source_stage(source.id) in done_stages:
+            plans[source.id].completed = True
+            state = done_stages[source_stage(source.id)]
+            plans[source.id].statements_added = int(
+                state.get("state", {}).get("statements", 0) or 0
+            )
+
+    # -- collection: one pass, so the enrichment stage can be handed whole
+    # sources sorted by size.
     with run_log.stage(STAGE_COLLECT, in_count=len(pending_sources)) as record:
         items, outcomes = collect_all(
             config,
@@ -474,9 +535,6 @@ def run_backfill(
     journal.checkpoint(STAGE_COLLECT, item_count=len(items))
     report.materials_collected = len(items)
 
-    plans: dict[str, SourcePlan] = {
-        s.id: SourcePlan(source_id=s.id) for s in pending_sources
-    }
     for outcome in outcomes:
         plan = plans.setdefault(
             outcome.source_id, SourcePlan(source_id=outcome.source_id)
@@ -489,153 +547,191 @@ def run_backfill(
     known_urls = ingested_urls(conn)
     price = price_for(config.models.get("enrich", ""), config)
 
-    work: list[tuple[SourceConfig, CollectedItem, float]] = []
+    grouped: dict[str, _SourceWork] = {
+        sid: _SourceWork(source=source, items=[], estimates=[])
+        for sid, source in by_id.items()
+    }
     for item in items:
-        source = by_id.get(str(item.extra.get("source_id", "")))
-        if source is None:
+        source_id = str(item.extra.get("source_id", ""))
+        work = grouped.get(source_id)
+        if work is None:
             continue
-        plan = plans[source.id]
+        plan = plans[source_id]
         if canonical_url(item.url, keep_fragment=True) in known_urls:
-            # Already in the corpus: not sent to the model at all, which is
-            # what keeps a repeat run free rather than merely deduplicated.
+            # Already in the corpus: never sent to the model, which is what
+            # makes a repeat run free rather than merely deduplicated.
             plan.already_ingested += 1
             report.materials_already_ingested += 1
             continue
         estimate = estimate_material_usd(item, price)
+        work.items.append(item)
+        work.estimates.append(estimate)
         plan.pending += 1
         plan.estimated_usd += estimate
-        work.append((source, item, estimate))
 
-    report.materials_pending = len(work)
+    # Longest first: the naive order leaves seven workers idle while one drags
+    # an 871-material changelog to the end of the run.
+    works = sorted(
+        (w for w in grouped.values() if w.items), key=lambda w: -len(w.items)
+    )
+    report.materials_pending = sum(len(w.items) for w in works)
     report.estimated_usd = sum(plan.estimated_usd for plan in plans.values())
     emit(
-        f"К обработке {len(work)} материалов из {len(items)} собранных; "
+        f"К обработке {report.materials_pending} материалов из "
+        f"{report.materials_collected} собранных, источников {len(works)}; "
         f"оценка {report.estimated_usd:.2f} USD при лимите {limit_usd:.2f}."
     )
 
-    remaining: dict[str, int] = defaultdict(int)
-    for source, _item, _estimate in work:
-        remaining[source.id] += 1
-    collected_results: dict[str, list[EnrichResult]] = defaultdict(list)
-
     stop = threading.Event()
 
-    def enrich_one(
-        source: SourceConfig, item: CollectedItem, estimate: float
-    ) -> EnrichResult | None:
-        if stop.is_set():
-            return None
-        budget.reserve(estimate)
-        try:
-            result = enricher.enrich(item, source)  # type: ignore[union-attr]
-        except Exception as exc:  # the protocol forbids it; the run survives anyway
-            budget.settle(estimate, 0.0)
-            return EnrichResult(
-                source_id=source.id,
-                url=item.url,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        budget.settle(estimate, result.cost_usd)
-        return result
+    def process_source(work: _SourceWork) -> _SourceResult:
+        """One worker, one source, materials in order."""
+        outcome = _SourceResult(source_id=work.source.id)
+        for item, estimate in zip(work.items, work.estimates, strict=True):
+            if stop.is_set():
+                outcome.stopped = True
+                return outcome
+            try:
+                budget.reserve(estimate)
+            except BudgetExceeded as exc:
+                # Not a crash: the ceiling did its job. Everything already
+                # extracted goes back for writing.
+                stop.set()
+                outcome.stopped = True
+                outcome.exhausted = True
+                outcome.error = str(exc)
+                return outcome
+            try:
+                result = enricher.enrich(item, work.source)  # type: ignore[union-attr]
+            except Exception as exc:  # the protocol forbids it; survive anyway
+                budget.settle(estimate, 0.0)
+                result = EnrichResult(
+                    source_id=work.source.id,
+                    url=item.url,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            else:
+                budget.settle(estimate, result.cost_usd)
+            outcome.results.append(result)
+        return outcome
 
-    def flush(source_id: str, completed: bool) -> None:
-        results = collected_results.pop(source_id, [])
-        plan = plans[source_id]
-        if results:
-            inserted, duplicate = persist_statements(conn, results)
+    consumed: set[str] = set()
+
+    def consume(outcome: _SourceResult) -> None:
+        consumed.add(outcome.source_id)
+        plan = plans[outcome.source_id]
+        for result in outcome.results:
+            plan.processed += 1
+            plan.spent_usd += result.cost_usd
+            report.materials_processed += 1
+            if result.cached:
+                report.cache_hits += 1
+            model = _model_of(result) or config.models.get("enrich", "unknown")
+            row = report.cost_by_model.setdefault(model, {"calls": 0, "cost_usd": 0.0})
+            row["calls"] += 1
+            row["cost_usd"] += result.cost_usd
+            run_log.model_call(
+                stage=STAGE_ENRICH,
+                model=model,
+                cost_usd=result.cost_usd,
+                cached=result.cached,
+            )
+            if result.error:
+                report.materials_failed += 1
+                plan.failed += 1
+                journal.record(
+                    EventKind.STAGE_FAILED,
+                    actor=STAGE_ENRICH,
+                    target=result.url,
+                    outcome=Outcome.FAILED,
+                    error=result.error,
+                )
+                continue
+            report.facts_kept += len(result.facts)
+            report.facts_rejected += len(result.rejected_facts)
+            for rejected in result.rejected_facts:
+                journal.record(
+                    EventKind.FACT_REJECTED,
+                    actor=STAGE_ENRICH,
+                    target=result.url,
+                    outcome=Outcome.SKIPPED,
+                    kind=rejected.kind,
+                    value=rejected.value,
+                    reason=rejected.reason,
+                )
+
+        if outcome.results:
+            inserted, duplicate = persist_statements(conn, outcome.results)
             plan.statements_added += inserted
             plan.statements_duplicate += duplicate
             report.statements_added += inserted
             report.statements_duplicate += duplicate
-            for result in results:
-                run_log.model_call(
-                    stage="enrich",
-                    model=_model_of(result) or config.models.get("enrich", "unknown"),
-                    cost_usd=result.cost_usd,
-                    cached=result.cached,
-                )
-        if completed:
-            plan.completed = True
-            report.sources_completed += 1
-            journal.checkpoint(
-                _source_stage(source_id),
-                item_count=plan.pending,
-                statements=plan.statements_added,
-                cost_usd=round(plan.spent_usd, 6),
+
+        if outcome.exhausted and not report.budget_exhausted:
+            report.budget_exhausted = True
+            report.notes.append(outcome.error or "бюджет исчерпан")
+            run_log.note(f"бюджет исчерпан: {outcome.error}")
+            journal.record(
+                EventKind.BUDGET_EXCEEDED,
+                actor="backfill",
+                target=outcome.source_id,
+                outcome=Outcome.FAILED,
+                spent_usd=round(budget.spent_usd, 6),
+                limit_usd=limit_usd,
             )
+
+        if outcome.stopped:
+            report.sources_unfinished += 1
+            emit(
+                f"[!] {outcome.source_id}: источник не закончен, чекпоинт не ставлю; "
+                f"при следующем запуске он начнётся заново"
+            )
+            return
+
+        plan.completed = True
+        report.sources_completed += 1
+        journal.checkpoint(
+            source_stage(outcome.source_id),
+            item_count=plan.processed,
+            statements=plan.statements_added,
+            duplicates=plan.statements_duplicate,
+            cost_usd=round(plan.spent_usd, 6),
+        )
         emit(
-            f"[{report.sources_completed}/{report.sources_total}] {source_id}: "
-            f"материалов {plan.pending}, записей +{plan.statements_added}, "
+            f"[{report.sources_completed}/{report.sources_total}] {outcome.source_id}: "
+            f"материалов {plan.processed}, записей +{plan.statements_added}, "
             f"дублей {plan.statements_duplicate}, потрачено {budget.spent_usd:.4f}, "
-            f"остаток бюджета {budget.remaining_usd:.4f} USD"
+            f"остаток {budget.remaining_usd:.4f} USD"
         )
 
-    with run_log.stage("enrich", in_count=len(work)) as record:
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+    futures: dict[Future[_SourceResult], str] = {}
+    with run_log.stage(STAGE_ENRICH, in_count=report.materials_pending) as record:
+        pool = ThreadPoolExecutor(max_workers=concurrency)
+        try:
             futures = {
-                pool.submit(enrich_one, source, item, estimate): (source.id, estimate)
-                for source, item, estimate in work
+                pool.submit(process_source, work): work.source.id for work in works
             }
-            for future in as_completed(futures):
-                source_id, _estimate = futures[future]
-                try:
-                    result = future.result()
-                except BudgetExceeded as exc:
-                    if not report.budget_exhausted:
-                        report.budget_exhausted = True
-                        stop.set()
-                        report.notes.append(str(exc))
-                        run_log.note(f"бюджет исчерпан: {exc}")
-                        journal.record(
-                            EventKind.BUDGET_EXCEEDED,
-                            actor="backfill",
-                            target=source_id,
-                            outcome=Outcome.FAILED,
-                            spent_usd=round(budget.spent_usd, 6),
-                            limit_usd=limit_usd,
-                        )
-                    remaining[source_id] -= 1
-                    continue
-                remaining[source_id] -= 1
-                if result is None:  # stopped before the call was made
-                    continue
-                plans[source_id].spent_usd += result.cost_usd
-                report.materials_processed += 1
-                if result.cached:
-                    report.cache_hits += 1
-                if result.error:
-                    report.materials_failed += 1
-                    plans[source_id].failed += 1
-                    journal.record(
-                        EventKind.STAGE_FAILED,
-                        actor="enrich",
-                        target=result.url,
-                        outcome=Outcome.FAILED,
-                        error=result.error,
-                    )
-                    continue
-                report.facts_kept += len(result.facts)
-                report.facts_rejected += len(result.rejected_facts)
-                for rejected in result.rejected_facts:
-                    journal.record(
-                        EventKind.FACT_REJECTED,
-                        actor="enrich",
-                        target=result.url,
-                        outcome=Outcome.SKIPPED,
-                        kind=rejected.kind,
-                        value=rejected.value,
-                        reason=rejected.reason,
-                    )
-                collected_results[source_id].append(result)
-                if remaining[source_id] == 0 and not stop.is_set():
-                    flush(source_id, completed=True)
-            if stop.is_set():
-                for future in futures:
-                    future.cancel()
-        # Whatever a stopped run already extracted is written down: the point
-        # of a ceiling is to stop spending, not to discard what was bought.
-        for source_id in list(collected_results):
-            flush(source_id, completed=False)
+            try:
+                for future in as_completed(futures):
+                    consume(future.result())
+            except KeyboardInterrupt:
+                # Ctrl-C is a supported way to stop: workers finish the call
+                # in flight, everything already extracted is written, and the
+                # completed sources keep their checkpoints.
+                report.interrupted = True
+                stop.set()
+                emit("Прерывание: сохраняю уже полученное и закрываю прогон.")
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+        # Anything that finished while the pool was draining.
+        for future, source_id in futures.items():
+            if source_id in consumed or future.cancelled() or not future.done():
+                continue
+            try:
+                consume(future.result())
+            except Exception as exc:  # a worker that died takes only its source
+                plans[source_id].error = f"{type(exc).__name__}: {exc}"
+                report.sources_unfinished += 1
         record["out_count"] = report.statements_added
 
     report.spent_usd = budget.spent_usd
@@ -646,20 +742,20 @@ def run_backfill(
             conn, config, options.min_trend_members
         )
     journal.checkpoint(STAGE_TRENDS, item_count=saved)
-    report.trends_accepted = [_candidate_row(c) for c in accepted]
-    report.trends_rejected = [_candidate_row(c) for c in rejected]
+    report.trends_accepted = [candidate_row(c) for c in accepted]
+    report.trends_rejected = [candidate_row(c) for c in rejected]
 
     report.cells = corpus_cells(conn)
     report.readiness = corpus_readiness(conn, config.data)
+    report.plans = sorted(plans.values(), key=lambda p: -p.statements_added)
     report.duration_s = time.monotonic() - started
 
-    status = "partial" if report.budget_exhausted else "ok"
-    run_log.finish(status)
+    run_log.finish("ok" if report.complete else "partial")
     journal.record(
         EventKind.RUN_FINISHED,
         actor="backfill",
         target=run_id,
-        outcome=Outcome.PARTIAL if report.budget_exhausted else Outcome.OK,
+        outcome=Outcome.OK if report.complete else Outcome.PARTIAL,
         statements=report.statements_added,
         cost_usd=round(report.spent_usd, 6),
     )
@@ -679,14 +775,13 @@ def _dry_run(
     fetcher: Fetcher,
     sources: list[SourceConfig],
     report: BackfillReport,
-    emit: ProgressFn,
     started: float,
 ) -> BackfillReport:
     """Collect and price the work without opening a single model call."""
     items, outcomes = collect_all(
         config, fetcher, mode="backfill", sources=sources, max_workers=6
     )
-    plans = {s.id: SourcePlan(source_id=s.id) for s in sources}
+    plans = {s.id: SourcePlan(source_id=s.id, priority=s.priority) for s in sources}
     for outcome in outcomes:
         plan = plans.setdefault(
             outcome.source_id, SourcePlan(source_id=outcome.source_id)
@@ -698,8 +793,7 @@ def _dry_run(
     known_urls = ingested_urls(conn)
     price = price_for(config.models.get("enrich", ""), config)
     for item in items:
-        source_id = str(item.extra.get("source_id", ""))
-        plan = plans.get(source_id)
+        plan = plans.get(str(item.extra.get("source_id", "")))
         if plan is None:
             continue
         if canonical_url(item.url, keep_fragment=True) in known_urls:
@@ -721,9 +815,4 @@ def _dry_run(
             f"оценка {report.estimated_usd:.2f} USD превышает лимит "
             f"{report.limit_usd:.2f} USD: прогон остановится, не закончив"
         )
-    emit("")
     return report
-
-
-def finish_plans(report: BackfillReport, plans: dict[str, SourcePlan]) -> None:
-    report.plans = sorted(plans.values(), key=lambda p: -p.statements_added)
