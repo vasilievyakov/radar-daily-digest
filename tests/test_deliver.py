@@ -140,3 +140,36 @@ class TestSupervisorStopsLying:
 
         diagnosis = Supervisor(conn, journal).diagnose(RUN, now=NOW + timedelta(minutes=10))
         assert diagnosis.state is RunState.NEVER_DELIVERED
+
+
+class TestSupervisorIsReachable:
+    """96 percent coverage on a module nothing can run is not coverage."""
+
+    def test_the_cli_exposes_supervision(self):
+        from radar.cli import build_parser
+
+        parser = build_parser()
+        actions = [a for a in parser._actions if hasattr(a, "choices") and a.choices]
+        commands = set()
+        for action in actions:
+            commands |= set(action.choices or {})
+        assert "supervise" in commands
+        assert "run" in commands
+
+    def test_it_reports_a_stalled_run(self, env, tmp_path):
+        conn, journal = env
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) "
+            "VALUES ('hung', ?, 'running', ?)",
+            ((NOW - timedelta(hours=3)).isoformat(), TODAY.isoformat()),
+        )
+        conn.commit()
+        report = Supervisor(conn, journal).report(now=NOW)
+        assert any(r["run_id"] == "hung" for r in report["unhealthy_runs"])
+
+    def test_missed_days_are_counted_apart(self, env):
+        """A daily agent gone silent looks exactly like a quiet day from
+        outside, so the count has to stand on its own."""
+        conn, journal = env
+        report = Supervisor(conn, journal).report(now=NOW)
+        assert report["missed_days"]

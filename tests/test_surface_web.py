@@ -14,6 +14,7 @@ import re
 import sqlite3
 import sys
 from datetime import UTC, date, datetime
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -405,6 +406,14 @@ def check_details(html: str) -> DetailsChecker:
     return parser
 
 
+def page_text(html: str) -> str:
+    """The words a reader sees, with the markup and the stylesheet removed."""
+    body = re.sub(r"<head>.*?</head>", " ", html, flags=re.S)
+    body = re.sub(r"<style.*?</style>", " ", body, flags=re.S)
+    body = re.sub(r"<[^>]+>", " ", body)
+    return " ".join(unescape(body).split())
+
+
 def assert_page_contract(html: str) -> None:
     """Every page, whatever it shows, obeys the same house rules."""
     assert html.startswith("<!DOCTYPE html>")
@@ -643,8 +652,26 @@ def test_run_failure_page():
 def test_empty_run_says_so_without_pretending():
     html = web.render_digest([], today=TODAY)
     assert_page_contract(html)
-    assert "В хранилище нет сигналов за этот прогон." in html
+    assert "Записей за этот день нет" in html
+    assert (
+        "За этот день не записано ни изменений в вашем стеке, "
+        "ни отметки о тихом дне." in html
+    )
     assert "ничего не изменилось" not in html
+
+
+def test_empty_run_speaks_about_the_day_and_says_it_once():
+    """The fourth state got the voice of the other three (voice 2)."""
+    html = web.render_digest([], today=TODAY)
+    text = page_text(html)
+
+    # Nothing from the plumbing: the reader has no storage and no run.
+    assert "хранилище" not in text
+    assert "Дата прогона" not in text
+    # The day is stated once, in the masthead.
+    assert text.count("17 августа, сегодня") == 1
+    # And the state itself is stated once, not three times.
+    assert text.count("Записей за этот день нет") == 1
 
 
 def test_footer_reports_unanswered_sources_calmly():
@@ -717,7 +744,8 @@ def test_corpus_page_shows_volume_depth_vendors_and_density():
     assert "1 февраля, 197 дней назад" in html
     assert "16 августа, вчера" in html
     assert "Глубина 196 дней" in html
-    assert "anthropic" in html and "openai" in html and "n8n" in html
+    # No config here, so the page falls back to a careful reading of the slug.
+    assert "Anthropic" in html and "Openai" in html and "n8n" in html
     assert "отключения" in html and "лимиты" in html
     # column headers stay short enough not to wrap into the next column
     assert "ломающее изменение" not in html
@@ -975,7 +1003,7 @@ def test_build_site_writes_three_linked_pages(tmp_path):
     assert 'href="run-log.html"' in digest
     assert "mcp-servers" in run_log and "HTTP 503" in run_log
     assert "$0.27" in run_log
-    assert "anthropic" in corpus
+    assert "Anthropic" in corpus
     assert 'href="digest.html"' in corpus
 
 

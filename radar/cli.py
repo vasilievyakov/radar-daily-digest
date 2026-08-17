@@ -677,7 +677,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     result = run.execute()
 
     print()
-    print(_RULE)
+    print(RULE)
     print(f"Собрано материалов:      {result.collected}")
     print(f"Историй после склейки:   {result.clusters}")
     print(f"Прошло фильтр:           {result.relevant}")
@@ -690,10 +690,86 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Тихий день: сигналов выше порога нет, запись quiet_day создана.")
     if not result.ok:
         print(f"Прогон не завершился на стадии {result.failed_stage}: {result.error}")
-    print(_RULE)
+    print(RULE)
     print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")
     conn.close()
     return 0 if result.ok else 1
+
+
+
+def cmd_supervise(args: argparse.Namespace) -> int:
+    """Diagnose runs and say what to do about them.
+
+    The module existed and was covered at 96 percent while being unreachable
+    from anywhere but its own test. The failure it is built against — a daily
+    agent that quietly stopped running and looks from outside exactly like a
+    quiet day — was therefore undetectable by construction.
+    """
+    from radar.journal import Journal
+    from radar.supervisor import Action, Supervisor
+
+    config, conn = _load(args)
+    journal = Journal(conn, log_dir=args.log_dir)
+    supervisor = Supervisor(conn, journal)
+    report = supervisor.report()
+
+    print(RULE)
+    print("НАБЛЮДЕНИЕ ЗА ПРОГОНАМИ")
+    print(RULE)
+
+    missed = report["missed_days"]
+    if missed:
+        print(f"Дней без доставленной сводки: {len(missed)}")
+        for day in missed:
+            print(f"  {day}")
+        print("Молчание агента снаружи неотличимо от тихого дня, поэтому оно")
+        print("считается отдельно и не растворяется в статистике прогонов.")
+    else:
+        print("Пропущенных дней нет.")
+    print()
+
+    unhealthy = report["unhealthy_runs"]
+    if not unhealthy:
+        print("Все прогоны завершены и доставлены.")
+        conn.close()
+        return 0
+
+    print(f"Прогонов, требующих внимания: {len(unhealthy)}")
+    for run in unhealthy:
+        print()
+        print(f"  {run['run_id']}  {run['state']}")
+        print(f"    {run['reason']}")
+        print(f"    стадий пройдено: {len(run['completed_stages'])}, "
+              f"сигналов записано: {run['signals_written']}, "
+              f"доставка: {'да' if run['delivered'] else 'нет'}")
+        if run["failures"]:
+            for failure in run["failures"][:3]:
+                print(f"    отказ: {failure}")
+        if run["next_stage"]:
+            print(f"    продолжать со стадии: {run['next_stage']}")
+
+    actions = report["actions"]
+    if actions:
+        print()
+        print(RULE)
+        print("ЧТО ДЕЛАТЬ")
+        for action in actions:
+            if action["action"] == str(Action.RESUME):
+                print(f"  {action['run_id']}: продолжить с {action['resume_from']}")
+            elif action["action"] == str(Action.RESTART):
+                print(f"  {action['run_id']}: перезапустить целиком")
+            else:
+                print(f"  {action['run_id']}: {action['action']} — {action['reason']}")
+
+    if args.json:
+        import json as _json
+
+        print()
+        print(_json.dumps(report, ensure_ascii=False, indent=2, default=str))
+
+    conn.close()
+    # Non-zero so a scheduler notices without parsing the output.
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -760,6 +836,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="пропустить стадию релевантности")
     run_cmd.add_argument("--sources", help="ограничить источники, через запятую")
     run_cmd.set_defaults(func=cmd_run)
+
+    supervise = sub.add_parser(
+        "supervise", help="состояние прогонов и что с ними делать"
+    )
+    supervise.add_argument("--log-dir", default="logs")
+    supervise.add_argument("--json", action="store_true",
+                           help="добавить машиночитаемый отчёт")
+    supervise.set_defaults(func=cmd_supervise)
 
     doctor = sub.add_parser("doctor", help="проверка окружения")
     doctor.set_defaults(func=cmd_doctor)

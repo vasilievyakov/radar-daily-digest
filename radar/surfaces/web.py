@@ -23,7 +23,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -174,14 +174,31 @@ SOURCE_STATUS_LABELS = {
     "skipped": "пропущен",
 }
 
+# `empty` covers two different things in the pipeline: a source that returned
+# nothing at all and one that returned fewer items than the source config
+# expects. «ничего не отдал» next to the number 8 in the same row is a lie the
+# reader can see, so the two are worded apart.
+SHORT_ANSWER_LABEL = "ответил меньше ожидаемого"
+
 RUN_STATUS_LABELS = {
     "ok": "Прогон завершён",
     "running": "Прогон выполняется",
+    "stalled": "Прогон завис",
     "failed": "Прогон не завершился",
     "partial": "Прогон завершён частично",
 }
 
+# A run that never wrote `finished_at` is only running while it is fresh.
+# radar.supervisor calls the same window a stall; the surface cannot import it
+# (SUR-2), so the number is repeated here with the reason it is that number.
+STALL_AFTER = timedelta(minutes=30)
+
 MISSING_SUNSET_DATE = "дата отключения в источнике не указана"
+NOTHING_LEAD = "Записей за этот день нет"
+NOTHING_NOTE = (
+    "За этот день не записано ни изменений в вашем стеке, "
+    "ни отметки о тихом дне."
+)
 INFERRED_YEAR_NOTE = "год не указан в источнике"
 QUIET_DAY_LEAD = "Сегодня в вашем стеке ничего не изменилось"
 
@@ -351,6 +368,158 @@ td.empty { color: var(--ink-faint); }
 .mono { font-family: var(--mono); }
 .big { font-size: 2.6rem; font-family: var(--mono); letter-spacing: -0.02em; }
 """
+
+
+# -- names on the screen -----------------------------------------------
+
+
+@dataclass(frozen=True)
+class Names:
+    """How the page spells the identifiers the store keeps as slugs.
+
+    `labels` maps a whole identifier to the name the theme config gives it;
+    `words` maps one word of a slug to the spelling the config uses for it, so
+    `google_vertex_release_notes_archive` can become a phrase a person reads
+    without anyone inventing a name for it.
+    """
+
+    labels: dict[str, str] = field(default_factory=dict)
+    words: dict[str, str] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.labels or self.words)
+
+
+NO_NAMES = Names()
+
+_SLUG_SPLIT = re.compile(r"[_\-\s]+")
+_CONFIG_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+_VENDORS_HEAD = re.compile(r"^(\s*)vendors:\s*$")
+_ENTRY_ID = re.compile(r"^\s*-\s+id:\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*$")
+_ENTRY_LABEL = re.compile(r"^\s*label:\s*(.+?)\s*$")
+_ALIASES_HEAD = re.compile(r"^\s*aliases:\s*")
+
+
+def _add_name(words: dict[str, str], name: str) -> None:
+    """Remember a spelling the config states outright.
+
+    Two kinds of evidence count. A name written as one word with a capital
+    letter — Anthropic, Pinecone — says how that word is written. A word with
+    an upper-case letter past the first — GitHub, OpenAI, API — is a spelling
+    no rule derives, so it is kept wherever it appears. A plain word inside a
+    longer name proves nothing about the word alone, and «Model Context
+    Protocol» must not turn «model retirement schedule» into «Model».
+    """
+    tokens = _CONFIG_WORD.findall(name)
+    if not tokens:
+        return
+    if len(tokens) == 1 and tokens[0][:1].isupper():
+        words.setdefault(tokens[0].lower(), tokens[0])
+    for token in tokens:
+        if any(char.isupper() for char in token[1:]):
+            words.setdefault(token.lower(), token)
+
+
+def _add_line(words: dict[str, str], line: str) -> None:
+    """One line of the vendors block, which may hold several aliases."""
+    text = _ALIASES_HEAD.sub("", line).strip().strip("[]")
+    for chunk in text.split(","):
+        _add_name(words, chunk.strip().strip("\"'[]"))
+
+
+def theme_names(config: dict[str, Any] | None) -> Names:
+    """Names out of an already parsed theme config."""
+    labels: dict[str, str] = {}
+    words: dict[str, str] = {}
+    vendors = ((config or {}).get("corpus") or {}).get("vendors") or []
+    for vendor in vendors:
+        vendor_id = str(vendor.get("id") or "").strip()
+        label = str(vendor.get("label") or "").strip()
+        if vendor_id and label:
+            labels[vendor_id.lower()] = label
+            if label.lower() == label and " " not in label:
+                # A vendor whose own name is lower case, n8n among them.
+                words.setdefault(vendor_id.lower(), label)
+        if label:
+            _add_name(words, label)
+        for alias in vendor.get("aliases") or []:
+            _add_name(words, str(alias))
+    return Names(labels=labels, words=words)
+
+
+def read_theme_names(path: str | Path) -> Names:
+    """The same two keys, read straight out of the theme file.
+
+    The surface may not import the config module: that module pulls the
+    pipeline in behind it (SUR-2). Inventing a spelling is worse than printing
+    a slug, so the id of a vendor and the label written next to it are read
+    literally and nothing else in the file is interpreted. A file that is
+    missing or shaped otherwise leaves the page with slugs.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return NO_NAMES
+    labels: dict[str, str] = {}
+    words: dict[str, str] = {}
+    indent: int | None = None
+    current = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if indent is None:
+            head = _VENDORS_HEAD.match(line)
+            if head:
+                indent = len(head.group(1))
+            continue
+        if stripped and not stripped.startswith("#"):
+            if len(line) - len(line.lstrip()) <= indent:
+                break
+        if not stripped or stripped.startswith("#"):
+            continue
+        entry = _ENTRY_ID.match(line)
+        if entry:
+            current = entry.group(1)
+            continue
+        label = _ENTRY_LABEL.match(line)
+        if label and current:
+            value = label.group(1).strip().strip("\"'")
+            labels[current.lower()] = value
+            if value.lower() == value and " " not in value:
+                words.setdefault(current.lower(), value)
+            _add_name(words, value)
+            continue
+        _add_line(words, line)
+    return Names(labels=labels, words=words)
+
+
+def human_name(value: str, names: Names = NO_NAMES) -> str:
+    """A slug as a person would write it (voice 3: «Cursor changelog»).
+
+    A whole identifier the config names is printed with that name. Otherwise
+    the slug becomes words, each one spelled the way the config spells it, and
+    a word the config never mentions keeps its own letters.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    named = names.labels.get(raw.lower())
+    if named:
+        return named
+    parts = [part for part in _SLUG_SPLIT.split(raw) if part]
+    if not parts:
+        return raw
+    out: list[str] = []
+    for index, part in enumerate(parts):
+        spelled = names.words.get(part.lower())
+        if spelled is not None:
+            out.append(spelled)
+        elif index == 0 and part.isalpha():
+            # A word with a digit in it — n8n, gpt4 — is written the way it is
+            # written, and capitalising it would misspell a product name.
+            out.append(part[:1].upper() + part[1:])
+        else:
+            out.append(part)
+    return " ".join(out)
 
 
 # -- escaping ----------------------------------------------------------
@@ -555,15 +724,36 @@ def fmt_date(
 # -- signal reading (display only) -------------------------------------
 
 
-def signal_date(signal: Signal) -> tuple[date | None, DatePrecision]:
-    """The date a card leads with: the first dated fact, in the order given.
+def fact_date(fact: Fact) -> tuple[date | None, DatePrecision]:
+    """The day a fact is about: the parsed field first, its value second.
 
-    The parsed value comes from the fact itself (`value_date`). A surface that
-    reparses the string would word the same day differently from the others.
+    `value_date` is the form the core writes, and it wins whenever it is
+    there. It is absent on everything published before the field existed, and
+    on those records the day still stands in `value`. Reading the field alone
+    puts «дата отключения в источнике не указана» one line above a quote that
+    names the day, and a product whose argument is honesty cannot afford a
+    card that contradicts itself.
     """
+    if fact.value_date is not None:
+        return fact.value_date, fact.date_precision
+    parsed, parsed_precision = parse_date_value(fact.value)
+    if parsed is None:
+        return None, fact.date_precision
+    # A precision the core recorded is a judgment about the source and beats
+    # what the string shape suggests; the default one carries no judgment.
+    if fact.date_precision is not DatePrecision.DAY:
+        return parsed, fact.date_precision
+    return parsed, parsed_precision
+
+
+def signal_date(signal: Signal) -> tuple[date | None, DatePrecision]:
+    """The date a card leads with: the first dated fact, in the order given."""
     for fact in signal.facts:
-        if fact.kind in DATE_FACT_KINDS and fact.value_date is not None:
-            return fact.value_date, fact.date_precision
+        if fact.kind not in DATE_FACT_KINDS:
+            continue
+        value, precision = fact_date(fact)
+        if value is not None:
+            return value, precision
     return None, DatePrecision.DAY
 
 
@@ -582,8 +772,9 @@ def signal_when(signal: Signal, today: date) -> str:
 
 def render_fact(fact: Fact, today: date) -> str:
     label = FACT_KIND_LABELS.get(fact.kind, str(fact.kind))
-    if fact.value_date is not None:
-        value = fmt_date(fact.value_date, today, fact.date_precision)
+    when, precision = fact_date(fact)
+    if when is not None:
+        value = fmt_date(when, today, precision)
         if fact.subject:
             value = f"{value} — {clean(fact.subject)}"
     else:
@@ -609,7 +800,7 @@ def render_facts(facts: list[Fact], today: date) -> str:
     if not facts:
         return ""
     body = "\n".join(render_fact(f, today) for f in facts)
-    return f'<div class="facts">\n{body}\n</div>' 
+    return f'<div class="facts">\n{body}\n</div>'
 
 
 def render_precedent(precedent: Precedent, today: date) -> str:
@@ -725,7 +916,7 @@ def render_run_summary_details(summary: RunSummary | None) -> str:
         ("Отклонено материалов", fmt_int(summary.materials_filtered)),
     ]
     body = "\n".join(
-        f"<tr><td>{esc(label)}</td><td class=\"num\">{esc(value)}</td></tr>"
+        f'<tr><td>{esc(label)}</td><td class="num">{esc(value)}</td></tr>'
         for label, value in rows
     )
     return (
@@ -772,16 +963,17 @@ def upcoming_entries(signal: Signal, today: date) -> list[UpcomingDeadline]:
         return sorted(entries, key=lambda item: item.when)
 
     for fact in signal.facts:
-        if fact.kind not in DATE_FACT_KINDS or fact.value_date is None:
+        if fact.kind not in DATE_FACT_KINDS:
             continue
-        if fact.value_date < today:
+        when, precision = fact_date(fact)
+        if when is None or when < today:
             continue
         add(
             UpcomingDeadline(
-                when=fact.value_date,
+                when=when,
                 what=clean(fact.subject) or clean(fact.evidence),
                 source_url=fact.source_url,
-                date_precision=fact.date_precision,
+                date_precision=precision,
             )
         )
     return sorted(entries, key=lambda item: item.when)
@@ -802,9 +994,7 @@ def render_upcoming(signal: Signal, today: date) -> str:
             else ""
         )
         items.append(f'<li><span class="when">{esc(when)}</span>{tail}{source}</li>')
-    return (
-        '<h3>Ближайшее</h3>\n<ul class="upcoming">\n' + "\n".join(items) + "\n</ul>"
-    )
+    return '<h3>Ближайшее</h3>\n<ul class="upcoming">\n' + "\n".join(items) + "\n</ul>"
 
 
 # -- page shell --------------------------------------------------------
@@ -878,6 +1068,13 @@ class SourceRow:
     latency_ms: int | None = None
     error: str | None = None
 
+    @property
+    def answer(self) -> str:
+        """What the source did, in words the number next to them supports."""
+        if self.status == "empty" and self.items_count > 0:
+            return SHORT_ANSWER_LABEL
+        return SOURCE_STATUS_LABELS.get(self.status, self.status)
+
 
 @dataclass(frozen=True)
 class FilteredRow:
@@ -906,6 +1103,11 @@ class RunHistoryRow:
     tokens_in: int = 0
     tokens_out: int = 0
     usd: float = 0.0
+    # Both moments travel so a row can say whether the run ever ended: four
+    # rows of «Прогон выполняется» under one date is the page reporting a dead
+    # run as a live one.
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -958,6 +1160,78 @@ class RunLogView:
     @property
     def empty_sources(self) -> list[SourceRow]:
         return [s for s in self.sources if s.status == "empty"]
+
+    @property
+    def short_sources(self) -> list[SourceRow]:
+        """Answered, and brought back less than the source promised."""
+        return [s for s in self.empty_sources if s.items_count > 0]
+
+    @property
+    def silent_sources(self) -> list[SourceRow]:
+        return [s for s in self.empty_sources if s.items_count == 0]
+
+    @property
+    def latest_moment(self) -> datetime | None:
+        """The newest moment the store recorded, and the page's «now».
+
+        The system clock is never read here, so the reference for «started
+        half an hour ago» comes from the data itself. A page rebuilt next week
+        from the same store therefore says what it says today.
+        """
+        moments = [parse_dt(self.started_at), parse_dt(self.finished_at)]
+        for stage in self.stages:
+            started = parse_dt(stage.started_at)
+            if started is not None:
+                moments.append(started + timedelta(milliseconds=stage.duration_ms or 0))
+        for row in self.history:
+            moments += [parse_dt(row.started_at), parse_dt(row.finished_at)]
+        known = [_utc(m) for m in moments if m is not None]
+        return max(known) if known else None
+
+    @property
+    def superseded(self) -> bool:
+        """A later run has started, so this one is not the one running now."""
+        started = parse_dt(self.started_at)
+        if started is None:
+            return False
+        return any(
+            row.run_id != self.run_id
+            and (later := parse_dt(row.started_at)) is not None
+            and _utc(later) > _utc(started)
+            for row in self.history
+        )
+
+
+def _utc(moment: datetime) -> datetime:
+    """Stored moments are ISO with an offset; a bare one is read as UTC."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def run_status_key(
+    status: str,
+    started_at: str | None,
+    finished_at: str | None,
+    reference: datetime | None,
+    *,
+    superseded: bool = False,
+) -> str:
+    """The status as the page states it, which is not always the stored one.
+
+    A run without `finished_at` is reported as running by the store from the
+    second it dies. The distinction between a run in flight and a run that
+    hangs is a separate promise of this system, and the page has to make it:
+    a later run started, or half an hour passed, and the run is stalled.
+    """
+    if finished_at or status not in ("running", "started", ""):
+        return status
+    if superseded:
+        return "stalled"
+    started = parse_dt(started_at)
+    if started is None or reference is None:
+        return status
+    if _utc(reference) - _utc(started) > STALL_AFTER:
+        return "stalled"
+    return status
 
 
 def _as_date(value: Any) -> date | None:
@@ -1047,6 +1321,8 @@ def load_run_log(
             tokens_in=row["tokens_in"] or 0,
             tokens_out=row["tokens_out"] or 0,
             usd=row["cost_usd"] or 0.0,
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
         )
         for row in conn.execute(
             "SELECT * FROM runs ORDER BY started_at DESC, rowid DESC LIMIT 12"
@@ -1197,8 +1473,8 @@ def render_digest(
         body = _quiet_body(quiet[0], today)
         title = "Сегодня без изменений"
     else:
-        body = _nothing_body(for_date, today)
-        title = "Записей за прогон нет"
+        body = _nothing_body()
+        title = NOTHING_LEAD
 
     head = (
         '<header class="masthead">\n'
@@ -1224,7 +1500,7 @@ def _headline_for(
         return "Изменения в вашем стеке"
     if quiet:
         return clean(quiet[0].headline) or QUIET_DAY_LEAD
-    return "Записей за прогон нет"
+    return NOTHING_LEAD
 
 
 def _items_body(items: list[Signal], today: date) -> str:
@@ -1272,11 +1548,15 @@ def _failure_body(signal: Signal, today: date) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def _nothing_body(for_date: date, today: date) -> str:
-    return (
-        '<p class="lead-note">В хранилище нет сигналов за этот прогон.</p>\n'
-        f"<p>Дата прогона: {esc(fmt_date(for_date, today))}.</p>"
-    )
+def _nothing_body() -> str:
+    """The fourth state, in the voice of the other three.
+
+    The day is already in the masthead and the heading already says there is
+    nothing, so the body says the one thing neither of them does: what was
+    looked for and did not turn up. No storage, no run: the reader has
+    neither, and the words on the page are about the reader's day.
+    """
+    return f'<p class="lead-note">{esc(NOTHING_NOTE)}</p>'
 
 
 # -- run log page ------------------------------------------------------
@@ -1359,19 +1639,30 @@ def sources_sentence(run: RunLogView) -> str:
         head = f"Опрошено {count_phrase(answered, SOURCE_FORMS)}"
     parts = []
     if counts.get("ok"):
-        parts.append(f"{fmt_int(counts['ok'])} " + ("ответил" if counts["ok"] == 1 else "ответили"))
+        parts.append(
+            f"{fmt_int(counts['ok'])} "
+            + ("ответил" if counts["ok"] == 1 else "ответили")
+        )
     if counts.get("failed"):
         verb = "не ответил" if counts["failed"] == 1 else "не ответили"
         parts.append(f"{fmt_int(counts['failed'])} {verb}")
-    if counts.get("empty"):
-        verb = "ответил" if counts["empty"] == 1 else "ответили"
-        parts.append(f"{fmt_int(counts['empty'])} {verb} без записей")
+    # The two halves of `empty` are counted apart for the same reason the
+    # table words them apart: a source that brought eight items back did not
+    # answer with nothing.
+    short = len(run.short_sources)
+    if short:
+        verb = "ответил" if short == 1 else "ответили"
+        parts.append(f"{fmt_int(short)} {verb} меньше ожидаемого")
+    silent = len(run.silent_sources)
+    if silent:
+        verb = "ответил" if silent == 1 else "ответили"
+        parts.append(f"{fmt_int(silent)} {verb} без записей")
     if not parts:
         return head + "."
     return head + ": " + ", ".join(parts) + "."
 
 
-def _source_table(sources: list[SourceRow]) -> str:
+def _source_table(sources: list[SourceRow], names: Names = NO_NAMES) -> str:
     if not sources:
         return "<p>Источники в этом прогоне не опрашивались.</p>"
     rows = []
@@ -1381,8 +1672,8 @@ def _source_table(sources: list[SourceRow]) -> str:
         )
         rows.append(
             "<tr>"
-            f"<td>{esc(source.source_id)}</td>"
-            f"<td>{esc(SOURCE_STATUS_LABELS.get(source.status, source.status))}</td>"
+            f"<td>{esc(human_name(source.source_id, names))}</td>"
+            f"<td>{esc(source.answer)}</td>"
             f'<td class="num">{esc(fmt_int(source.items_count))}</td>'
             f'<td class="num">{esc(latency)}</td>'
             f"<td>{esc(source.error or '—')}</td>"
@@ -1449,9 +1740,7 @@ def _cost_block(run: RunLogView) -> str:
         f"Стоимость прогона: {fmt_money(usd)}."
     )
     parts = [f"<p>{esc(head)}</p>"]
-    if itemized and (
-        run.model_calls != calls or abs(run.usd - usd) > 0.005
-    ):
+    if itemized and (run.model_calls != calls or abs(run.usd - usd) > 0.005):
         note = (
             f"Счётчик прогона называет {count_phrase(run.model_calls, CALL_FORMS)} "
             f"и {fmt_money(run.usd)}. На странице сложены подробные записи: "
@@ -1488,17 +1777,32 @@ def _cost_block(run: RunLogView) -> str:
     return "\n".join(parts)
 
 
-def _history_block(history: list[RunHistoryRow], today: date, current: str) -> str:
+def _history_block(
+    history: list[RunHistoryRow],
+    today: date,
+    current: str,
+    reference: datetime | None = None,
+) -> str:
     if len(history) < 2:
         return ""
+    starts = [_utc(m) for m in (parse_dt(r.started_at) for r in history) if m]
+    newest = max(starts) if starts else None
     rows = []
     for run in history:
         mark = " (этот прогон)" if run.run_id == current else ""
         when = fmt_date(run.for_date, today) if run.for_date else "—"
+        started = parse_dt(run.started_at)
+        status = run_status_key(
+            run.status,
+            run.started_at,
+            run.finished_at,
+            reference,
+            superseded=bool(newest and started is not None and _utc(started) < newest),
+        )
         rows.append(
             "<tr>"
             f"<td>{esc(when + mark)}</td>"
-            f"<td>{esc(RUN_STATUS_LABELS.get(run.status, run.status))}</td>"
+            f"<td>{esc(RUN_STATUS_LABELS.get(status, status))}</td>"
             f'<td class="num">{esc(fmt_int(run.model_calls))}</td>'
             f'<td class="num">{esc(fmt_int(run.tokens_in + run.tokens_out))}</td>'
             f'<td class="num">{esc(fmt_money(run.usd))}</td>'
@@ -1518,6 +1822,8 @@ def render_run_log(
     *,
     today: date,
     links: PageLinks = DEFAULT_LINKS,
+    names: Names = NO_NAMES,
+    now: datetime | None = None,
 ) -> str:
     """FR-9.2: the log is read by a person without technical training.
 
@@ -1532,15 +1838,24 @@ def render_run_log(
         )
         return document("Лог прогона", body, current="run_log", links=links, wide=True)
 
-    status = RUN_STATUS_LABELS.get(run.status, run.status)
+    reference = now or run.latest_moment
+    status_key = run_status_key(
+        run.status,
+        run.started_at,
+        run.finished_at,
+        reference,
+        superseded=run.superseded,
+    )
+    status = RUN_STATUS_LABELS.get(status_key, status_key)
     when = fmt_date(run.for_date, today) if run.for_date else ""
     started = fmt_time(run.started_at)
     finished = fmt_time(run.finished_at)
-    timing = (
-        f"Начало {started}, окончание {finished}."
-        if run.finished_at
-        else f"Начало {started}."
-    )
+    if run.finished_at:
+        timing = f"Начало {started}, окончание {finished}."
+    elif status_key == "stalled":
+        timing = f"Начало {started}, окончание не записано."
+    else:
+        timing = f"Начало {started}."
 
     head = (
         '<header class="masthead">\n'
@@ -1559,7 +1874,7 @@ def render_run_log(
         f'<p class="legend">{esc(funnel_sentence(run))}</p>',
         "<h3>Источники</h3>",
         f"<p>{esc(sources_sentence(run))}</p>",
-        _source_table(run.sources),
+        _source_table(run.sources, names),
         "<h3>Отклонённые материалы</h3>",
         _filtered_block(run.filtered),
         "<h3>Стоимость</h3>",
@@ -1579,7 +1894,7 @@ def render_run_log(
             for item in run.delivery
         )
         parts += ["<h3>Доставка</h3>", f"<ul>\n{rows}\n</ul>"]
-    history = _history_block(run.history, today, run.run_id)
+    history = _history_block(run.history, today, run.run_id, reference)
     if history:
         parts.append(history)
     parts.append(
@@ -1596,7 +1911,7 @@ def render_run_log(
 # -- corpus page -------------------------------------------------------
 
 
-def _density_table(corpus: CorpusView) -> str:
+def _density_table(corpus: CorpusView, names: Names = NO_NAMES) -> str:
     if not corpus.cells:
         return "<p>Корпус пуст.</p>"
     order = [str(ct) for ct in ChangeType]
@@ -1625,7 +1940,7 @@ def _density_table(corpus: CorpusView) -> str:
             else:
                 cells.append(f'<td class="num">{esc(fmt_int(count))}</td>')
         rows.append(
-            f"<tr><td>{esc(vendor)}</td>"
+            f"<tr><td>{esc(human_name(vendor, names))}</td>"
             + "".join(cells)
             + f'<td class="num">{esc(fmt_int(totals[vendor]))}</td></tr>'
         )
@@ -1654,6 +1969,7 @@ def render_corpus(
     *,
     today: date,
     links: PageLinks = DEFAULT_LINKS,
+    names: Names = NO_NAMES,
 ) -> str:
     """DR-9: the volume figure is the proof the system outlives one question."""
     depth = ""
@@ -1676,7 +1992,7 @@ def render_corpus(
     if vendors:
         parts.append(
             f"<p>{esc(count_phrase(len(vendors), ('вендор', 'вендора', 'вендоров')))}: "
-            + ", ".join(esc(v) for v in vendors)
+            + ", ".join(esc(human_name(v, names)) for v in vendors)
             + ".</p>"
         )
     readiness = (
@@ -1687,7 +2003,7 @@ def render_corpus(
         else "Плотных ячеек пока мало, часть событий останется без прецедентов."
     )
     parts.append(f'<p class="legend">{esc(readiness)}</p>')
-    parts += ["<h3>Плотность по ячейкам</h3>", _density_table(corpus)]
+    parts += ["<h3>Плотность по ячейкам</h3>", _density_table(corpus, names)]
     parts += [
         "<h3>Остальные слои хранилища</h3>",
         '<div class="scroll"><table>\n<tbody>\n'
@@ -1719,8 +2035,11 @@ def build_site(
     run_id: str | None = None,
     config: dict[str, Any] | None = None,
     links: PageLinks = DEFAULT_LINKS,
+    names: Names | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Path]:
     """Write the three pages. Read-only on the store, by connection mode."""
+    names = names if names is not None else theme_names(config)
     conn = connect(db_path, read_only=True)
     try:
         signals = read_signals(conn, run_id)
@@ -1745,8 +2064,14 @@ def build_site(
             out / links.digest,
             render_digest(signals, today=today, links=links),
         ),
-        "run_log": (out / links.run_log, render_run_log(run, today=today, links=links)),
-        "corpus": (out / links.corpus, render_corpus(corpus, today=today, links=links)),
+        "run_log": (
+            out / links.run_log,
+            render_run_log(run, today=today, links=links, names=names, now=now),
+        ),
+        "corpus": (
+            out / links.corpus,
+            render_corpus(corpus, today=today, links=links, names=names),
+        ),
     }
     for path, html_text in pages.values():
         path.write_text(html_text, encoding="utf-8")
@@ -1795,6 +2120,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="опорная дата ISO; по умолчанию дата прогона из хранилища",
     )
+    parser.add_argument(
+        "--config",
+        default="config/ai-tools.yaml",
+        help="файл темы; из него берутся имена вендоров для страниц",
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help=(
+            "опорный момент ISO для отличия идущего прогона от зависшего; "
+            "по умолчанию последний момент, записанный в хранилище"
+        ),
+    )
     args = parser.parse_args(argv)
 
     override = date.fromisoformat(args.today) if args.today else None
@@ -1803,11 +2141,17 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.OperationalError as error:
         parser.error(f"хранилище {args.db} не открывается на чтение: {error}")
     if today is None:
-        parser.error(
-            "в хранилище нет ни сигналов, ни прогонов; укажите --today явно"
-        )
+        parser.error("в хранилище нет ни сигналов, ни прогонов; укажите --today явно")
 
-    paths = build_site(args.db, args.out, today=today, run_id=args.run_id)
+    moment = datetime.fromisoformat(args.now) if args.now else None
+    paths = build_site(
+        args.db,
+        args.out,
+        today=today,
+        run_id=args.run_id,
+        names=read_theme_names(args.config),
+        now=moment,
+    )
     print(f"опорная дата: {today.isoformat()}")
     for name, path in paths.items():
         print(f"{name}: {path}")
