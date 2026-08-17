@@ -500,6 +500,75 @@ def test_signal_without_dates_admits_it_and_invents_nothing():
     )
 
 
+def test_card_never_denies_a_date_its_own_quote_states():
+    """The most expensive defect: two lines of one card contradicting.
+
+    Records written before `value_date` existed carry the day in `value`
+    alone. Reading only the parsed field printed «дата отключения в источнике
+    не указана» directly above «Дата отключения: 2026-10-15».
+    """
+    signal = make_lead_signal(
+        facts=[
+            Fact(
+                kind=FactKind.SUNSET_DATE,
+                value="2026-10-15",
+                value_date=None,
+                subject="claude-3-opus",
+                source_url="https://docs.claude.com/deprecations",
+                evidence="claude-3-opus will be retired on October 15, 2026",
+                evidence_verified=True,
+            )
+        ]
+    )
+    html = web.render_digest([signal], today=TODAY)
+    text = page_text(html)
+
+    assert "в источнике не указана" not in text.lower()
+    assert "15 октября, через 59 дней" in text
+    # And the fact block prints the day, not the machine form of it.
+    assert "Дата отключения: 15 октября, через 59 дней — claude-3-opus" in text
+    assert "2026-10-15" not in text
+
+
+def test_a_date_only_in_the_value_still_carries_its_precision():
+    signal = make_lead_signal(
+        facts=[
+            Fact(
+                kind=FactKind.SUNSET_DATE,
+                value="2026-10",
+                value_date=None,
+                source_url="https://docs.claude.com/deprecations",
+                evidence="retired in October 2026",
+                evidence_verified=True,
+            )
+        ]
+    )
+    text = page_text(web.render_digest([signal], today=TODAY))
+
+    assert "октябрь 2026" in text
+    assert "через" not in text
+
+
+def test_a_marked_precision_survives_the_fallback():
+    signal = make_lead_signal(
+        facts=[
+            Fact(
+                kind=FactKind.SUNSET_DATE,
+                value="2026-10-15",
+                value_date=None,
+                date_precision=DatePrecision.INFERRED,
+                source_url="https://docs.claude.com/deprecations",
+                evidence="retired on October 15",
+                evidence_verified=True,
+            )
+        ]
+    )
+    text = page_text(web.render_digest([signal], today=TODAY))
+
+    assert "15 октября (год не указан в источнике)" in text
+    assert "через 59 дней" not in text
+
+
 def test_signal_without_dates_and_not_a_deprecation_stays_silent():
     signal = make_second_signal(facts=[], change_type=ChangeType.RELEASE, rank=1)
     html = web.render_digest([signal], today=TODAY)
@@ -732,6 +801,244 @@ def test_run_log_without_a_run():
 def test_run_log_with_nothing_filtered():
     html = web.render_run_log(make_run_view(filtered=[]), today=TODAY)
     assert "Ни один материал не отклонён." in html
+
+
+# -- a run that hangs is not a run that runs ---------------------------
+
+
+UNFINISHED = dict(status="running", finished_at=None)
+
+
+def test_a_run_that_never_finished_reads_as_stalled():
+    """The page makes the distinction the product promises to make."""
+    run = make_run_view(
+        started_at="2026-08-17T06:00:00+00:00",
+        history=[],
+        **UNFINISHED,
+    )
+    html = web.render_run_log(
+        run, today=TODAY, now=datetime(2026, 8, 17, 8, 0, tzinfo=UTC)
+    )
+
+    assert "<h1>Прогон завис</h1>" in html
+    assert "Прогон выполняется" not in html
+    assert "окончание не записано" in html
+
+
+def test_a_fresh_run_without_an_end_is_still_running():
+    run = make_run_view(
+        started_at="2026-08-17T06:00:00+00:00",
+        history=[],
+        **UNFINISHED,
+    )
+    html = web.render_run_log(
+        run, today=TODAY, now=datetime(2026, 8, 17, 6, 10, tzinfo=UTC)
+    )
+
+    assert "<h1>Прогон выполняется</h1>" in html
+    assert "завис" not in html
+
+
+def test_the_stall_window_is_half_an_hour():
+    started = "2026-08-17T06:00:00+00:00"
+    just_inside = datetime(2026, 8, 17, 6, 29, tzinfo=UTC)
+    just_outside = datetime(2026, 8, 17, 6, 31, tzinfo=UTC)
+
+    assert web.run_status_key("running", started, None, just_inside) == "running"
+    assert web.run_status_key("running", started, None, just_outside) == "stalled"
+    # A run that reported its end is never re-judged by the clock.
+    assert (
+        web.run_status_key("ok", started, "2026-08-17T06:04:00+00:00", just_outside)
+        == "ok"
+    )
+
+
+def test_a_run_a_later_run_overtook_is_stalled_whatever_the_window():
+    """One pipeline at a time: a newer run means this one is not running."""
+    history = [
+        web.RunHistoryRow(
+            "run-2",
+            TODAY,
+            "running",
+            started_at="2026-08-17T06:20:00+00:00",
+            finished_at=None,
+        ),
+        web.RunHistoryRow(
+            "run-1",
+            TODAY,
+            "running",
+            started_at="2026-08-17T06:00:00+00:00",
+            finished_at=None,
+        ),
+    ]
+    html = web.render_run_log(
+        make_run_view(
+            run_id="run-2",
+            started_at="2026-08-17T06:20:00+00:00",
+            history=history,
+            **UNFINISHED,
+        ),
+        today=TODAY,
+    )
+
+    # The run on the page started last and is reported as running; the one it
+    # overtook is reported as hanging, in the same table.
+    assert "<h1>Прогон выполняется</h1>" in html
+    assert "Прогон завис" in html
+    # Two rows, two different verdicts: the newest run and its own heading.
+    assert html.count("Прогон выполняется") == 2
+    assert html.count("Прогон завис") == 1
+
+
+def test_the_reference_moment_comes_from_the_store_not_the_clock():
+    run = make_run_view(
+        started_at="2026-08-17T06:00:00+00:00",
+        history=[
+            web.RunHistoryRow(
+                "run-1",
+                TODAY,
+                "running",
+                started_at="2026-08-17T06:00:00+00:00",
+                finished_at=None,
+            )
+        ],
+        stages=[
+            web.StageRow(
+                name="collect",
+                in_count=14,
+                out_count=61,
+                started_at="2026-08-17T06:00:01+00:00",
+                duration_ms=7_200_000,
+            )
+        ],
+        **UNFINISHED,
+    )
+
+    assert run.latest_moment == datetime(2026, 8, 17, 8, 0, 1, tzinfo=UTC)
+    assert "<h1>Прогон завис</h1>" in web.render_run_log(run, today=TODAY)
+
+
+# -- a label that contradicts the number next to it --------------------
+
+
+def test_a_source_that_brought_back_less_is_not_called_empty():
+    run = make_run_view(
+        sources=[
+            web.SourceRow("pinecone_release_notes", "empty", items_count=8),
+            web.SourceRow("azure_model_retirement_schedule", "empty", items_count=0),
+        ]
+    )
+    html = web.render_run_log(run, today=TODAY)
+    text = page_text(html)
+
+    assert "ответил меньше ожидаемого" in text
+    assert text.count("ответил, ничего не отдал") == 1
+    # The row with eight materials in it never says it returned nothing.
+    row = re.search(r"<tr><td>Pinecone release notes</td><td>([^<]+)</td>", html)
+    assert row and row.group(1) == "ответил меньше ожидаемого"
+
+
+def test_the_sources_sentence_counts_the_two_faults_apart():
+    run = make_run_view(
+        sources_configured=None,
+        sources=[
+            web.SourceRow("anthropic_api_release_notes", "ok", items_count=12),
+            web.SourceRow("pinecone_release_notes", "empty", items_count=8),
+            web.SourceRow("fireworks_changelog", "empty", items_count=1),
+            web.SourceRow("azure_model_retirement_schedule", "empty", items_count=0),
+        ],
+    )
+
+    assert web.sources_sentence(run) == (
+        "Опрошено 4 источника: 1 ответил, 2 ответили меньше ожидаемого, "
+        "1 ответил без записей."
+    )
+
+
+# -- machine names -----------------------------------------------------
+
+
+THEME_FILE = """
+theme:
+  name: "Тема"
+corpus:
+  vendors:
+    - id: anthropic
+      label: "Anthropic"
+      aliases: [Anthropic, claude, "Claude Code"]
+    - id: openai
+      label: "OpenAI"
+      aliases: [OpenAI, "Open AI", gpt]
+    - id: n8n
+      label: "n8n"
+      aliases: [n8n, "n8n.io"]
+    - id: mcp
+      label: "Model Context Protocol"
+      aliases: [MCP, "MCP servers",
+                modelcontextprotocol]
+  change_types:
+    - id: deprecation
+      label: "Отключение"
+"""
+
+
+def theme_names(tmp_path: Path) -> web.Names:
+    path = tmp_path / "theme.yaml"
+    path.write_text(THEME_FILE, encoding="utf-8")
+    return web.read_theme_names(path)
+
+
+def test_names_are_read_out_of_the_theme_file(tmp_path):
+    names = theme_names(tmp_path)
+
+    assert names.labels["openai"] == "OpenAI"
+    assert names.labels["mcp"] == "Model Context Protocol"
+    # Change types live outside the vendors block and are not names here.
+    assert "deprecation" not in names.labels
+    # A word only ever seen inside a longer name proves nothing on its own.
+    assert "context" not in names.words
+
+
+def test_a_source_id_reaches_the_page_as_a_name(tmp_path):
+    names = theme_names(tmp_path)
+    run = make_run_view(
+        sources=[
+            web.SourceRow("mcp_spec_versioning", "ok", items_count=5),
+            web.SourceRow("openai_deprecations", "ok", items_count=23),
+            web.SourceRow("n8n_release_notes", "ok", items_count=39),
+        ]
+    )
+    text = page_text(web.render_run_log(run, today=TODAY, names=names))
+
+    assert "MCP spec versioning" in text
+    assert "OpenAI deprecations" in text
+    assert "n8n release notes" in text
+    assert "mcp_spec_versioning" not in text
+    assert "_" not in text
+
+
+def test_the_corpus_spells_a_vendor_the_way_the_cards_do(tmp_path):
+    names = theme_names(tmp_path)
+    corpus = web.CorpusView(
+        statements=33,
+        cells=[
+            web.CorpusCell("anthropic", "deprecation", 13),
+            web.CorpusCell("openai", "limits", 1),
+        ],
+    )
+    text = page_text(web.render_corpus(corpus, today=TODAY, names=names))
+
+    # The card headline says «OpenAI»; the corpus page is two clicks away and
+    # says the same thing.
+    assert "Anthropic, OpenAI" in text
+    assert "anthropic" not in text
+    assert "openai" not in text
+
+
+def test_a_name_is_never_invented_when_the_config_is_silent():
+    assert web.human_name("cursor_changelog") == "Cursor changelog"
+    assert web.human_name("n8n_release_notes") == "n8n release notes"
+    assert web.human_name("") == ""
 
 
 # -- corpus page -------------------------------------------------------

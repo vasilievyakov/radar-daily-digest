@@ -132,6 +132,7 @@ class DailyRun:
         run_id: str | None = None,
         for_date: date | None = None,
         log_dir: str = "logs",
+        progress: Any = None,
     ) -> None:
         self.conn = conn
         self.config = config
@@ -146,6 +147,9 @@ class DailyRun:
             float(config.section("budget").get("max_usd_per_run", 0.5))
         )
         self.retriever = CorpusRetriever(conn, config.retrieval)
+        # Injected rather than printing directly: the orchestrator stays
+        # usable from a test and from a scheduler that wants silence.
+        self.progress = progress
 
     def execute(self) -> RunResult:
         result = RunResult(run_id=self.run_id, for_date=self.for_date)
@@ -214,7 +218,15 @@ class DailyRun:
         result.failed_stage = "enrich"
         enriched: list[tuple[Any, list[Fact]]] = []
         with self.log.stage("enrich", in_count=len(relevant)) as record:
-            for cluster in relevant:
+            total = len(relevant)
+            for position, cluster in enumerate(relevant, 1):
+                # A call takes about a minute through the CLI backend. Silence
+                # for that long is indistinguishable from a hung machine, on a
+                # stage and in a terminal alike.
+                if self.progress:
+                    self.progress(
+                        f"  обогащение {position} из {total}: {cluster.title[:56]}"
+                    )
                 source = self.config.source(
                     str(cluster.primary.extra.get("source_id", ""))
                 )

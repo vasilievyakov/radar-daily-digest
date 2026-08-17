@@ -144,11 +144,17 @@ _DATE_BEARING = frozenset(
         ChangeType.LIMITS,
     }
 )
-_CONTEXT_OPENERS = {
-    ContextLabel.RECURRING: "Повторяется",
-    ContextLabel.TREND_MEMBER: "Часть общей линии",
-    ContextLabel.ESCALATION: "Усиливается",
-}
+# Labels that earn the block. `not_found_in_corpus` is absent on purpose: a
+# label that changes nothing in the reading teaches the reader to skip labels
+# (voice.md, section 8). The wording of the block is not built from the label
+# either — the core writes it into `context_note`.
+_CONTEXT_LABELS = frozenset(
+    {
+        ContextLabel.RECURRING,
+        ContextLabel.TREND_MEMBER,
+        ContextLabel.ESCALATION,
+    }
+)
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 _ISO_DAY = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
@@ -406,6 +412,30 @@ def _closing_line(signals: Sequence[Signal], shown: Sequence[Signal]) -> str | N
     return f"Закрыто: {_esc(signal.headline.rstrip('.'))}."
 
 
+def _context_note(signal: Signal, today: date) -> str:
+    """The sentence above the precedent list, as the core wrote it.
+
+    `context_note` is composed once, in publish.build_context_note, where
+    every number in it is backed by the precedent list. A surface writing its
+    own would be retelling the corpus (SUR-2), and three surfaces would then
+    word one claim three ways while DR-10 promises the hall one record with
+    three faces. The fallback is for a signal published before the field
+    existed; it claims only what the precedents themselves show, and it
+    carries no label of its own (voice.md, section 8).
+    """
+    note = " ".join((signal.context_note or "").split())
+    if note:
+        # Left as written: the sentence opens with a vendor name, and n8n or
+        # vLLM would be misspelled by capitalising it here.
+        return _terminated(note)
+    dated = [p for p in signal.precedents if p.event_date is not None]
+    if not dated:
+        return ""
+    earliest = min(dated, key=lambda p: p.event_date or today)
+    when = format_date(earliest.event_date or today, today, earliest.date_precision)
+    return f"Самая ранняя запись в корпусе — {when}."
+
+
 @dataclass(slots=True)
 class _Upcoming:
     when: date
@@ -503,19 +533,10 @@ def _lead_parts(signal: Signal, today: date) -> _LeadParts:
         evidence_url = quoted.source_url or signal.primary_url
 
     context: list[str] = []
-    opener = (
-        _CONTEXT_OPENERS.get(signal.context_label) if signal.context_label else None
-    )
-    if opener and signal.precedents:
-        dated = [p for p in signal.precedents if p.event_date is not None]
-        if dated:
-            earliest = min(dated, key=lambda p: p.event_date or today)
-            when = format_date(
-                earliest.event_date or today, today, earliest.date_precision
-            )
-            context.append(f"{opener}: самая ранняя запись в корпусе — {when}.")
-        else:
-            context.append(f"{opener}.")
+    if signal.context_label in _CONTEXT_LABELS and signal.precedents:
+        note = _context_note(signal, today)
+        if note:
+            context.append(note)
         context.append(
             f"Показать {_spelled(len(signal.precedents), _RECORDS, accusative=True)}."
         )
@@ -832,6 +853,11 @@ class DeliveryResult:
     error: str | None = None
     chars: int = 0
     text: str = field(default="", repr=False)
+    # The forty characters of the lock screen, produced on the delivery path
+    # rather than only in tests. On an ordinary day it repeats the head of the
+    # message; on a failed run the two part ways, and voice.md section 1 wants
+    # «Прогон не завершился» rather than the first words of section 6.
+    notification: str = ""
 
 
 def _credentials() -> tuple[str, str] | str:
@@ -845,11 +871,24 @@ def _credentials() -> tuple[str, str] | str:
     return token, chat_id
 
 
-def send(text: str, timeout: float = TIMEOUT_SECONDS) -> DeliveryResult:
-    """Send one message. Secrets come from the environment only (NFR-11)."""
+def send(
+    text: str, timeout: float = TIMEOUT_SECONDS, notification: str = ""
+) -> DeliveryResult:
+    """Send one message. Secrets come from the environment only (NFR-11).
+
+    `notification` travels back on the result: the Bot API has no field for
+    the push preview, so the line the reader should see on a locked screen is
+    handed to the caller instead of being guessed from the message.
+    """
     credentials = _credentials()
     if isinstance(credentials, str):
-        return DeliveryResult(ok=False, error=credentials, chars=len(text), text=text)
+        return DeliveryResult(
+            ok=False,
+            error=credentials,
+            chars=len(text),
+            text=text,
+            notification=notification,
+        )
     token, chat_id = credentials
 
     payload = {
@@ -880,12 +919,23 @@ def send(text: str, timeout: float = TIMEOUT_SECONDS) -> DeliveryResult:
             error=f"HTTP {exc.code} {detail}".strip(),
             chars=len(text),
             text=text,
+            notification=notification,
         )
     except (URLError, TimeoutError, OSError) as exc:
-        return DeliveryResult(ok=False, error=str(exc), chars=len(text), text=text)
+        return DeliveryResult(
+            ok=False,
+            error=str(exc),
+            chars=len(text),
+            text=text,
+            notification=notification,
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         return DeliveryResult(
-            ok=False, error=f"malformed response: {exc}", chars=len(text), text=text
+            ok=False,
+            error=f"malformed response: {exc}",
+            chars=len(text),
+            text=text,
+            notification=notification,
         )
 
     if not body.get("ok"):
@@ -895,6 +945,7 @@ def send(text: str, timeout: float = TIMEOUT_SECONDS) -> DeliveryResult:
             error=str(body.get("description", "rejected by Bot API")),
             chars=len(text),
             text=text,
+            notification=notification,
         )
     return DeliveryResult(
         ok=True,
@@ -902,6 +953,7 @@ def send(text: str, timeout: float = TIMEOUT_SECONDS) -> DeliveryResult:
         message_id=(body.get("result") or {}).get("message_id"),
         chars=len(text),
         text=text,
+        notification=notification,
     )
 
 
@@ -910,5 +962,14 @@ def send_digest(
     today: date | None = None,
     timeout: float = TIMEOUT_SECONDS,
 ) -> DeliveryResult:
-    """Render a run and deliver it. A quiet day is delivered like any other."""
-    return send(render(signals, today), timeout=timeout)
+    """Render a run and deliver it. A quiet day is delivered like any other.
+
+    The lock-screen line is built here, on the same path as the message, so
+    the two are always produced from one run rather than one of them being
+    inferred from the other later.
+    """
+    return send(
+        render(signals, today),
+        timeout=timeout,
+        notification=notification_line(signals, today),
+    )

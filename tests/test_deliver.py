@@ -173,3 +173,19 @@ class TestSupervisorIsReachable:
         conn, journal = env
         report = Supervisor(conn, journal).report(now=NOW)
         assert report["missed_days"]
+
+
+class TestTokensAreRecorded:
+    """FR-8.4 asks for tokens and money. A row reading "5 calls, 0 tokens,
+    $0.20" is worse than no row: it discredits the numbers next to it."""
+
+    def test_the_enricher_forwards_the_call_log(self):
+        import inspect
+
+        from radar.cli import _build_enricher
+
+        source = inspect.getsource(_build_enricher)
+        assert "run_log=call_log" in source, (
+            "the enricher must pass the backend's log through, otherwise "
+            "run_log=None overrides it and token counts are lost"
+        )

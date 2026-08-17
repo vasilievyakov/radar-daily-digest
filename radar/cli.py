@@ -199,6 +199,11 @@ def _build_enricher(
         backend,
         fetcher=fetcher,
         ingest_mode="backfill",
+        # Without this the enricher passes run_log=None into every call and
+        # overrides the log the backend was built with: token counts landed
+        # nowhere, and the run log showed "5 calls, 0 tokens, $0.20". One row
+        # like that discredits every honest number beside it.
+        run_log=call_log,
     )
 
 
@@ -672,8 +677,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         relevance_filter=relevance,
         for_date=for_date,
         log_dir=args.log_dir,
+        progress=lambda line: print(line, flush=True),
     )
-    print(f"Прогон {run.run_id} за {run.for_date.isoformat()}.")
+    print(f"Прогон {run.run_id} за {run.for_date.isoformat()}.", flush=True)
     result = run.execute()
 
     print()
