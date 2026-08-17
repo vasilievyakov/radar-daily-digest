@@ -71,11 +71,7 @@ class Fetcher:
         force: bool = False,
         cache_key_extra: Any = None,
     ) -> FetchResult:
-        key = (
-            HttpCache.key_for(url)
-            if cache_key_extra is None
-            else HttpCache.key_for(f"{url}#{cache_key_extra}")
-        )
+        key = HttpCache.key_for(url, cache_key_extra)
         if not force:
             cached = self.cache.get(key)
             if cached is not None:
@@ -96,8 +92,21 @@ class Fetcher:
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             else:
-                if response.status_code >= 500 and attempt < self.max_retries:
+                if response.status_code >= 500:
+                    # Never archived: a cached 500 would replay a one-off
+                    # outage from disk on every later run, and no amount of
+                    # retrying inside a single run would notice.
                     last_error = f"HTTP {response.status_code}"
+                    if attempt >= self.max_retries:
+                        return FetchResult(
+                            url=canonical_url(url),
+                            status_code=response.status_code,
+                            text=response.text,
+                            headers=dict(response.headers),
+                            ref=key,
+                            from_cache=False,
+                            error=last_error,
+                        )
                 else:
                     self.cache.put(
                         key,

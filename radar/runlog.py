@@ -45,11 +45,14 @@ class RunLog:
         self.tokens_out = 0
         self.notes: list[str] = []
         self.delivery: list[dict[str, Any]] = []
+        self.finished_at: datetime | None = None
         with self.conn:
             self.conn.execute(
+                # Restarting a run clears finished_at as well: otherwise the
+                # row reads as running and finished at the same time.
                 "INSERT INTO runs (run_id, started_at, status, for_date) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET started_at = excluded.started_at, "
-                "status = excluded.status",
+                "status = excluded.status, finished_at = NULL",
                 (
                     run_id,
                     self.started_at.isoformat(),
@@ -72,7 +75,10 @@ class RunLog:
         started = datetime.now(UTC)
         try:
             yield record
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception: a run killed by Ctrl-C would
+            # otherwise pass through `finally` and flush with errors: [],
+            # leaving a false record of a stage that completed cleanly.
             record["errors"].append(f"{type(exc).__name__}: {exc}")
             record["duration_ms"] = int(
                 (datetime.now(UTC) - started).total_seconds() * 1000
@@ -116,7 +122,8 @@ class RunLog:
             self.conn.execute(
                 "INSERT INTO filtered_items (run_id, url, title, reason_code, reason_note, stage) "
                 "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, url, stage) DO UPDATE SET "
-                "reason_code = excluded.reason_code, reason_note = excluded.reason_note",
+                "title = excluded.title, reason_code = excluded.reason_code, "
+                "reason_note = excluded.reason_note",
                 (self.run_id, url, title, reason_code, note, stage),
             )
 
@@ -176,6 +183,7 @@ class RunLog:
             "run_id": self.run_id,
             "for_date": self.for_date.isoformat(),
             "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "status": self.status,
             "stages": self.stages,
             "notes": self.notes,
@@ -206,10 +214,11 @@ class RunLog:
 
     def finish(self, status: str = "ok") -> None:
         self.status = status
+        self.finished_at = datetime.now(UTC)
         with self.conn:
             self.conn.execute(
                 "UPDATE runs SET finished_at = ? WHERE run_id = ?",
-                (datetime.now(UTC).isoformat(), self.run_id),
+                (self.finished_at.isoformat(), self.run_id),
             )
         self.flush()
 

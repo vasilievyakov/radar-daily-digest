@@ -21,9 +21,23 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
+# Exact parameter names, plus one prefix family. Matching on a bare "ref"
+# prefix would also eat reference= and refresh=, collapsing two different
+# documents onto one cache key and therefore onto one raw_material_ref.
+_TRACKING_PARAMS = frozenset(
+    {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "yclid", "igshid", "_ga"}
+)
+_TRACKING_PREFIXES = ("utm_",)
+
+
 def canonical_url(url: str) -> str:
     """Strip the parts that do not change what a page says."""
-    parts = urlsplit(url.strip())
+    url = url.strip()
+    parts = urlsplit(url)
+    if not parts.scheme and not parts.netloc and parts.path:
+        # "example.com/path" would otherwise keep the host inside path and
+        # urlunsplit would emit "https:example.com/path".
+        parts = urlsplit(f"https://{url}")
     scheme = parts.scheme.lower() or "https"
     netloc = parts.netloc.lower()
     if netloc.startswith("www."):
@@ -33,11 +47,13 @@ def canonical_url(url: str) -> str:
     ):
         netloc = netloc.rsplit(":", 1)[0]
     path = parts.path.rstrip("/") or "/"
-    tracking = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "ref_src", "ref")
+
+    def is_tracking(pair: str) -> bool:
+        name = pair.split("=", 1)[0].lower()
+        return name in _TRACKING_PARAMS or name.startswith(_TRACKING_PREFIXES)
+
     query = "&".join(
-        q
-        for q in sorted(parts.query.split("&"))
-        if q and not any(q.lower().startswith(t) for t in tracking)
+        q for q in sorted(parts.query.split("&")) if q and not is_tracking(q)
     )
     return urlunsplit((scheme, netloc, path, query, ""))
 
@@ -99,13 +115,21 @@ class CacheStore:
         return {"hits": self.hits, "misses": self.misses}
 
 
+# Stable across processes: an object() sentinel would serialize to its
+# memory address and change the key on every run.
+_ABSENT = "\x00absent"
+
+
 class HttpCache(CacheStore):
     def __init__(self, root: str | Path) -> None:
         super().__init__(root, "http")
 
     @staticmethod
-    def key_for(url: str) -> str:
-        return digest(canonical_url(url))
+    def key_for(url: str, extra: Any = None) -> str:
+        # `extra` is a separate digest component rather than a URL fragment:
+        # canonical_url drops fragments, so folding it into the URL made
+        # paginated requests share one key and silently re-read page one.
+        return digest(canonical_url(url), _ABSENT if extra is None else extra)
 
 
 class ModelCache(CacheStore):
@@ -119,4 +143,11 @@ class ModelCache(CacheStore):
         schema: Any = None,
         params: dict[str, Any] | None = None,
     ) -> str:
-        return digest(model, prompt, schema or "", params or {})
+        # None, "" and {} must not collapse onto one key: an absent schema
+        # and an empty one are different requests.
+        return digest(
+            model,
+            prompt,
+            _ABSENT if schema is None else schema,
+            _ABSENT if params is None else params,
+        )
