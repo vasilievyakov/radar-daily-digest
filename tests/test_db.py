@@ -165,3 +165,31 @@ class TestCorpus:
         assert state["event_statements"] == 1
         assert state["signals"] == 1
         assert state["corpus_depth"]["earliest"] == "2026-05-01"
+
+
+class TestFragmentHandling:
+    """One page carries many events, each addressed by its own anchor."""
+
+    def test_dedup_keeps_anchored_items_apart(self):
+        from radar.cache import canonical_url
+
+        base = "https://docs.claude.com/en/release-notes/overview"
+        assert canonical_url(f"{base}#august-11-2026", keep_fragment=True) != canonical_url(
+            f"{base}#july-30-2026", keep_fragment=True
+        )
+
+    def test_http_cache_still_treats_them_as_one_page(self):
+        from radar.cache import HttpCache
+
+        base = "https://docs.claude.com/en/release-notes/overview"
+        assert HttpCache.key_for(f"{base}#august-11-2026") == HttpCache.key_for(
+            f"{base}#july-30-2026"
+        )
+
+    def test_a_whole_feed_does_not_collapse_into_one_material(self):
+        """130 entries of the Anthropic feed differ only by anchor."""
+        from radar.cache import canonical_url
+
+        base = "https://docs.claude.com/en/release-notes/overview"
+        keys = {canonical_url(f"{base}#day-{i}", keep_fragment=True) for i in range(130)}
+        assert len(keys) == 130

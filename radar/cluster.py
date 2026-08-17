@@ -165,7 +165,7 @@ def cluster_items(
 
     by_url: dict[str, list[CollectedItem]] = defaultdict(list)
     for item in items:
-        by_url[canonical_url(item.url)].append(item)
+        by_url[canonical_url(item.url, keep_fragment=True)].append(item)
 
     groups: dict[tuple[str | None, str | None, str], list[CollectedItem]] = defaultdict(
         list

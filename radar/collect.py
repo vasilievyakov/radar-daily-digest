@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from radar.adapters.base import Adapter, CollectedItem, SourceConfig
 from radar.adapters.github_releases import GitHubReleasesAdapter
 from radar.adapters.html_page import HtmlPageAdapter
+from radar.adapters.rss_feed import RssFeedAdapter
+from radar.adapters.telegram_channel import TelegramChannelAdapter
 from radar.config import ThemeConfig
 from radar.fetch import Fetcher
 from radar.models import SourceStatus
@@ -25,6 +27,8 @@ from radar.runlog import RunLog
 ADAPTERS: dict[str, type[Adapter]] = {
     "html_scrape": HtmlPageAdapter,
     "github_releases": GitHubReleasesAdapter,
+    "rss": RssFeedAdapter,
+    "telegram_channel": TelegramChannelAdapter,
 }
 
 
@@ -97,7 +101,8 @@ def dedupe_by_url(outcomes: list[SourceOutcome]) -> list[CollectedItem]:
     merged: dict[str, CollectedItem] = {}
     for outcome in outcomes:
         for item in outcome.items:
-            key = canonical_url(item.url)
+            # Anchor kept: one page carries many events, each with its own.
+            key = canonical_url(item.url, keep_fragment=True)
             existing = merged.get(key)
             if existing is None:
                 item.extra.setdefault("seen_in", [outcome.source_id])
@@ -127,7 +132,9 @@ def collect_all(
         sources = (
             config.backfillable_sources()
             if mode == "backfill"
-            else config.enabled_sources()
+            # Frozen archives carry depth but never change: polling them every
+            # morning spends budget to re-read the same page.
+            else [s for s in config.enabled_sources() if s.live_collect]
         )
 
     window_hours = int(config.collection.get("window_hours", 26))

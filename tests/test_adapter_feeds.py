@@ -264,14 +264,14 @@ TG_PAGE_LATEST = tg_page(
 )
 
 TG_PAGE_OLDER = tg_page(
-    tg_message("data_secrets/9700", "2026-08-09T15:09:11+00:00", TG_PLAIN)
-    + tg_message("data_secrets/9701", "2026-08-10T11:00:00+00:00", TG_PLAIN),
+    tg_message("data_secrets/9700", "2026-07-09T15:09:11+00:00", TG_PLAIN)
+    + tg_message("data_secrets/9701", "2026-07-10T11:00:00+00:00", TG_PLAIN),
     before=9700,
     after=9705,
 )
 
 TG_PAGE_OLDEST = tg_page(
-    tg_message("data_secrets/9698", "2026-08-01T10:00:00+00:00", TG_PLAIN),
+    tg_message("data_secrets/9698", "2026-06-01T10:00:00+00:00", TG_PLAIN),
     after=9700,
 )
 
@@ -719,13 +719,13 @@ def test_backfill_stops_once_the_depth_is_covered():
         f"{TG_URL}?before=9700": TG_PAGE_OLDEST,
     }
     adapter, fetcher = tg_adapter(pages, backfill_supported=True)
-    # The older page reaches back past the cutoff, so the oldest is never paid for.
-    cutoff_days = (datetime.now(UTC) - datetime(2026, 8, 10, tzinfo=UTC)).days
-    items = adapter.backfill(depth_days=cutoff_days)
+    # Depth reaching back to 2026-08-01: the second page is already older, so
+    # the third is never paid for.
+    depth = (datetime.now(UTC) - datetime(2026, 8, 1, tzinfo=UTC)).days
+    items = adapter.backfill(depth_days=depth)
 
-    assert f"{TG_URL}?before=9700" not in fetcher.calls
-    assert 9700 not in {item.extra["message_id"] for item in items}
-    assert 9701 in {item.extra["message_id"] for item in items}
+    assert fetcher.calls == [TG_URL, f"{TG_URL}?before=9705"]
+    assert [item.extra["message_id"] for item in items] == [9707, 9705]
 
 
 def test_collect_never_paginates():

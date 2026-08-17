@@ -18,6 +18,9 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: touches the real Claude CLI; skipped unless explicitly enabled",
+]
 
 [build-system]
 requires = ["hatchling"]

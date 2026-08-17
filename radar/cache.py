@@ -30,8 +30,17 @@ _TRACKING_PARAMS = frozenset(
 _TRACKING_PREFIXES = ("utm_",)
 
 
-def canonical_url(url: str) -> str:
-    """Strip the parts that do not change what a page says."""
+def canonical_url(url: str, keep_fragment: bool = False) -> str:
+    """Strip the parts that do not change what a page says.
+
+    `keep_fragment` matters more than it looks. One fetched page can carry
+    dozens of distinct events, each addressed by its own anchor: every entry
+    of the Anthropic release-notes feed differs only by `#august-11-2026`, and
+    section-level items from html_page are addressed the same way. Dropping
+    the fragment is right for the HTTP cache, where the whole page is one
+    request, and wrong for deduplication, where it would collapse a hundred
+    events into one material.
+    """
     url = url.strip()
     parts = urlsplit(url)
     if not parts.scheme and not parts.netloc and parts.path:
@@ -55,7 +64,8 @@ def canonical_url(url: str) -> str:
     query = "&".join(
         q for q in sorted(parts.query.split("&")) if q and not is_tracking(q)
     )
-    return urlunsplit((scheme, netloc, path, query, ""))
+    fragment = parts.fragment if keep_fragment else ""
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def digest(*parts: Any) -> str:

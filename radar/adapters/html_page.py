@@ -43,6 +43,14 @@ MIN_SECTION_BODY_CHARS = 16
 # One release-notes page is 1.6 MB. Sections keep it splittable; the cap keeps
 # a single runaway section from becoming the whole page again.
 MAX_SECTION_CHARS = 20_000
+# A date label is a label, not a sentence. "View the commits for this version.
+# Release date: 2024-03-06" is the longest real one
+# across the configured sources.
+MAX_MARK_CHARS = 80
+# A heading is picked up by the heading strategy; a mark stands outside one.
+MARK_HEADING_GAP_CHARS = 120
+# Prose is the last thing tried, and one page of it must not become a corpus.
+MAX_PROSE_SECTIONS = 200
 
 _SKIP_TAGS = frozenset(
     {
@@ -112,6 +120,9 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+# Where a date label can live. Headings are excluded on purpose: a dated
+# heading is already an event, and counting it twice doubles the page.
+_MARK_TAGS = (_BLOCK_TAGS - _HEADING_TAGS) | {"time", "button"}
 _CONTENT_SELECTORS = (
     "main",
     "article",
@@ -126,6 +137,22 @@ _NON_TEXT = (Comment, Doctype, Declaration, ProcessingInstruction, CData)
 # React and Radix hand out ids like "_R_17dkl..." that are not stable anchors.
 _ANCHOR_RE = re.compile(r"^[\w][\w.:-]*$")
 _ANCHOR_JUNK_RE = re.compile(r"(^|-)_[Rr]_|^radix-")
+# Ids that every page on a platform shares link back to the page, not an item.
+_GENERIC_IDS = frozenset(
+    {
+        "app",
+        "body",
+        "content",
+        "content-area",
+        "main",
+        "main-content",
+        "mainContent",
+        "page",
+        "page-title",
+        "root",
+        "__next",
+    }
+)
 _PUA_RE = re.compile("[\ue000-\uf8ff]")
 
 
@@ -164,23 +191,40 @@ _MON = (
     r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|"
     r"dec(?:ember)?)"
 )
+# The closing month of a range ("June 29 - July 3, 2026") needs its own name.
+_MON2 = _MON.replace("?P<mon>", "?P<mon2>")
 _ORD = r"(?:st|nd|rd|th)?"
+# github.blog abbreviates the month with a dot instead of a space: "Aug.14".
+_SEP = r"(?:\.\s*|\s+)"
+_DASH = r"\s*[-–—]\s*"
 
 # Order is the whole point: the most specific pattern that matches wins, so
 # "May 2026" never degrades into a year and "May 1, 2026" never loses its day.
 _DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?P<y>\d{4})-(?P<m>\d{1,2})-(?P<d>\d{1,2})\b"), "ymd"),
+    # A word boundary would reject "2026-06-01T07:00:00Z", the shape an
+    # embedded JSON index states its dates in.
+    (re.compile(r"(?P<y>\d{4})-(?P<m>\d{1,2})-(?P<d>\d{1,2})(?![\d-])"), "ymd"),
+    # "August 3-10, 2026" is a week, and the week is the event's start.
     (
-        re.compile(rf"{_MON}\.?\s+(?P<d>\d{{1,2}}){_ORD},?\s+(?P<y>\d{{4}})\b", re.I),
+        re.compile(
+            rf"{_MON}{_SEP}(?P<d>\d{{1,2}}){_ORD}{_DASH}"
+            rf"(?:{_MON2}\.?\s+)?\d{{1,2}}{_ORD},?\s+(?P<y>\d{{4}})\b",
+            re.I,
+        ),
+        "range",
+    ),
+    (
+        re.compile(rf"{_MON}{_SEP}(?P<d>\d{{1,2}}){_ORD},?\s+(?P<y>\d{{4}})\b", re.I),
         "mdy",
     ),
     (
         re.compile(rf"(?P<d>\d{{1,2}}){_ORD}\s+{_MON}\.?,?\s+(?P<y>\d{{4}})\b", re.I),
         "dmy",
     ),
-    (re.compile(rf"{_MON}\.?\s+(?P<y>\d{{4}})\b", re.I), "my"),
+    # platform.openai.com writes its month headings as "June, 2025".
+    (re.compile(rf"{_MON}\.?,?\s+(?P<y>\d{{4}})\b", re.I), "my"),
     (re.compile(r"(?P<y>\d{4})-(?P<m>\d{1,2})(?!\d|-)"), "ym"),
-    (re.compile(rf"{_MON}\.?\s+(?P<d>\d{{1,2}}){_ORD}(?!\d)", re.I), "md"),
+    (re.compile(rf"{_MON}{_SEP}(?P<d>\d{{1,2}}){_ORD}(?!\d)", re.I), "md"),
     (re.compile(rf"(?P<d>\d{{1,2}}){_ORD}\s+{_MON}\.?(?!\w)", re.I), "dm"),
     (re.compile(r"^\W*(?P<y>20\d{2})\b"), "y"),
 )
@@ -232,6 +276,18 @@ def parse_date_fragment(text: str) -> ParsedDate | None:
         year = int(groups["y"]) if groups.get("y") else None
         if month is not None and not 1 <= month <= 12:
             continue
+        if kind == "range":
+            # "December 29 - January 2, 2026" states the year the range ends
+            # in. Only a range that turns the calendar over starts a year back.
+            closing = _MONTHS.get((groups.get("mon2") or "").lower())
+            year = int(groups["y"])
+            if closing is not None and month is not None and closing < month:
+                year -= 1
+            try:
+                value = date(year, month or 1, day or 1)
+            except ValueError:
+                continue
+            return ParsedDate(value, DatePrecision.DAY, match.group(0), month, day)
         if kind in {"md", "dm"}:
             # No year on the page: month and day travel, the year does not.
             return ParsedDate(
@@ -253,6 +309,17 @@ def parse_date_fragment(text: str) -> ParsedDate | None:
         precision = DatePrecision.DAY if day else DatePrecision.MONTH
         return ParsedDate(value, precision, match.group(0), month, day)
     return None
+
+
+def date_stated_alone(text: str, parsed: ParsedDate) -> bool:
+    """False when the date is glued to a token: `gpt-4o-2024-08-06` is an id."""
+    index = text.find(parsed.text)
+    if index < 0:
+        return False
+    if index == 0:
+        return True
+    before = text[index - 1]
+    return not (before.isalnum() or before in "-_/.")
 
 
 def period_end(value: date, precision: DatePrecision) -> date:
@@ -281,6 +348,22 @@ class Heading:
 
 
 @dataclass(slots=True)
+class DateMark:
+    """A short standalone block that states a date and labels what follows.
+
+    Mintlify changelogs, the OpenAI changelog and the n8n release notes all
+    keep the date out of the heading and put it in a badge, a pill or a
+    "Released:" line. Structurally it is the same thing every time: a leaf
+    block whose whole text is a date.
+    """
+
+    start: int
+    end: int
+    text: str
+    anchor: str | None
+
+
+@dataclass(slots=True)
 class Row:
     start: int
     end: int
@@ -300,6 +383,10 @@ class PageText:
     text: str
     headings: list[Heading] = field(default_factory=list)
     tables: list[Table] = field(default_factory=list)
+    marks: list[DateMark] = field(default_factory=list)
+    # Kept for the one shape whose events never reach the DOM: an index
+    # serialised into a script tag (cursor.com/blog, modelcontextprotocol.io).
+    html: str = ""
 
     def slice(self, start: int, end: int) -> str:
         return self.text[start:end].strip()
@@ -314,11 +401,42 @@ class _TextBuilder:
         self.length = 0
         self.headings: list[Heading] = []
         self.tables: list[Table] = []
+        self.marks: list[DateMark] = []
         self._table_stack: list[Table] = []
+        self._blocks_opened = 0
 
     def build(self, root: Tag) -> PageText:
         self._visit(root)
-        return PageText("".join(self._parts), self.headings, self.tables)
+        return PageText("".join(self._parts), self.headings, self.tables, self.marks)
+
+    def _tail_text(self, start: int) -> str:
+        """Text emitted since `start`, read off the tail instead of the whole.
+
+        Joining every part to slice one element is O(page) per call, and this
+        runs once per candidate block on a 9 MB page.
+        """
+        wanted = self.length - start
+        if wanted <= 0:
+            return ""
+        chunks: list[str] = []
+        taken = 0
+        for part in reversed(self._parts):
+            chunks.append(part)
+            taken += len(part)
+            if taken >= wanted:
+                break
+        text = "".join(reversed(chunks))
+        return text[len(text) - wanted :] if len(text) > wanted else text
+
+    def _record_mark(self, node: Tag, start: int) -> None:
+        """Keep a leaf block whose short text states a date on its own."""
+        text = _clean_title(self._tail_text(start))
+        if not text or len(text) > MAX_MARK_CHARS:
+            return
+        parsed = parse_date_fragment(text)
+        if parsed is None or not date_stated_alone(text, parsed):
+            return
+        self.marks.append(DateMark(start, self.length, text, _mark_anchor(node)))
 
     def _append(self, text: str) -> None:
         if not text:
@@ -368,14 +486,20 @@ class _TextBuilder:
             self._table_stack[-1].rows.append(Row(0, 0, [], False))
 
         start = self.length
+        blocks_before = self._blocks_opened
+        if name in _BLOCK_TAGS:
+            self._blocks_opened += 1
         if name == "pre":
             self._append(node.get_text())
         else:
             for child in node.children:
                 self._visit(child)
+        nested = self._blocks_opened - blocks_before - (1 if name in _BLOCK_TAGS else 0)
+        if nested == 0 and name in _MARK_TAGS:
+            self._record_mark(node, start)
 
         if name in _HEADING_TAGS:
-            title = _clean_title(self._parts, start, self.length)
+            title = _clean_title(self._tail_text(start))
             if title:
                 self.headings.append(
                     Heading(int(name[1]), title, _anchor_of(node), start, self.length)
@@ -397,8 +521,7 @@ class _TextBuilder:
             self._newline()
 
 
-def _clean_title(parts: list[str], start: int, end: int) -> str:
-    text = "".join(parts)[start:end]
+def _clean_title(text: str) -> str:
     return re.sub(r"\s+", " ", _PUA_RE.sub("", text)).strip()
 
 
@@ -411,6 +534,29 @@ def _anchor_of(node: Tag) -> str | None:
             continue
         if _ANCHOR_RE.match(value) and not _ANCHOR_JUNK_RE.search(value):
             return value
+    return None
+
+
+def _mark_anchor(node: Tag) -> str | None:
+    """Anchor of the block a date label introduces.
+
+    Mintlify puts the id on the container that wraps the label and its body,
+    two levels above the label itself, so the walk goes up rather than down.
+    """
+    element: Tag | None = node
+    for _ in range(4):
+        if element is None:
+            return None
+        value = element.get("id")
+        if (
+            isinstance(value, str)
+            and value not in _GENERIC_IDS
+            and _ANCHOR_RE.match(value)
+            and not _ANCHOR_JUNK_RE.search(value)
+        ):
+            return value
+        parent = element.parent
+        element = parent if isinstance(parent, Tag) else None
     return None
 
 
@@ -434,10 +580,12 @@ def _content_root(soup: BeautifulSoup) -> Tag:
 
 
 def extract_page_text(html: str) -> PageText:
-    """Page text plus heading and table offsets into it."""
+    """Page text plus heading, table and date-label offsets into it."""
     soup = BeautifulSoup(html, "lxml")
     builder = _TextBuilder()
-    return builder.build(_content_root(soup))
+    page = builder.build(_content_root(soup))
+    page.html = html
+    return page
 
 
 # --------------------------------------------------------------------------

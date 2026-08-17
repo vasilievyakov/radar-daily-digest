@@ -123,6 +123,109 @@ corpus:
       label: "xAI"
       aliases: [xAI, "x.ai", "Grok API", "Grok model"]
 
+    - id: dify
+      label: "dify"
+      aliases: ["langgenius", "dify"]
+    - id: open_webui
+      label: "open-webui"
+      aliases: ["open-webui"]
+    - id: graphify
+      label: "graphify"
+      aliases: ["Graphify-Labs", "graphify"]
+    - id: lobehub
+      label: "lobehub"
+      aliases: ["lobehub"]
+    - id: netdata
+      label: "netdata"
+      aliases: ["netdata"]
+    - id: headroom
+      label: "headroom"
+      aliases: ["headroomlabs-ai", "headroom"]
+    - id: context7
+      label: "context7"
+      aliases: ["context7", "upstash"]
+    - id: goose
+      label: "goose"
+      aliases: ["aaif-goose", "goose"]
+    - id: omniroute
+      label: "OmniRoute"
+      aliases: ["diegosouzapw", "OmniRoute", "omniroute"]
+    - id: browser_use
+      label: "browser-use"
+      aliases: ["browser-use"]
+    - id: claude_mem
+      label: "claude-mem"
+      aliases: ["claude-mem", "thedotmack"]
+    - id: daytona
+      label: "daytona"
+      aliases: ["daytonaio", "daytona"]
+    - id: ruflo
+      label: "ruflo"
+      aliases: ["ruvnet", "ruflo"]
+    - id: oh_my_openagent
+      label: "oh-my-openagent"
+      aliases: ["oh-my-openagent", "code-yeongyu"]
+    - id: scrapling
+      label: "Scrapling"
+      aliases: ["scrapling", "Scrapling", "D4Vinci"]
+    - id: ragflow
+      label: "ragflow"
+      aliases: ["infiniflow", "ragflow"]
+    - id: cc_switch
+      label: "cc-switch"
+      aliases: ["farion1231", "cc-switch"]
+    - id: worldmonitor
+      label: "worldmonitor"
+      aliases: ["worldmonitor", "koala73"]
+    - id: firecrawl
+      label: "firecrawl"
+      aliases: ["firecrawl"]
+    - id: anything_llm
+      label: "anything-llm"
+      aliases: ["Mintplex-Labs", "anything-llm"]
+    - id: hermes_agent
+      label: "hermes-agent"
+      aliases: ["NousResearch", "hermes-agent"]
+    - id: ecc
+      label: "ECC"
+      aliases: ["affaan-m", "ecc", "ECC"]
+    - id: mempalace
+      label: "mempalace"
+      aliases: ["mempalace", "MemPalace"]
+    - id: ponytail
+      label: "ponytail"
+      aliases: ["DietrichGebert", "ponytail"]
+    - id: agent_reach
+      label: "Agent-Reach"
+      aliases: ["Agent-Reach", "agent-reach", "Panniantong"]
+    - id: front_end_checklist
+      label: "Front-End-Checklist"
+      aliases: ["front-end-checklist", "Front-End-Checklist", "thedaviddias"]
+    - id: deepseek_harness
+      label: "deepseek-harness"
+      aliases: ["deepseek-harness", "deepseek-ai"]
+    - id: deer_flow
+      label: "deer-flow"
+      aliases: ["deer-flow", "bytedance"]
+    - id: javaguide
+      label: "JavaGuide"
+      aliases: ["Snailclimb", "JavaGuide", "javaguide"]
+    - id: awesome_mcp_servers
+      label: "awesome-mcp-servers"
+      aliases: ["awesome-mcp-servers", "punkpeye"]
+    - id: awesome_claude_skills
+      label: "awesome-claude-skills"
+      aliases: ["awesome-claude-skills", "ComposioHQ"]
+    - id: trendradar
+      label: "TrendRadar"
+      aliases: ["TrendRadar", "trendradar", "sansan0"]
+    - id: prompt_engineering_guide
+      label: "Prompt-Engineering-Guide"
+      aliases: ["Prompt-Engineering-Guide", "prompt-engineering-guide", "dair-ai"]
+    - id: ai_agents_for_beginners
+      label: "ai-agents-for-beginners"
+      aliases: ["ai-agents-for-beginners", "microsoft"]
+
   change_types:
     - id: release
       label: "Релиз"
@@ -657,6 +760,379 @@ sources:
     backfill_supported: true
     backfill_depth_days: 180
     min_expected_items: 3
+
+  # --- Найдено обнаружением источников (radar/scout.py) ---
+  # 35 репозиториев в тематике, которых не было в списке. Отобраны по
+  # топикам mcp и ai-agents с порогом 4000 звёзд; число релизов проверено
+  # обращением к API, а не предположением.
+
+  - id: gh_langgenius_dify
+    type: github_releases
+    url: https://github.com/langgenius/dify
+    vendor: dify
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_open_webui_open_webui
+    type: github_releases
+    url: https://github.com/open-webui/open-webui
+    vendor: open_webui
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_graphify_labs_graphify
+    type: github_releases
+    url: https://github.com/Graphify-Labs/graphify
+    vendor: graphify
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_lobehub_lobehub
+    type: github_releases
+    url: https://github.com/lobehub/lobehub
+    vendor: lobehub
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_netdata_netdata
+    type: github_releases
+    url: https://github.com/netdata/netdata
+    vendor: netdata
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_headroomlabs_ai_headroom
+    type: github_releases
+    url: https://github.com/headroomlabs-ai/headroom
+    vendor: headroom
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_upstash_context7
+    type: github_releases
+    url: https://github.com/upstash/context7
+    vendor: context7
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_aaif_goose_goose
+    type: github_releases
+    url: https://github.com/aaif-goose/goose
+    vendor: goose
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_diegosouzapw_omniroute
+    type: github_releases
+    url: https://github.com/diegosouzapw/OmniRoute
+    vendor: omniroute
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_browser_use_browser_use
+    type: github_releases
+    url: https://github.com/browser-use/browser-use
+    vendor: browser_use
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_google_gemini_gemini_cli
+    type: github_releases
+    url: https://github.com/google-gemini/gemini-cli
+    vendor: google
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_thedotmack_claude_mem
+    type: github_releases
+    url: https://github.com/thedotmack/claude-mem
+    vendor: claude_mem
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_daytonaio_daytona
+    type: github_releases
+    url: https://github.com/daytonaio/daytona
+    vendor: daytona
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_ruvnet_ruflo
+    type: github_releases
+    url: https://github.com/ruvnet/ruflo
+    vendor: ruflo
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_code_yeongyu_oh_my_openagent
+    type: github_releases
+    url: https://github.com/code-yeongyu/oh-my-openagent
+    vendor: oh_my_openagent
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_d4vinci_scrapling
+    type: github_releases
+    url: https://github.com/D4Vinci/Scrapling
+    vendor: scrapling
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_infiniflow_ragflow
+    type: github_releases
+    url: https://github.com/infiniflow/ragflow
+    vendor: ragflow
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_farion1231_cc_switch
+    type: github_releases
+    url: https://github.com/farion1231/cc-switch
+    vendor: cc_switch
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_koala73_worldmonitor
+    type: github_releases
+    url: https://github.com/koala73/worldmonitor
+    vendor: worldmonitor
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_firecrawl_firecrawl
+    type: github_releases
+    url: https://github.com/firecrawl/firecrawl
+    vendor: firecrawl
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_mintplex_labs_anything_llm
+    type: github_releases
+    url: https://github.com/Mintplex-Labs/anything-llm
+    vendor: anything_llm
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_nousresearch_hermes_agent
+    type: github_releases
+    url: https://github.com/NousResearch/hermes-agent
+    vendor: hermes_agent
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_affaan_m_ecc
+    type: github_releases
+    url: https://github.com/affaan-m/ECC
+    vendor: ecc
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  - id: gh_mempalace_mempalace
+    type: github_releases
+    url: https://github.com/MemPalace/mempalace
+    vendor: mempalace
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  - id: gh_dietrichgebert_ponytail
+    type: github_releases
+    url: https://github.com/DietrichGebert/ponytail
+    vendor: ponytail
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  - id: gh_panniantong_agent_reach
+    type: github_releases
+    url: https://github.com/Panniantong/Agent-Reach
+    vendor: agent_reach
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 2: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_thedaviddias_front_end_checklist
+    type: github_releases
+    url: https://github.com/thedaviddias/Front-End-Checklist
+    vendor: front_end_checklist
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 1: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_deepseek_ai_deepseek_harness
+    type: github_releases
+    url: https://github.com/deepseek-ai/deepseek-harness
+    vendor: deepseek_harness
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 1: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_bytedance_deer_flow
+    type: github_releases
+    url: https://github.com/bytedance/deer-flow
+    vendor: deer_flow
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_snailclimb_javaguide
+    type: github_releases
+    url: https://github.com/Snailclimb/JavaGuide
+    vendor: javaguide
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_punkpeye_awesome_mcp_servers
+    type: github_releases
+    url: https://github.com/punkpeye/awesome-mcp-servers
+    vendor: awesome_mcp_servers
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_composiohq_awesome_claude_skills
+    type: github_releases
+    url: https://github.com/ComposioHQ/awesome-claude-skills
+    vendor: awesome_claude_skills
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_sansan0_trendradar
+    type: github_releases
+    url: https://github.com/sansan0/TrendRadar
+    vendor: trendradar
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_dair_ai_prompt_engineering_guide
+    type: github_releases
+    url: https://github.com/dair-ai/Prompt-Engineering-Guide
+    vendor: prompt_engineering_guide
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  # Релизов 0: датированной истории нет, источник ничего не отдаст.
+  # Это подборка или учебный материал, а не продукт с журналом изменений.
+  - id: gh_microsoft_ai_agents_for_beginners
+    type: github_releases
+    url: https://github.com/microsoft/ai-agents-for-beginners
+    vendor: ai_agents_for_beginners
+    priority: 3
+    enabled: false
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
 
   # --- Ленты. Проверены feedparser: указано число записей и полнота тела ---
 
