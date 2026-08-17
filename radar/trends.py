@@ -95,7 +95,11 @@ class TrendCandidate:
         idle = (as_of - max(self.dates)).days
         if idle > dormant_after:
             return Trajectory.DORMANT
-        if len(self.dates) < 4:
+        # Four points is the modal trend in a thin corpus, and three gaps are
+        # not enough to tell acceleration from noise: every shape tested at
+        # n=4 came out "accelerating", including a flat one. Below six events
+        # the honest answer is that the line is only emerging.
+        if len(self.dates) < 6:
             return Trajectory.EMERGING
         ordered = sorted(self.dates)
         midpoint = len(ordered) // 2

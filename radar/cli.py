@@ -629,7 +629,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
 
     print(RULE)
-    print("Готово к запуску." if ok else "Есть проблемы, см. выше.")
+    print("Окружение готово. Готовность корпуса проверяется отдельно: status." if ok else "Есть проблемы, см. выше.")
     return 0 if ok else 1
 
 

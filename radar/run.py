@@ -214,6 +214,27 @@ class DailyRun:
                     exclude_ids={cluster.cluster_id},
                 )
                 contexts.append((cluster, facts, delta, retrieval))
+                # Both counts reach the log. Every other system in the room
+                # measures precision only; this line is what makes a miss
+                # visible. A strict conjunctive filter turns a
+                # misclassification into a confident "no precedents", and
+                # without the relaxed number nobody can tell the difference.
+                report = retrieval.report
+                if report.relaxed_hits > report.strict_hits:
+                    self.log.note(
+                        f"{cluster.title[:60]}: строгий фильтр {report.strict_hits}, "
+                        f"расширенный {report.relaxed_hits} — "
+                        f"{report.relaxed_hits - report.strict_hits} записей корпуса "
+                        f"не попали под точный тип изменения"
+                    )
+                    self.journal.record(
+                        EventKind.LABEL_DOWNGRADED,
+                        actor="contextualize",
+                        target=cluster.cluster_id,
+                        outcome=Outcome.PARTIAL,
+                        strict_hits=report.strict_hits,
+                        relaxed_hits=report.relaxed_hits,
+                    )
                 save_state(self.conn, cluster, facts, delta, self.run_id, self.for_date)
             resolve_expired(self.conn, self.for_date)
             record["out_count"] = len(contexts)

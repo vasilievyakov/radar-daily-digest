@@ -364,3 +364,47 @@ class TestSeamsCarryValues:
         rationale = read_signals(conn, result.run_id)[0].score_rationale
         assert rationale
         assert "отключени" in rationale.lower() or "deprecation" in rationale.lower()
+
+
+class TestCompletenessIsVisible:
+    """A strict conjunctive filter turns a misclassification into a confident
+    "no precedents". The relaxed count is the only thing that makes that
+    silence visible, and it has to reach a human, not just a column."""
+
+    def test_a_near_miss_is_named_in_the_run_log(self, env):
+        conn, config, fetcher, tmp = env
+        # The same real event filed as limits in March and pricing in June:
+        # the strict filter finds nothing, the relaxed one finds both.
+        for i, (ct, day) in enumerate(
+            [("limits", "2026-03-01"), ("limits", "2026-04-01")]
+        ):
+            conn.execute(
+                "INSERT INTO event_statements (statement_id, text, vendor, change_type, "
+                "event_date, source_url, statement_index, evidence, ingested_at, "
+                "ingest_mode, extractor_model, prompt_version, raw_material_ref) "
+                "VALUES (?, ?, 'anthropic', ?, ?, ?, ?, 'q', ?, 'backfill', 'm', 'v2', 'r')",
+                (f"st{i}", "лимиты изменены", ct, day,
+                 f"https://example.test/{i}", i, NOW.isoformat()),
+            )
+        conn.commit()
+
+        class PricingEnricher(FakeEnricher):
+            def enrich(self, item, source):
+                out = super().enrich(item, source)
+                out.change_type = ChangeType.PRICING
+                return out
+
+        run = DailyRun(conn, config, fetcher, PricingEnricher([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        run.execute()
+        notes = " ".join(run.log.notes)
+        assert "расширенный" in notes
+        assert "строгий фильтр" in notes
+
+    def test_an_exact_match_produces_no_noise(self, env):
+        """Nothing to report when both counts agree."""
+        conn, config, fetcher, tmp = env
+        run = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        run.execute()
+        assert not any("расширенный" in n for n in run.log.notes)
