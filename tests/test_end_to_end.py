@@ -202,3 +202,42 @@ class TestDeliveryClosesTheLoop:
         journal = Journal(conn, log_dir=str(tmp_path / "logs"), run_id=result.run_id)
         diagnosis = Supervisor(conn, journal).diagnose(result.run_id)
         assert diagnosis.state is RunState.NEVER_DELIVERED
+
+
+class TestTheCardShowsExtractedText:
+    """The expensive stage produces a normalized statement: one to three
+    sentences, quantifier-checked, every fact behind it verified. The card was
+    assembled from the page title and two kilobytes of raw changelog, so none
+    of that work reached the screen."""
+
+    def test_the_headline_is_not_the_page_title(self, run_result, conn):
+        _, result = run_result
+        digest_items = [s for s in read_signals(conn, result.run_id)
+                        if s.signal_type is SignalType.DIGEST_ITEM]
+        assert digest_items
+        # A page title repeats across every event on that page; a statement
+        # names this change.
+        headlines = {s.headline for s in digest_items}
+        assert len(headlines) == len(digest_items) or len(digest_items) == 1
+
+    def test_the_summary_is_not_a_slab_of_raw_source(self, run_result, conn):
+        _, result = run_result
+        digest_items = [s for s in read_signals(conn, result.run_id)
+                        if s.signal_type is SignalType.DIGEST_ITEM]
+        assert digest_items
+        assert all(len(s.summary) < 1500 for s in digest_items)
+
+    def test_why_it_matters_is_produced(self, run_result, conn):
+        """Promised by voice.md and previously an empty string always."""
+        _, result = run_result
+        digest_items = [s for s in read_signals(conn, result.run_id)
+                        if s.signal_type is SignalType.DIGEST_ITEM]
+        assert any(s.why_it_matters for s in digest_items)
+
+    def test_why_it_matters_never_outruns_the_facts(self, run_result, conn):
+        """Every clause has to be backed by a verified fact, so a signal with
+        no dated facts may not claim a deadline."""
+        _, result = run_result
+        for signal in read_signals(conn, result.run_id):
+            if signal.why_it_matters and "срок" in signal.why_it_matters:
+                assert any(f.value_date for f in signal.facts)

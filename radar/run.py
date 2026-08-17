@@ -78,6 +78,49 @@ class RunResult:
         }
 
 
+def _headline_for(cluster: Any, lead: Any) -> str:
+    """Prefer the extracted statement, fall back to the page title.
+
+    A source page title is the name of the whole changelog, identical for
+    every event on it; the statement names this change.
+    """
+    if lead is not None and lead.text.strip():
+        first = lead.text.strip().split(". ")[0].rstrip(".")
+        if 10 < len(first) <= 120:
+            return first
+    return cluster.title
+
+
+def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
+    """Composed from verified facts, never from a second model call.
+
+    Says why this deserves attention today, and every clause is backed by a
+    fact that survived quote verification. Nothing here may claim more.
+    """
+    reasons: list[str] = []
+    deadline = min(
+        (f.value_date for f in facts if f.value_date and f.value_date >= as_of),
+        default=None,
+    )
+    if deadline is not None:
+        days = (deadline - as_of).days
+        subject = next(
+            (f.subject for f in facts if f.value_date == deadline and f.subject), None
+        )
+        what = f"{subject}: " if subject else ""
+        reasons.append(
+            f"{what}срок наступает через {days} дней" if days else f"{what}срок сегодня"
+        )
+    if cluster.change_type in {"deprecation", "breaking_change"}:
+        reasons.append("работающий код перестанет работать без правки")
+    elif cluster.change_type == "security":
+        reasons.append("затрагивает безопасность")
+    products = [f.value for f in facts if str(f.kind) == "affected_product"][:3]
+    if products:
+        reasons.append("затронуто: " + ", ".join(products))
+    return ". ".join(reasons)
+
+
 class DailyRun:
     def __init__(
         self,
@@ -194,7 +237,7 @@ class DailyRun:
                 # about plumbing instead of the news.
                 if outcome.change_type is not None:
                     cluster.change_type = str(outcome.change_type)
-                enriched.append((cluster, outcome.facts))
+                enriched.append((cluster, outcome.facts, outcome.statements))
             record["out_count"] = len(enriched)
         result.enriched = len(enriched)
         self.journal.checkpoint("enrich", item_count=len(enriched))
@@ -202,7 +245,7 @@ class DailyRun:
         result.failed_stage = "contextualize"
         with self.log.stage("contextualize", in_count=len(enriched)) as record:
             contexts = []
-            for cluster, facts in enriched:
+            for cluster, facts, statements in enriched:
                 delta = compute_delta(
                     self.conn, cluster, facts, self.run_id, self.for_date
                 )
@@ -213,7 +256,7 @@ class DailyRun:
                     text=cluster.title,
                     exclude_ids={cluster.cluster_id},
                 )
-                contexts.append((cluster, facts, delta, retrieval))
+                contexts.append((cluster, facts, delta, retrieval, statements))
                 # Both counts reach the log. Every other system in the room
                 # measures precision only; this line is what makes a miss
                 # visible. A strict conjunctive filter turns a
@@ -297,7 +340,17 @@ class DailyRun:
         """
         drafts: list[Signal] = []
         source_ids: dict[str, str] = {}
-        for cluster, facts, delta, retrieval in contexts:
+        for cluster, facts, delta, retrieval, statements in contexts:
+            # The normalized statement is what the expensive stage produced:
+            # one to three sentences in literary Russian, quantifier-checked,
+            # every fact behind it verified. The page title and a slab of raw
+            # changelog were standing in for it on the screen.
+            lead = statements[0] if statements else None
+            headline = _headline_for(cluster, lead)
+            # Named apart from `summary`, which is the RunSummary parameter of
+            # this function: shadowing it silently replaced the run report
+            # with a string and every signal failed validation.
+            body = " ".join(st.text.strip() for st in statements[:3]).strip()
             signal = build_signal(
                 self.run_id,
                 self.for_date,
@@ -309,8 +362,10 @@ class DailyRun:
                 rationale="",
                 tier=Tier.STANDARD,
                 rank=0,
-                headline=cluster.title,
-                summary=cluster.primary.raw_text[:2000],
+                headline=headline,
+                summary=body or cluster.primary.raw_text[:2000],
+                why_it_matters=_why_it_matters(cluster, facts, self.for_date),
+                product=lead.product if lead else None,
                 vendor_label=cluster.vendor or "",
                 change_type_label=cluster.change_type or "",
                 run_summary=summary,

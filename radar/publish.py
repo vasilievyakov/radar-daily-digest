@@ -197,6 +197,9 @@ def build_signal(
     headline: str,
     summary: str,
     why_it_matters: str = "",
+    # Extracted by stage 4 and previously hardcoded to None here, so every
+    # card claimed the vendor changed something unnamed.
+    product: str | None = None,
     vendor_label: str = "",
     change_type_label: str = "",
     run_summary: RunSummary | None = None,
@@ -229,7 +232,7 @@ def build_signal(
         why_it_matters=why_it_matters,
         change_type=ChangeType(cluster.change_type) if cluster.change_type else None,
         vendor=cluster.vendor,
-        product=None,
+        product=product,
         facts=facts,
         primary_url=cluster.primary.url,
         duplicates_count=cluster.duplicates_count,
