@@ -1,0 +1,244 @@
+"""Run log writer.
+
+Opened at stage zero, not assembled at the end. A crash on stage four has to
+leave the log of stages one through three behind (NFR-4), which is only true
+if every stage writes as it goes.
+
+The log is also the artifact users are pointed at (FR-8.5, S6), so it records
+why a material was dropped, what a source answered, and what the run cost.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
+from typing import Any
+
+from radar.models import SourceStatus
+
+
+def new_run_id(now: datetime | None = None) -> str:
+    now = now or datetime.now(UTC)
+    return f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
+
+
+class RunLog:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        run_id: str,
+        for_date: date,
+        started_at: datetime | None = None,
+    ) -> None:
+        self.conn = conn
+        self.run_id = run_id
+        self.for_date = for_date
+        self.started_at = started_at or datetime.now(UTC)
+        self.status = "running"
+        self.stages: list[dict[str, Any]] = []
+        self.cost_usd = 0.0
+        self.model_calls = 0
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.notes: list[str] = []
+        self.delivery: list[dict[str, Any]] = []
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO runs (run_id, started_at, status, for_date) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET started_at = excluded.started_at, "
+                "status = excluded.status",
+                (
+                    run_id,
+                    self.started_at.isoformat(),
+                    self.status,
+                    for_date.isoformat(),
+                ),
+            )
+
+    @contextmanager
+    def stage(self, name: str, in_count: int = 0):
+        """Record a stage even when it raises."""
+        record: dict[str, Any] = {
+            "stage": name,
+            "in_count": in_count,
+            "out_count": 0,
+            "started_at": datetime.now(UTC).isoformat(),
+            "errors": [],
+        }
+        self.stages.append(record)
+        started = datetime.now(UTC)
+        try:
+            yield record
+        except Exception as exc:
+            record["errors"].append(f"{type(exc).__name__}: {exc}")
+            record["duration_ms"] = int(
+                (datetime.now(UTC) - started).total_seconds() * 1000
+            )
+            self.flush()
+            raise
+        finally:
+            record.setdefault(
+                "duration_ms", int((datetime.now(UTC) - started).total_seconds() * 1000)
+            )
+            self.flush()
+
+    def source_result(
+        self,
+        source_id: str,
+        status: SourceStatus,
+        items_count: int = 0,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO source_runs (run_id, source_id, status, items_count, latency_ms, "
+                "error) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, "
+                "items_count = excluded.items_count, latency_ms = excluded.latency_ms, "
+                "error = excluded.error",
+                (self.run_id, source_id, str(status), items_count, latency_ms, error),
+            )
+
+    def filtered(
+        self,
+        url: str,
+        title: str,
+        reason_code: str,
+        stage: str,
+        note: str | None = None,
+    ) -> None:
+        """Nothing dropped disappears: it stays visible with a reason (FR-3.3)."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO filtered_items (run_id, url, title, reason_code, reason_note, stage) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, url, stage) DO UPDATE SET "
+                "reason_code = excluded.reason_code, reason_note = excluded.reason_note",
+                (self.run_id, url, title, reason_code, note, stage),
+            )
+
+    def model_call(
+        self,
+        stage: str,
+        model: str,
+        provider: str | None = None,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cost_usd: float = 0.0,
+        cached: bool = False,
+    ) -> None:
+        self.model_calls += 1
+        self.tokens_in += tokens_in
+        self.tokens_out += tokens_out
+        self.cost_usd += cost_usd
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO model_calls (call_id, run_id, stage, model, provider, tokens_in, "
+                "tokens_out, cost_usd, cached, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    self.run_id,
+                    stage,
+                    model,
+                    provider,
+                    tokens_in,
+                    tokens_out,
+                    cost_usd,
+                    int(cached),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def note(self, message: str) -> None:
+        self.notes.append(message)
+
+    def delivered(
+        self,
+        channel: str,
+        status: str,
+        message_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.delivery.append(
+            {
+                "channel": channel,
+                "status": status,
+                "message_id": message_id,
+                "error": error,
+            }
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "for_date": self.for_date.isoformat(),
+            "started_at": self.started_at.isoformat(),
+            "status": self.status,
+            "stages": self.stages,
+            "notes": self.notes,
+            "delivery": self.delivery,
+            "cost": {
+                "model_calls": self.model_calls,
+                "tokens_in": self.tokens_in,
+                "tokens_out": self.tokens_out,
+                "usd": round(self.cost_usd, 4),
+            },
+        }
+
+    def flush(self) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE runs SET status = ?, cost_usd = ?, model_calls = ?, tokens_in = ?, "
+                "tokens_out = ?, log_json = ? WHERE run_id = ?",
+                (
+                    self.status,
+                    round(self.cost_usd, 6),
+                    self.model_calls,
+                    self.tokens_in,
+                    self.tokens_out,
+                    json.dumps(self.as_dict(), ensure_ascii=False),
+                    self.run_id,
+                ),
+            )
+
+    def finish(self, status: str = "ok") -> None:
+        self.status = status
+        with self.conn:
+            self.conn.execute(
+                "UPDATE runs SET finished_at = ? WHERE run_id = ?",
+                (datetime.now(UTC).isoformat(), self.run_id),
+            )
+        self.flush()
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+class Budget:
+    """Hard per-run ceiling (NFR-6, FR-6.8).
+
+    Checked before a call rather than recorded after one: a limit that is only
+    noticed in the log has not limited anything.
+    """
+
+    def __init__(self, limit_usd: float) -> None:
+        self.limit_usd = limit_usd
+        self.spent_usd = 0.0
+
+    def check(self, estimated_usd: float = 0.0) -> None:
+        if self.spent_usd + estimated_usd > self.limit_usd:
+            raise BudgetExceeded(
+                f"budget {self.limit_usd:.2f} USD exhausted: spent {self.spent_usd:.4f}, "
+                f"next call ~{estimated_usd:.4f}"
+            )
+
+    def charge(self, usd: float) -> None:
+        self.spent_usd += usd
+
+    @property
+    def remaining_usd(self) -> float:
+        return max(0.0, self.limit_usd - self.spent_usd)
