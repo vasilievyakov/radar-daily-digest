@@ -31,6 +31,12 @@ MODEL = "test/extractor"
 COST_PER_MATERIAL = bf.OUTPUT_TOKENS_PER_MATERIAL / 1_000_000 * 100.0
 
 
+def limit_for(materials: int) -> float:
+    """Room for exactly N materials, plus a cent so that float arithmetic
+    rather than the ceiling never decides the last call."""
+    return materials * COST_PER_MATERIAL + 0.01
+
+
 # -- fixtures ---------------------------------------------------------
 
 
@@ -320,17 +326,11 @@ class TestDryRun:
         config = make_config(source_ids=("alpha",), concurrency=4)
         env.install({"alpha": [make_item("alpha", i) for i in range(250)]})
         report = env.run(
-            db,
-            make_config(source_ids=("alpha",)),
-            None,
-            limit_usd=100.0,
-            dry_run=True,
-            batch_size=100,
+            db, config, None, limit_usd=100.0, dry_run=True, batch_size=100
         )
         assert report.batches_total == 3
         assert report.longest_batch == 100
-        assert report.eta_seconds > 0
-        assert config is not None
+        assert report.eta_seconds == pytest.approx(100 * bf.SECONDS_PER_MATERIAL)
 
     def test_warns_when_the_estimate_exceeds_the_limit(self, db, env):
         env.install({"alpha": [make_item("alpha", i) for i in range(100)]})
@@ -372,10 +372,39 @@ class TestWrite:
             url=url,
             statements=[make_statement(url, 0), make_statement(url, 1)],
         )
-        assert bf.persist_statements(db, [result]) == (2, 0)
+        assert bf.persist_statements(db, [(0, result)]) == (2, 0)
         # A second write of the same material collides on (source_url, index).
-        assert bf.persist_statements(db, [result]) == (0, 2)
+        assert bf.persist_statements(db, [(0, result)]) == (0, 2)
         assert len(rows(db)) == 2
+
+    def test_materials_sharing_one_url_do_not_collide(self, db):
+        """A changelog page without anchors hands over many materials under
+        one address; two of them must not overwrite each other."""
+        url = "https://alpha.test/changelog"
+        first = EnrichResult(
+            source_id="alpha", url=url, statements=[make_statement(url, 0)]
+        )
+        second = EnrichResult(
+            source_id="alpha", url=url, statements=[make_statement(url, 0)]
+        )
+        assert bf.persist_statements(db, [(0, first), (1, second)]) == (2, 0)
+        stored = rows(db)
+        assert [row["statement_index"] for row in stored] == [
+            0,
+            bf.EVENTS_PER_MATERIAL,
+        ]
+        ids = {
+            row[0] for row in db.execute("SELECT statement_id FROM event_statements")
+        }
+        assert len(ids) == 2
+
+    def test_slots_follow_document_order(self):
+        items = [
+            make_item("alpha", 0),
+            CollectedItem(url="https://alpha.test/x", title="t", raw_text="a"),
+            CollectedItem(url="https://alpha.test/x", title="t", raw_text="b"),
+        ]
+        assert bf.material_slots(items) == [0, 0, 1]
 
     def test_backfill_produces_no_delivery_and_no_signals(self, db, env):
         config = make_config(source_ids=("alpha",))
@@ -437,9 +466,7 @@ class TestBudget:
         env.install({"alpha": [make_item("alpha", i) for i in range(10)]})
         enricher = FakeEnricher()
         # Room for exactly three materials at 0.07 each.
-        report = env.run(
-            db, config, enricher, limit_usd=3 * COST_PER_MATERIAL, batch_size=10
-        )
+        report = env.run(db, config, enricher, limit_usd=limit_for(3), batch_size=10)
 
         assert report.budget_exhausted is True
         assert len(enricher.calls) == 3
@@ -456,7 +483,7 @@ class TestBudget:
             db,
             config,
             enricher,
-            limit_usd=5 * COST_PER_MATERIAL,
+            limit_usd=limit_for(5),
             concurrency=8,
             batch_size=1,  # forty batches, eight workers, one shared ceiling
         )
@@ -470,11 +497,30 @@ class TestBudget:
         config = make_config(source_ids=("alpha",), concurrency=1)
         env.install({"alpha": [make_item("alpha", i) for i in range(4)]})
         report = env.run(
-            db, config, FakeEnricher(), limit_usd=COST_PER_MATERIAL, batch_size=4
+            db, config, FakeEnricher(), limit_usd=limit_for(1), batch_size=4
         )
         journal = Journal(db, log_dir=env.log_dir, run_id=report.run_id)
         events = journal.events(run_id=report.run_id, kind=EventKind.BUDGET_EXCEEDED)
         assert len(events) == 1
+
+    def test_ceiling_adapts_when_calls_cost_more_than_the_price_table_says(
+        self, db, env
+    ):
+        """The Claude CLI bills its own session, well above the token price.
+        The run must notice and reserve against what it is actually paying."""
+        config = make_config(source_ids=("alpha",), concurrency=1)
+        env.install({"alpha": [make_item("alpha", i) for i in range(60)]})
+        real_cost = 10 * COST_PER_MATERIAL
+        enricher = FakeEnricher(cost_usd=real_cost)
+        report = env.run(
+            db, config, enricher, limit_usd=1.0, concurrency=1, batch_size=60
+        )
+
+        assert report.budget_exhausted is True
+        # Without adaptation the estimate would let 14 calls through at 0.7 USD
+        # each of overspend; with it the run stops within a call of the limit.
+        assert report.spent_usd <= 1.0 + real_cost
+        assert len(enricher.calls) <= 2 + int(1.0 / real_cost)
 
     def test_shared_budget_reserve_is_atomic(self):
         budget = bf.SharedBudget(1.0)
@@ -497,6 +543,72 @@ class TestBudget:
         assert len(granted) == 10
         assert len(errors) == 40
         assert budget.spent_usd == pytest.approx(1.0)
+
+
+# -- warming the prefix cache ------------------------------------------
+
+
+class TestWarmup:
+    def test_one_call_runs_before_the_fan_out(self, db, env):
+        """Eight workers starting together all miss the prefix cache and each
+        pay to create it. One call first makes the rest cache reads."""
+        config = make_config(source_ids=("alpha",), concurrency=8)
+        env.install({"alpha": [make_item("alpha", i) for i in range(9)]})
+
+        order: list[int] = []
+
+        class OrderedEnricher(FakeEnricher):
+            def enrich(self, item, source):
+                with self._lock:
+                    order.append(self._in_flight)
+                return super().enrich(item, source)
+
+        enricher = OrderedEnricher(delay=0.01)
+        report = env.run(
+            db, config, enricher, limit_usd=5.0, concurrency=8, batch_size=4
+        )
+
+        assert order[0] == 0, "первый вызов идёт в одиночку"
+        assert enricher.max_in_flight > 1, "после прогрева пошла параллель"
+        assert report.warmup_usd == pytest.approx(COST_PER_MATERIAL)
+        assert report.materials_processed == 9
+        assert len(rows(db)) == 9
+
+    def test_warmup_is_checkpointed_under_its_own_stage(self, db, env):
+        config = make_config(source_ids=("alpha",), concurrency=2)
+        env.install({"alpha": [make_item("alpha", i) for i in range(3)]})
+        report = env.run(db, config, FakeEnricher(), limit_usd=5.0, batch_size=2)
+
+        stages = Journal(
+            db, log_dir=env.log_dir, run_id=report.run_id
+        ).completed_stages(report.run_id)
+        assert "backfill:alpha:warmup" in stages
+        assert report.complete
+        assert len(rows(db)) == 3
+
+    def test_a_failed_warmup_only_warns(self, db, env):
+        config = make_config(source_ids=("alpha",), concurrency=2)
+        env.install({"alpha": [make_item("alpha", i) for i in range(3)]})
+
+        class BrokenFirstCall(FakeEnricher):
+            def enrich(self, item, source):
+                if not self.calls:
+                    self.calls.append(item.url)
+                    raise RuntimeError("модель недоступна")
+                return super().enrich(item, source)
+
+        report = env.run(db, config, BrokenFirstCall(), limit_usd=5.0, batch_size=2)
+
+        assert any("прогрев" in note for note in report.notes)
+        assert report.materials_failed == 1
+        assert report.statements_added == 2, "остальные материалы обработаны"
+
+    def test_warmup_can_be_switched_off(self, db, env):
+        config = make_config(source_ids=("alpha",), concurrency=2)
+        env.install({"alpha": [make_item("alpha", i) for i in range(2)]})
+        report = env.run(db, config, FakeEnricher(), limit_usd=5.0, warm_prefix=False)
+        assert report.warmup_usd == 0.0
+        assert len(rows(db)) == 2
 
 
 # -- resuming ----------------------------------------------------------
@@ -526,7 +638,15 @@ class TestResume:
         monkeypatch.setattr(bf, "persist_statements", flaky_persist)
         first = FakeEnricher()
         with pytest.raises(RuntimeError):
-            env.run(db, config, first, limit_usd=5.0, concurrency=1, batch_size=100)
+            env.run(
+                db,
+                config,
+                first,
+                limit_usd=5.0,
+                concurrency=1,
+                batch_size=100,
+                warm_prefix=False,
+            )
 
         assert len(rows(db)) == 3, "успевшее записаться остаётся в корпусе"
         run_id = bf.find_unfinished_run(db)
@@ -538,7 +658,15 @@ class TestResume:
 
         monkeypatch.setattr(bf, "persist_statements", real_persist)
         second = FakeEnricher()
-        report = env.run(db, config, second, limit_usd=5.0, resume=True, concurrency=1)
+        report = env.run(
+            db,
+            config,
+            second,
+            limit_usd=5.0,
+            resume=True,
+            concurrency=1,
+            warm_prefix=False,
+        )
 
         assert report.run_id == run_id
         assert report.resumed is True
@@ -564,9 +692,10 @@ class TestResume:
             db,
             config,
             enricher,
-            limit_usd=COST_PER_MATERIAL,
+            limit_usd=limit_for(1),
             concurrency=1,
             batch_size=1,
+            warm_prefix=False,
         )
         assert first.budget_exhausted
 
@@ -579,9 +708,61 @@ class TestResume:
             resume=True,
             concurrency=1,
             batch_size=1,
+            warm_prefix=False,
         )
         assert empty_url not in resumed_enricher.calls
         assert second.resumed is True
+
+    def test_ctrl_c_keeps_the_finished_batches_and_resume_finishes(self, db, env):
+        config = make_config(source_ids=("alpha",), concurrency=1)
+        env.install({"alpha": [make_item("alpha", i) for i in range(4)]})
+
+        class InterruptingEnricher(FakeEnricher):
+            def enrich(self, item, source):
+                if len(self.calls) >= 1:
+                    self.calls.append(item.url)
+                    raise KeyboardInterrupt
+                return super().enrich(item, source)
+
+        enricher = InterruptingEnricher()
+        report = env.run(
+            db,
+            config,
+            enricher,
+            limit_usd=5.0,
+            concurrency=1,
+            batch_size=1,
+            warm_prefix=False,
+        )
+
+        assert report.interrupted is True
+        assert report.complete is False
+        assert len(rows(db)) == 1, "первая пачка записана до прерывания"
+        assert report.spent_usd == pytest.approx(COST_PER_MATERIAL), (
+            "прерванный вызов не оплачивается"
+        )
+
+        run_id = bf.find_unfinished_run(db)
+        assert run_id == report.run_id
+        stages = Journal(db, log_dir=env.log_dir, run_id=run_id).completed_stages(
+            run_id
+        )
+        assert bf.batch_stage("alpha", 0) in stages
+        assert bf.batch_stage("alpha", 1) not in stages
+
+        resumed = env.run(
+            db,
+            config,
+            FakeEnricher(),
+            limit_usd=5.0,
+            resume=True,
+            concurrency=1,
+            batch_size=1,
+            warm_prefix=False,
+        )
+        assert resumed.run_id == run_id
+        assert resumed.complete
+        assert len(rows(db)) == 4
 
     def test_resume_carries_the_spend_into_the_new_budget(self, db, env):
         config = make_config(source_ids=("alpha",), concurrency=1)
@@ -590,7 +771,7 @@ class TestResume:
             db,
             config,
             FakeEnricher(),
-            limit_usd=2 * COST_PER_MATERIAL,
+            limit_usd=limit_for(2),
             concurrency=1,
             batch_size=1,
         )
@@ -601,7 +782,7 @@ class TestResume:
             db,
             config,
             FakeEnricher(),
-            limit_usd=3 * COST_PER_MATERIAL,
+            limit_usd=limit_for(3),
             resume=True,
             concurrency=1,
             batch_size=1,
@@ -695,6 +876,33 @@ class TestSelection:
         assert bf.estimate_eta_seconds([10] * 8, 8) == pytest.approx(
             10 * bf.SECONDS_PER_MATERIAL
         )
+
+
+# -- cost profiles -----------------------------------------------------
+
+
+class TestCostProfiles:
+    def test_cli_profile_prices_per_call_not_per_token(self, db, env):
+        config = make_config(source_ids=("alpha",))
+        env.install({"alpha": [make_item("alpha", i) for i in range(100)]})
+        report = env.run(
+            db,
+            config,
+            None,
+            limit_usd=100.0,
+            dry_run=True,
+            cost_profile=bf.COST_PROFILE_CLI,
+        )
+        expected = 100 * bf.CLI_WARM_CALL_USD + (
+            bf.CLI_COLD_CALL_USD - bf.CLI_WARM_CALL_USD
+        )
+        assert report.estimated_usd == pytest.approx(expected)
+
+    def test_token_profile_uses_the_price_table(self, db, env):
+        config = make_config(source_ids=("alpha",))
+        env.install({"alpha": [make_item("alpha", i) for i in range(10)]})
+        report = env.run(db, config, None, limit_usd=100.0, dry_run=True)
+        assert report.estimated_usd == pytest.approx(10 * COST_PER_MATERIAL)
 
 
 # -- CLI ---------------------------------------------------------------

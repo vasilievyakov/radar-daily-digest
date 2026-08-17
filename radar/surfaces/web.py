@@ -77,9 +77,21 @@ SOURCE_FORMS = ("источник", "источника", "источников"
 MATERIAL_FORMS = ("материал", "материала", "материалов")
 STATEMENT_FORMS = ("запись", "записи", "записей")
 
-NUMERALS_ACCUSATIVE = {
+NUMERALS_FEMININE = {
     1: "одну",
     2: "две",
+    3: "три",
+    4: "четыре",
+    5: "пять",
+    6: "шесть",
+    7: "семь",
+    8: "восемь",
+    9: "девять",
+}
+
+NUMERALS_MASCULINE = {
+    1: "один",
+    2: "два",
     3: "три",
     4: "четыре",
     5: "пять",
@@ -268,6 +280,7 @@ p { margin: 0 0 0.9rem; }
 .card.lead h2 { font-size: 1.6rem; margin-bottom: 0.7rem; }
 .lede .when { color: var(--ink-soft); }
 .why { color: var(--ink); }
+.when-missing { font-family: var(--sans); font-size: 0.92rem; color: var(--ink-soft); }
 .label { font-family: var(--sans); font-size: 0.85rem; color: var(--ink-faint); }
 .fact { margin: 1rem 0 1.2rem; padding-left: 0.9rem; border-left: 2px solid var(--line-strong); }
 .fact-head { margin: 0 0 0.35rem; font-family: var(--sans); font-size: 0.9rem; }
@@ -388,6 +401,17 @@ def clean(text: str | None) -> str:
     return _WHITESPACE_RE.sub(" ", (text or "").strip())
 
 
+def sentence(text: str) -> str:
+    """Capitalize and close a phrase that has to stand on its own line."""
+    text = clean(text)
+    if not text:
+        return ""
+    text = text[0].upper() + text[1:]
+    if not text.endswith((".", "!", "?", ":")):
+        text += "."
+    return text
+
+
 # -- numbers and dates -------------------------------------------------
 
 
@@ -404,9 +428,13 @@ def count_phrase(count: int, forms: tuple[str, str, str]) -> str:
     return f"{fmt_int(count)} {plural(count, forms)}"
 
 
-def spelled_count_phrase(count: int, forms: tuple[str, str, str]) -> str:
+def spelled_count_phrase(
+    count: int,
+    forms: tuple[str, str, str],
+    numerals: dict[int, str] | None = None,
+) -> str:
     """«три записи» reads as prose, «3 записи» reads as a metric."""
-    numeral = NUMERALS_ACCUSATIVE.get(count, fmt_int(count))
+    numeral = (numerals or NUMERALS_FEMININE).get(count, fmt_int(count))
     return f"{numeral} {plural(count, forms)}"
 
 
@@ -416,7 +444,9 @@ def fmt_int(value: int | float) -> str:
 
 def fmt_money(usd: float) -> str:
     if usd and abs(usd) < 0.01:
-        return f"${usd:.4f}"
+        # Mixing $0.0040 with $0.21 in one column costs more legibility than
+        # the fourth decimal is worth.
+        return "< $0.01"
     return f"${usd:.2f}"
 
 
@@ -542,12 +572,12 @@ def signal_when(signal: Signal, today: date) -> str:
 # -- fragments ---------------------------------------------------------
 
 
-def render_fact(fact: Fact) -> str:
+def render_fact(fact: Fact, today: date) -> str:
     label = FACT_KIND_LABELS.get(fact.kind, str(fact.kind))
     value = clean(fact.value)
-    parsed, _ = parse_date_value(fact.value)
-    if parsed is not None:
-        value = parsed.isoformat()
+    parsed, precision = parse_date_value(fact.value)
+    if parsed is not None and fact.kind in DATE_FACT_KINDS:
+        value = fmt_date(parsed, today, precision)
     parts = [
         '<div class="fact">',
         f'<p class="fact-head"><span class="kind">{esc(label)}:</span> '
@@ -565,12 +595,11 @@ def render_fact(fact: Fact) -> str:
     return "\n".join(parts)
 
 
-def render_facts(facts: list[Fact]) -> str:
+def render_facts(facts: list[Fact], today: date) -> str:
     if not facts:
         return ""
-    return (
-        '<div class="facts">\n' + "\n".join(render_fact(f) for f in facts) + "\n</div>"
-    )
+    body = "\n".join(render_fact(f, today) for f in facts)
+    return f'<div class="facts">\n{body}\n</div>' 
 
 
 def render_precedent(precedent: Precedent, today: date) -> str:
@@ -616,20 +645,23 @@ def render_context(signal: Signal, today: date) -> str:
 def render_card_body(signal: Signal, today: date) -> str:
     parts: list[str] = []
     when = signal_when(signal, today)
+    missing_date = when == MISSING_SUNSET_DATE
     summary = clean(signal.summary)
-    if when or summary:
-        lede = []
-        if when:
-            lede.append(f'<span class="when">{esc(when)}.</span>')
-        if summary:
-            lede.append(esc(summary))
+    lede = []
+    if when and not missing_date:
+        lede.append(f'<span class="when">{esc(when)}.</span>')
+    if summary:
+        lede.append(esc(summary))
+    if lede:
         parts.append('<p class="lede">' + " ".join(lede) + "</p>")
+    if missing_date:
+        parts.append(f'<p class="when-missing">{esc(sentence(when))}</p>')
     if signal.why_it_matters:
         parts.append(
             '<p class="why"><span class="label">Почему это важно:</span> '
             f"{esc(clean(signal.why_it_matters))}</p>"
         )
-    parts.append(render_facts(signal.facts))
+    parts.append(render_facts(signal.facts, today))
     parts.append(render_context(signal, today))
     meta: list[str] = []
     if signal.primary_url:
@@ -715,28 +747,24 @@ def upcoming_entries(signal: Signal, today: date) -> list[tuple[date, str, str |
     attached to the quiet day.
     """
     entries: list[tuple[date, str, str | None]] = []
+    from_corpus: set[date] = set()
     for precedent in signal.precedents:
         if precedent.event_date and precedent.event_date >= today:
             entries.append(
                 (precedent.event_date, clean(precedent.text), precedent.source_url)
             )
+            from_corpus.add(precedent.event_date)
     for fact in signal.facts:
         if fact.kind not in DATE_FACT_KINDS:
             continue
         value, _ = parse_date_value(fact.value)
-        if value is None or value < today:
+        # A corpus record names the deadline in the reader's language; the raw
+        # quote would repeat the same day in the vendor's.
+        if value is None or value < today or value in from_corpus:
             continue
         text = clean(fact.evidence) or FACT_KIND_LABELS.get(fact.kind, str(fact.kind))
         entries.append((value, text, fact.source_url))
-    seen: set[tuple[date, str]] = set()
-    unique: list[tuple[date, str, str | None]] = []
-    for when, text, url in sorted(entries, key=lambda item: item[0]):
-        key = (when, text)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append((when, text, url))
-    return unique
+    return sorted(entries, key=lambda item: item[0])
 
 
 def render_upcoming(signal: Signal, today: date) -> str:
@@ -919,7 +947,8 @@ def load_run_log(
             error=row["error"],
         )
         for row in conn.execute(
-            "SELECT * FROM source_runs WHERE run_id = ? ORDER BY status, source_id",
+            "SELECT * FROM source_runs WHERE run_id = ? ORDER BY CASE status "
+            "WHEN 'failed' THEN 0 WHEN 'empty' THEN 1 ELSE 2 END, source_id",
             (run_id,),
         )
     ]
@@ -1063,7 +1092,7 @@ def _digest_footer(
         failed = run.failed_sources
         if failed:
             names = ", ".join(esc(s.source_id) for s in failed)
-            word = spelled_count_phrase(len(failed), SOURCE_FORMS)
+            word = spelled_count_phrase(len(failed), SOURCE_FORMS, NUMERALS_MASCULINE)
             verb = "не ответил" if len(failed) == 1 else "не ответили"
             lines.append(f"{word.capitalize()} {verb}: {names}.")
         for source in run.empty_sources:
@@ -1165,10 +1194,7 @@ def _failure_body(signal: Signal, today: date, links: PageLinks) -> str:
     reason = clean(signal.failure_reason)
     parts: list[str] = []
     if reason:
-        sentence = reason[0].upper() + reason[1:]
-        if not sentence.endswith((".", "!", "?")):
-            sentence += "."
-        parts.append(f'<p class="lead-note">{esc(sentence)}</p>')
+        parts.append(f'<p class="lead-note">{esc(sentence(reason))}</p>')
     if signal.summary:
         parts.append(f"<p>{esc(clean(signal.summary))}</p>")
     collected = _first_stat(signal.stats, ("items_collected", "items_total"))
@@ -1179,10 +1205,6 @@ def _failure_body(signal: Signal, today: date, links: PageLinks) -> str:
         )
     parts.append(render_upcoming(signal, today))
     parts.append(render_stats_details(signal.stats))
-    parts.append(
-        f'<p class="meta-row"><a href="{esc(links.run_log)}">Лог прогона</a> '
-        "показывает, на какой стадии остановилась работа.</p>"
-    )
     parts.append(f'<p class="sig">{esc(signal.signal_id)}</p>')
     return "\n".join(part for part in parts if part)
 
@@ -1440,9 +1462,8 @@ def _density_table(corpus: CorpusView) -> str:
             + f'<td class="num">{esc(fmt_int(totals[vendor]))}</td></tr>'
         )
     legend = (
-        "Ячейки с "
-        + count_phrase(corpus.dense_threshold, STATEMENT_FORMS)
-        + " и более выделены: по ним ретривал находит прецеденты."
+        f"Ячейки, где записей не меньше {fmt_int(corpus.dense_threshold)}, "
+        "выделены: по ним ретривал находит прецеденты."
     )
     return (
         '<div class="scroll"><table>\n'

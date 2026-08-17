@@ -147,7 +147,10 @@ class ExtractedEvent(BaseModel):
         default="", description="only when the request says the vendor is unknown"
     )
     evidence: str = Field(
-        default="", description="verbatim quote the statement rests on"
+        default="",
+        description=(
+            f"verbatim quote the statement rests on, at most {MAX_EVIDENCE_WORDS} words"
+        ),
     )
     facts: list[ExtractedFact] = Field(default_factory=list)
 
@@ -189,23 +192,28 @@ prose and you never ask a question back.
    plausible guess is a defect, and inventing a year for a date printed without
    one is the most common way to produce it.
 
-3. EVERY FACT CARRIES EVIDENCE: a quote copied character for character from
-   the material, at most {MAX_EVIDENCE_WORDS} words, in the language of the
-   material. Copy it, do not paraphrase it, do not translate it, do not repair
-   spelling or punctuation, do not stitch two distant fragments together. The
-   quote must contain the value it supports. A fact whose quote cannot be found
+3. EVERY FACT AND EVERY STATEMENT CARRIES EVIDENCE: a quote copied character
+   for character from the material, in its language, at most
+   {MAX_EVIDENCE_WORDS} words. Copy one continuous run of text. Do not paraphrase
+   it, do not translate it, do not repair spelling or punctuation, do not stitch
+   a table header onto a table row or two distant fragments onto each other.
+   The quote must contain the value it supports. A quote that cannot be found
    verbatim in the material is discarded, and producing it was wasted work.
 
-4. ONE EVENT PER CHANGE. A material announcing three changes yields three
-   events, each with its own statement, type, date and facts. Two sentences
-   about the same change are one event. Background, policy explanations,
-   migration advice and marketing are not events.
+4. ONE EVENT PER CHANGE, NOT PER AFFECTED ITEM. A material announcing three
+   changes yields three events, each with its own statement, type, date and
+   facts. Two sentences about the same change are one event, and one
+   announcement retiring nine model snapshots on one date is one event whose
+   nine products are listed as affected_product facts. Split into separate
+   events only when the dates differ or the kind of change differs. Background,
+   policy explanations, migration advice and marketing are not events.
 
 5. THE EVENT DATE IS NOT THE PUBLICATION DATE. "On June 5, 2026 we notified
    developers of the retirement on August 5, 2026" is one event dated
-   2026-06-05 with a sunset_date fact of 2026-08-05. When the material prints a
-   date with no year, put the printed form in event_date_text and leave
-   event_date empty.
+   2026-06-05 with a sunset_date fact of 2026-08-05. When the material names no
+   announcement date and the only date it prints is the day the change takes
+   effect, that day is the event date. When it prints a date with no year, put
+   the printed form in event_date_text and leave event_date empty.
 
 6. STATEMENTS ARE WRITTEN IN LITERARY RUSSIAN, one to three sentences, naming
    the vendor, the product and what changed. No emoji, no marketing adjectives,
@@ -452,6 +460,13 @@ class LlmEnricher:
             return
 
         chunks = split_dated_chunks(text, self.max_chars)
+        if len(chunks) == MAX_CHUNKS and len(text) > MAX_CHUNKS * self.max_chars:
+            # Truncation is a decision, and a decision that shrinks the corpus
+            # has to be visible rather than inferred from a short digest.
+            self._note(
+                f"{item.url}: {len(text)} chars cut to the first {MAX_CHUNKS} "
+                "chunks; the tail of the material was not enriched"
+            )
         model = str(self.models.get("enrich") or "")
         if not model:
             result.error = "no model configured for stage enrich"
@@ -614,7 +629,9 @@ class LlmEnricher:
                     EventKind.FACT_REJECTED,
                     item.url,
                     outcome=Outcome.FAILED,
-                    kind=entry.kind,
+                    # `fact_kind`, not `kind`: Journal.record already owns that
+                    # name and a payload key would shadow it.
+                    fact_kind=entry.kind,
                     value=entry.value,
                     reason=entry.reason,
                 )
@@ -704,10 +721,11 @@ class LlmEnricher:
             return None
 
         evidence = event.evidence.strip()
-        if evidence and not verify_evidence(evidence, text)[0]:
-            rejected.append(
-                RejectedFact("statement", body[:80], evidence, "evidence_not_in_source")
-            )
+        ok, reason = verify_evidence(evidence, text) if evidence else (False, "")
+        if evidence and not ok:
+            # The verifier's own reason travels on: "too long" and "not on the
+            # page" are different defects and get fixed in different places.
+            rejected.append(RejectedFact("statement", body[:80], evidence, reason))
             evidence = ""
         if not evidence:
             evidence = facts[0].evidence if facts else ""
@@ -841,14 +859,16 @@ class LlmEnricher:
 
     def _record(
         self,
-        kind: EventKind,
+        event_kind: EventKind,
         target: str,
         outcome: Outcome = Outcome.OK,
         **payload: Any,
     ) -> None:
+        # `event_kind`, not `kind`: a rejected fact carries its own `kind` in
+        # the payload and the two would collide.
         if self.journal is not None:
             self.journal.record(
-                kind, actor=STAGE, target=target, outcome=outcome, **payload
+                event_kind, actor=STAGE, target=target, outcome=outcome, **payload
             )
 
     def _note(self, message: str) -> None:

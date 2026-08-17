@@ -1,0 +1,383 @@
+theme:
+  name: "Отключения и ломающие изменения в облачной инфраструктуре и платёжных API"
+  description: >
+    Изменения в управляемых сервисах, движках баз данных, очередях и платёжных
+    API, на которых работает продакшен бэкенда: AWS, Azure, Google Cloud,
+    Cloudflare, Stripe, Shopify, PostgreSQL, RabbitMQ, Kubernetes, Terraform.
+    Тема сознательно вне ИИ: она проверяет, что пайплайн ловит форму события,
+    а не словарь одной отрасли.
+  relevance_criteria: >
+    Релевантно то, что заставит команду что-то сделать к названной дате: вывод
+    версии или сервиса из эксплуатации, конец поддержки движка, обязательная
+    миграция на новую версию API, закрытие региона или эндпоинта, изменение
+    квот и лимитов, изменение тарифа, уязвимость с обязательным обновлением.
+  exclusion_criteria: >
+    Нерелевантно: анонсы новых продуктов без влияния на существующие, маркетинг
+    и кейсы клиентов, отчёты об инцидентах и статус-страницы, бета-функции без
+    даты общедоступности, обзоры и сравнения провайдеров, кадровые и
+    инвестиционные новости, любые материалы про ИИ-сервисы этих же вендоров.
+
+# Словарь нормализации фиксируется до первого запроса к источникам. Пустой
+# vendor или change_type ломает обязательные фильтры ретривала (FR-5.16,
+# FR-6.13), а расширять словарь после бэкфилла поздно.
+corpus:
+  retention: forever
+
+  # Готовность корпуса. Плотность на ячейку (vendor, change_type) важнее
+  # общего объёма: фильтры ретривала конъюнктивны.
+  readiness:
+    min_statements: 250
+    # Глубина больше, чем у темы AI-инструментов: цикл вывода из эксплуатации
+    # здесь годовой, и на полугодовом корпусе прецедентов просто нет.
+    min_depth_days: 365
+    min_vendors_with_dense_cell: 3
+    min_events_per_dense_cell: 3
+    dense_cell_change_types: [deprecation, breaking_change, limits]
+
+  vendors:
+    - id: aws
+      label: "AWS"
+      aliases: [AWS, "Amazon Web Services", Lambda, "AWS Lambda", "Amazon RDS",
+                RDS, Aurora, "Amazon Aurora", "Elastic Beanstalk", EventBridge]
+    - id: azure
+      label: "Microsoft Azure"
+      aliases: [Azure, "Microsoft Azure", "Azure SQL", "Azure Cosmos DB",
+                "Service Bus", "Azure Service Bus", "Azure Functions"]
+    # Голый «Microsoft» в алиасы не вынесен намеренно, по тому же уроку, что и
+    # голый «GitHub» в теме AI-инструментов: нормализация ищет вхождение
+    # подстроки, а Microsoft упоминается в чужих материалах постоянно.
+    # Принадлежность материала Azure задаёт поле vendor у источника.
+    - id: google_cloud
+      label: "Google Cloud"
+      aliases: ["Google Cloud", GCP, GKE, "Google Kubernetes Engine",
+                "Cloud SQL", "Cloud Run", "Cloud Functions", "Artifact Registry"]
+    - id: cloudflare
+      label: "Cloudflare"
+      aliases: [Cloudflare, cloudflare, Workers, "Cloudflare Workers", R2, D1,
+                "Durable Objects"]
+    - id: stripe
+      label: "Stripe"
+      aliases: [Stripe, stripe, "Stripe API", "stripe-node", "stripe-python"]
+    - id: shopify
+      label: "Shopify"
+      aliases: [Shopify, shopify, "Shopify Admin API", "Storefront API"]
+    - id: postgresql
+      label: "PostgreSQL"
+      aliases: [PostgreSQL, Postgres, postgres, postgresql, "PostgreSQL Global
+                Development Group"]
+    - id: rabbitmq
+      label: "RabbitMQ"
+      aliases: [RabbitMQ, rabbitmq, "rabbitmq-server", AMQP]
+    - id: kubernetes
+      label: "Kubernetes"
+      aliases: [Kubernetes, kubernetes, k8s, kubectl, kubeadm]
+    - id: hashicorp
+      label: "HashiCorp"
+      aliases: [HashiCorp, hashicorp, Terraform, terraform, "Terraform Cloud",
+                HCL]
+    # Вендоры без собственного источника. Нужны словарю, потому что их имена
+    # встречаются в материалах провайдеров: «Amazon RDS for MySQL 5.7».
+    - id: mysql
+      label: "MySQL"
+      aliases: [MySQL, mysql, MariaDB, mariadb]
+    - id: redis
+      label: "Redis"
+      aliases: [Redis, redis, Valkey, valkey, ElastiCache]
+    - id: kafka
+      label: "Apache Kafka"
+      aliases: [Kafka, kafka, "Apache Kafka", MSK, "Amazon MSK"]
+
+  # Типы изменений домена.
+  #
+  # Восьмым типом здесь напрашивается `end_of_life`: «поддержка PostgreSQL 13
+  # закончилась» — это не то же самое, что «объявлен вывод из эксплуатации»,
+  # у первого дата в прошлом и действие обязательно уже сейчас. Добавить его
+  # конфигом нельзя: множество значений задано перечислением ChangeType в
+  # radar/models.py, и запись с чужим id роняет нормализацию, ретривал и
+  # тренды. Поэтому конец поддержки здесь сведён к `deprecation`, а граница
+  # зафиксирована в docs/portability.md. Ярлыки — свои, идентификаторы —
+  # какие разрешает код.
+  change_types:
+    - id: deprecation
+      label: "Вывод из эксплуатации"
+    - id: breaking_change
+      label: "Обязательная миграция"
+    - id: limits
+      label: "Изменение квот и лимитов"
+    - id: pricing
+      label: "Изменение тарифа"
+    - id: security
+      label: "Уязвимость и обязательное обновление"
+    - id: release
+      label: "Выпуск версии"
+    - id: other
+      label: "Прочее"
+
+sources:
+  # Каждый адрес проверен curl 2026-08-17. В комментарии — код ответа, размер
+  # и число уникальных дат на странице; таблица целиком в docs/portability.md.
+
+  # --- Приоритет 1: реестры отключений и официальные changelog ---
+
+  # http=200, 69 КБ, таблица «Deprecation date / Block function create /
+  # Block function update». Ровно та же форма, что реестр отключений моделей
+  # Anthropic: строка = продукт, колонка = дата в будущем.
+  - id: aws_lambda_runtime_deprecations
+    vendor: aws
+    type: html_scrape
+    url: https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 5
+
+  # http=200, 3.0 МБ, 320 уникальных дат. Заголовки h3 — версии API вида
+  # «2026-07-29.dahlia», то есть дата события стоит в самом заголовке раздела.
+  # На глубине 1095 дней парсер достаёт 7 датированных версий, поэтому порог
+  # ожидаемых записей здесь ниже, чем у лент.
+  - id: stripe_api_changelog
+    vendor: stripe
+    type: html_scrape
+    url: https://docs.stripe.com/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 1095
+    min_expected_items: 5
+
+  # http=200, 13 КБ, 55 уникальных дат. Колонка «Final Release» — дата конца
+  # поддержки мажорной версии, объявленная за годы вперёд.
+  - id: postgresql_release_support
+    vendor: postgresql
+    type: html_scrape
+    url: https://www.postgresql.org/support/versioning/
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: false
+    min_expected_items: 5
+
+  # http=200, 249 КБ, 14 уникальных дат. Внимание: адрес cloud.google.com
+  # редиректит на docs.cloud.google.com, содержимое то же. Таблицы
+  # «Deprecated / Removed» по функциям и по API Kubernetes.
+  - id: gke_deprecations
+    vendor: google_cloud
+    type: html_scrape
+    url: https://cloud.google.com/kubernetes-engine/docs/deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: false
+    min_expected_items: 5
+
+  # --- Приоритет 1-2: ленты ---
+
+  # http=200, 148 КБ, 50 записей, 136 дат в pubDate. Официальная лента Azure
+  # Updates. Страница azure.microsoft.com/updates отдаёт 200 и ноль дат:
+  # она рисуется скриптом, и адрес .../updates/feed/ уводит обратно на неё.
+  - id: azure_updates_feed
+    vendor: azure
+    type: rss
+    url: https://www.microsoft.com/releasecommunications/api/v2/azure/rss
+    priority: 1
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 10
+
+  # http=200, 7.1 МБ, 1114 записей. Самая крупная лента среза: Cloudflare
+  # пишет в changelog по несколько раз в день, поэтому фильтр релевантности
+  # на ней работает больше, чем на всех остальных источниках вместе.
+  - id: cloudflare_changelog_feed
+    vendor: cloudflare
+    type: rss
+    url: https://developers.cloudflare.com/changelog/rss.xml
+    priority: 1
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 10
+
+  # http=200, 1.6 МБ, 791 запись. Версии Admin API живут ровно год, и лента
+  # объявляет дату, после которой версия перестаёт отвечать.
+  - id: shopify_changelog_feed
+    vendor: shopify
+    type: rss
+    url: https://shopify.dev/changelog/feed.xml
+    priority: 1
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 10
+
+  # --- Приоритет 2: релизы ---
+
+  # gh api repos/rabbitmq/rabbitmq-server/releases: 100 релизов, 85 уникальных
+  # дат публикации. В теле релиза отдельный раздел о несовместимых изменениях.
+  - id: gh_rabbitmq
+    vendor: rabbitmq
+    type: github_releases
+    url: https://github.com/rabbitmq/rabbitmq-server
+    priority: 2
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 5
+
+  # gh api repos/hashicorp/terraform/releases: 100 релизов, 86 уникальных дат.
+  - id: gh_terraform
+    vendor: hashicorp
+    type: github_releases
+    url: https://github.com/hashicorp/terraform
+    priority: 2
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 5
+
+  # gh api repos/kubernetes/kubernetes/releases: 100 релизов, 53 уникальных
+  # даты. Удаления версий API объявляются в примечаниях к минорным релизам.
+  - id: gh_kubernetes
+    vendor: kubernetes
+    type: github_releases
+    url: https://github.com/kubernetes/kubernetes
+    priority: 2
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 5
+
+collection:
+  window_hours: 26
+  timeout_seconds: 30
+  max_retries: 2
+  polite_delay_seconds: 1.0
+
+retrieval:
+  # Главное отличие домена от темы AI-инструментов. Провайдер объявляет вывод
+  # из эксплуатации за год-два, поэтому окно 180 дней здесь возвращает пусто
+  # там, где прецеденты есть: прошлое отключение того же вендора отстоит на
+  # полтора года. Короткое окно оставлено первым, чтобы свежая серия всё-таки
+  # датировалась узко.
+  windows: [365, 1095]
+  required_filters: [vendor, change_type]
+  max_results_per_cluster: 10
+  min_evidence_for_trend: 2
+  # Смежные типы, которые классификатор путает именно в этом домене.
+  # «Версия API перестаёт отвечать» — это и вывод из эксплуатации, и
+  # обязательная миграция; квоты и тарифы меняют одним объявлением.
+  relaxed_change_type_groups:
+    - [deprecation, breaking_change]
+    - [limits, pricing]
+
+trends:
+  min_members: 3
+  # Полгода вместо 90 дней: у годового цикла отключений трёхмесячная пауза —
+  # норма, а не затухание линии.
+  dormant_after_days: 180
+
+scoring:
+  # Стек, на котором читатель реально держит продакшен. Без этого списка
+  # фактор пересечения со стеком не срабатывает никогда.
+  active_stack:
+    - aws
+    - postgresql
+    - stripe
+    - cloudflare
+    - kubernetes
+  # Полгода вместо 90 дней. При горизонте 90 дней объявление за год до
+  # отключения получает ноль очков срочности, то есть самое ценное событие
+  # домена оказывается невидимым ровно до того момента, когда готовиться уже
+  # поздно.
+  urgency_horizon_days: 180
+  weights:
+    change_type:
+      # Вывод из эксплуатации — центральное событие темы, у него всегда есть
+      # дата и всегда есть обязательное действие.
+      deprecation: 34
+      breaking_change: 30
+      # Квоты выше цены: превышенная квота останавливает обработку, выросшая
+      # цена — нет.
+      limits: 22
+      security: 20
+      pricing: 14
+      release: 8
+      other: 3
+    stack_overlap: 22
+    # Выше, чем в теме AI-инструментов: там дата события есть не всегда, здесь
+    # она есть почти всегда, и вся ценность сводки — в расстоянии до неё.
+    urgency: 28
+    source_authority: 15
+    # Ниже, чем в теме AI-инструментов. Там новизна — почти весь сигнал; здесь
+    # история, которая тянется третий месяц к дате отключения, важна не меньше
+    # первого объявления, и новизна не должна её перебивать.
+    novelty:
+      new: 12
+      updated: 10
+      continuing: 6
+      resolved: 5
+  publish_threshold: 58
+  digest_threshold: 38
+
+filter:
+  threshold: 55
+  # SRC-2: материал приоритета 5 без подтверждения из приоритета 1-3 теряет
+  # столько очков.
+  uncorroborated_penalty: 30
+  batch_size: 8
+
+enrichment:
+  # Порядок отражает домен: дата отключения — первый вопрос к любому
+  # материалу, затронутый продукт или регион — второй.
+  fact_kinds: [sunset_date, effective_date, affected_product, version, limit, price]
+  require_evidence: true
+  max_evidence_words: 15
+
+delivery:
+  channels: [telegram, email]
+  schedule: "0 9 * * *"
+  timezone: "Europe/Moscow"
+  max_items_telegram: 5
+  quiet_day_message: true
+
+llm:
+  backend: auto        # auto | claude_cli | openrouter
+  timeout_seconds: 180
+  max_schema_retries: 2
+  concurrency: 8
+  batch_size: 100
+
+models:
+  cluster: null
+  filter: anthropic/claude-haiku-4.5
+  enrich: anthropic/claude-sonnet-5
+  # Дата отключения — то, ради чего сводку читают, поэтому путь вывода из
+  # эксплуатации получает дорогую модель, а массовое обогащение — нет.
+  enrich_critical: anthropic/claude-opus-5
+  trends: anthropic/claude-sonnet-5
+  score: null
+  embeddings: openai/text-embedding-3-small
+
+# Типы, уходящие на enrich_critical. Лимиты добавлены к списку темы
+# AI-инструментов: изменение квоты здесь несёт дату вступления в силу и
+# ломает продакшен так же, как отключение.
+critical_change_types: [deprecation, breaking_change, limits]
+
+budget:
+  # Лент в срезе меньше, чем в теме AI-инструментов, но Cloudflare и Shopify
+  # дают в разы больше материалов, и почти весь дневной расход — это фильтр
+  # релевантности на них.
+  max_usd_per_run: 0.40
+  # Бэкфилл мельче: из десяти источников историю отдают шесть.
+  max_usd_per_backfill: 18.00
+  max_usd_per_call: 0.50
+  stop_on_exceed: true
+
+# Обнаружение источников. Темы GitHub — свои: инфраструктурные проекты, а не
+# ИИ-фреймворки.
+scout:
+  topics: [database, kubernetes, message-queue, payments, devops, cloud-native]
+  min_stars: 4000
+  min_stars_gained: 300
+  min_releases: 5
+  schedule: "0 9 * * 1"

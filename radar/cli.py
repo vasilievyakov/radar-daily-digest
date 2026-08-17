@@ -11,7 +11,6 @@ Output is Russian because a person reads it; code and identifiers are English.
 from __future__ import annotations
 
 import argparse
-import inspect
 import os
 import shutil
 import sqlite3
@@ -21,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from radar.backfill import (
+    COST_PROFILE_CLI,
+    COST_PROFILE_TOKENS,
     BackfillOptions,
     BackfillReport,
     BudgetNotSet,
@@ -83,55 +84,63 @@ def _duration(seconds: float) -> str:
     return f"{minutes} мин {secs} с" if minutes else f"{secs} с"
 
 
-def _build_enricher(config: ThemeConfig, args: argparse.Namespace) -> Any:
-    """Bind `radar.enrich.LlmEnricher` by parameter name.
+def _cost_profile(config: ThemeConfig) -> str:
+    """Which price model the estimate should use.
 
-    Stage 4 is written in parallel with this file, so its constructor is not
-    known here. Backfill itself depends only on the `Enricher` protocol; this
-    is the one place that touches the implementation, and it offers what it
-    has rather than guessing a positional signature.
+    Mirrors how `radar.llm_cli.make_backend` picks a backend, because the two
+    have to agree: token arithmetic describes OpenRouter, and the Claude CLI
+    is priced per session instead.
+    """
+    configured = (
+        str(
+            (config.models or {}).get("backend")
+            or config.section("llm").get("backend")
+            or "auto"
+        )
+        .strip()
+        .lower()
+    )
+    if configured in ("openrouter", "api"):
+        return COST_PROFILE_TOKENS
+    if configured in ("claude-cli", "cli", "claude"):
+        return COST_PROFILE_CLI
+    return (
+        COST_PROFILE_TOKENS
+        if os.environ.get(API_KEY_ENV, "").strip()
+        else COST_PROFILE_CLI
+    )
 
-    Neither the budget nor the run log is handed over: backfill owns the
-    ceiling (two counters would double-count), and the sqlite connection
-    behind the run log belongs to the calling thread.
+
+def _build_enricher(
+    config: ThemeConfig, args: argparse.Namespace, fetcher: Fetcher
+) -> Any:
+    """The one place that touches stage 4's implementation.
+
+    Backfill itself depends only on the `Enricher` protocol; assembling the
+    concrete enricher is a wiring decision and belongs here.
+
+    Neither the run log nor the budget is handed over. The run log writes to a
+    sqlite connection bound to the calling thread, and enrichment runs in a
+    pool; the ceiling belongs to backfill, and a second counter inside the
+    enricher would charge every call twice.
     """
     from radar.cache import ModelCache
     from radar.enrich import LlmEnricher
     from radar.llm_cli import make_backend
 
-    cache = ModelCache(args.cache)
-    offered: dict[str, Any] = {
-        "config": config,
-        "cache": cache,
-        "model_cache": cache,
-        "cache_root": args.cache,
-    }
-    params = inspect.signature(LlmEnricher).parameters
-    if "client" in params or "backend" in params:
-        client = make_backend(
-            config,
-            cache=cache,
-            timeout=float(config.section("llm").get("timeout_seconds", 180)),
-            max_schema_retries=int(config.section("llm").get("max_schema_retries", 2)),
-        )
-        offered["client"] = client
-        offered["backend"] = client
-    kwargs = {name: value for name, value in offered.items() if name in params}
-    missing = [
-        name
-        for name, param in params.items()
-        if name not in kwargs
-        and param.default is inspect.Parameter.empty
-        and param.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        and name != "self"
-    ]
-    if missing:
-        raise SystemExit(
-            "Не удалось собрать обогатитель: LlmEnricher требует "
-            f"{', '.join(missing)}. Соберите его вручную или запустите --dry-run."
-        )
-    return LlmEnricher(**kwargs)
+    llm = config.section("llm")
+    backend = make_backend(
+        config,
+        cache=ModelCache(args.cache),
+        timeout=float(llm.get("timeout_seconds", 180)),
+        max_schema_retries=int(llm.get("max_schema_retries", 2)),
+    )
+    return LlmEnricher(
+        config,
+        backend,
+        fetcher=fetcher,
+        ingest_mode="backfill",
+    )
 
 
 # -- rendering --------------------------------------------------------
@@ -196,7 +205,21 @@ def render_dry_run(report: BackfillReport, command: str) -> str:
         "",
         f"ОЦЕНКА СТОИМОСТИ: {report.estimated_usd:.2f} USD при лимите "
         f"{report.limit_usd:.2f} USD",
+        f"Модель обогащения: {report.model_base or 'не задана'}",
+        "Цена считается "
+        + (
+            "по замеру на claude CLI: 0.008 USD за прогретый вызов плюс один "
+            "дорогой на создание кэша префикса"
+            if report.cost_profile == COST_PROFILE_CLI
+            else "по прайсу токенов OpenRouter"
+        ),
     ]
+    if report.model_critical and report.model_critical != report.model_base:
+        lines.append(
+            f"Критичные типы уходят на {report.model_critical}: если бы туда ушли "
+            f"все материалы, вышло бы {report.estimated_max_usd:.2f} USD. "
+            "Реальная цифра между двумя."
+        )
     for note in report.notes:
         lines.append(f"Внимание: {note}")
     lines.append("")
@@ -246,6 +269,9 @@ def render_report(report: BackfillReport, resume_command: str) -> str:
         ),
         f"Источников закрыто:           {report.sources_completed} из "
         f"{report.sources_total}",
+        f"Прогрев кэша префикса:        {report.warmup_usd:.4f} USD",
+        f"Токенов:                      вход {report.tokens_in}, "
+        f"выход {report.tokens_out}",
         f"Потрачено:                    {report.spent_usd:.4f} USD из "
         f"{report.limit_usd:.2f}, остаток {report.remaining_usd:.4f}",
         f"Время:                        {_duration(report.duration_s)}",
@@ -307,12 +333,13 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         priorities=_priorities(args.priority),
         concurrency=args.concurrency,
         batch_size=args.batch_size,
+        cost_profile=_cost_profile(config),
         resume=args.resume,
         dry_run=args.dry_run,
         min_trend_members=args.min_trend_members,
     )
     fetcher = _fetcher(config, args.cache)
-    enricher = None if args.dry_run else _build_enricher(config, args)
+    enricher = None if args.dry_run else _build_enricher(config, args, fetcher)
 
     base = f"python -m radar.cli backfill --limit-usd {limit_usd:g}"
     if args.priority:

@@ -50,7 +50,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Callable
 
 from radar.adapters.base import CollectedItem, SourceConfig
-from radar.cache import canonical_url
+from radar.cache import canonical_url, digest
 from radar.collect import collect_all
 from radar.config import ThemeConfig
 from radar.contracts import EnrichResult, Enricher
@@ -76,6 +76,24 @@ STAGE_PREFIX = "backfill:"
 DEFAULT_CONCURRENCY = 8
 DEFAULT_BATCH_SIZE = 100
 
+# One URL can carry many materials: a changelog page whose headings have no
+# anchor gives every dated section the same address, and the collector keys a
+# material by URL plus content for exactly that reason. The corpus key has to
+# survive it, so the stored index is the material's slot on its URL times this
+# number, plus the position of the event inside that material. Both halves are
+# recomputed identically on every run, which is what keeps FR-6.7 true.
+EVENTS_PER_MATERIAL = 10_000
+
+# Cost profiles. Token arithmetic is right for OpenRouter, and wrong for the
+# Claude CLI: the CLI carries a system prefix of some sixteen thousand tokens
+# that the price list knows nothing about, and bills its own session. Measured
+# in August 2026 on this project: 0.0079 USD per call with the prefix cached,
+# about 0.039 USD for the call that creates the cache.
+COST_PROFILE_TOKENS = "tokens"
+COST_PROFILE_CLI = "claude-cli"
+CLI_WARM_CALL_USD = 0.008
+CLI_COLD_CALL_USD = 0.039
+
 # Shape of one extraction call, used to price a run before it starts and to
 # reserve budget before each call. Deliberately generous: an estimate that
 # under-reserves lets the concurrent walk overshoot the ceiling.
@@ -83,6 +101,10 @@ PROMPT_OVERHEAD_TOKENS = 1200
 OUTPUT_TOKENS_PER_MATERIAL = 700
 CHARS_PER_TOKEN = 4
 MAX_MATERIAL_TOKENS = 24000
+
+# A batch of a hundred materials takes ten minutes; without a heartbeat the
+# terminal is indistinguishable from a hung process for that whole time.
+HEARTBEAT_SECONDS = 30.0
 
 # Measured shape of one extraction call end to end. Only used to tell the
 # operator how long a run will take before they start it.
@@ -146,7 +168,14 @@ def price_for(model: str, config: ThemeConfig | None = None) -> tuple[float, flo
     return PRICE_PER_MTOK.get(model, DEFAULT_PRICE_PER_MTOK)
 
 
-def estimate_material_usd(item: CollectedItem, price: tuple[float, float]) -> float:
+def estimate_material_usd(
+    item: CollectedItem,
+    price: tuple[float, float],
+    profile: str = COST_PROFILE_TOKENS,
+) -> float:
+    if profile == COST_PROFILE_CLI:
+        # The material's length barely moves the needle next to a 16k prefix.
+        return CLI_WARM_CALL_USD
     tokens_in = (
         min(len(item.raw_text) // CHARS_PER_TOKEN, MAX_MATERIAL_TOKENS)
         + PROMPT_OVERHEAD_TOKENS
@@ -166,9 +195,15 @@ class SharedBudget(Budget):
     what is in flight is always counted against the ceiling.
     """
 
+    # Below this many settled calls the average is noise, and one cheap cache
+    # hit would let the run reserve nothing.
+    MIN_CALLS_FOR_AVERAGE = 3
+
     def __init__(self, limit_usd: float) -> None:
         super().__init__(limit_usd)
         self._lock = threading.Lock()
+        self._settled_calls = 0
+        self._settled_usd = 0.0
 
     def check(self, estimated_usd: float = 0.0) -> None:
         with self._lock:
@@ -187,6 +222,22 @@ class SharedBudget(Budget):
     def settle(self, estimated_usd: float, actual_usd: float) -> None:
         with self._lock:
             self.spent_usd = max(0.0, self.spent_usd - estimated_usd + actual_usd)
+            self._settled_calls += 1
+            self._settled_usd += actual_usd
+
+    @property
+    def observed_average_usd(self) -> float:
+        """What a call is really costing, once there is evidence.
+
+        A price table cannot know what a backend charges: the Claude CLI bills
+        its own session and comes out well above the token list price. Holding
+        the observed average keeps the ceiling meaningful whichever backend the
+        run happens to use.
+        """
+        with self._lock:
+            if self._settled_calls < self.MIN_CALLS_FOR_AVERAGE:
+                return 0.0
+            return self._settled_usd / self._settled_calls
 
 
 @dataclass(slots=True)
@@ -196,6 +247,8 @@ class BackfillOptions:
     priorities: list[int] | None = None
     concurrency: int | None = None
     batch_size: int = DEFAULT_BATCH_SIZE
+    cost_profile: str = COST_PROFILE_TOKENS
+    warm_prefix: bool = True
     resume: bool = False
     dry_run: bool = False
     min_trend_members: int | None = None
@@ -249,10 +302,19 @@ class BackfillReport:
     facts_kept: int = 0
     facts_rejected: int = 0
     spent_usd: float = 0.0
+    warmup_usd: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
     estimated_usd: float = 0.0
+    # Same materials priced on `models.enrich_critical`: the ceiling if every
+    # one of them escalated. The real figure lands between the two.
+    estimated_max_usd: float = 0.0
+    model_base: str = ""
+    model_critical: str = ""
     cache_hits: int = 0
     budget_exhausted: bool = False
     interrupted: bool = False
+    cost_profile: str = COST_PROFILE_TOKENS
     cost_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
     plans: list[SourcePlan] = field(default_factory=list)
     cells: list[dict[str, Any]] = field(default_factory=list)
@@ -305,10 +367,39 @@ def select_sources(
     return chosen
 
 
-def ingested_urls(conn: sqlite3.Connection) -> set[str]:
+def material_slots(items: list[CollectedItem]) -> list[int]:
+    """Position of each material among the materials sharing its URL.
+
+    Document order, so the same page parsed again yields the same slots and
+    the corpus key does not move under a resumed run.
+    """
+    seen: dict[str, int] = defaultdict(int)
+    slots: list[int] = []
+    for item in items:
+        url = canonical_url(item.url, keep_fragment=True)
+        slots.append(seen[url])
+        seen[url] += 1
+    return slots
+
+
+def corpus_key(url: str, slot: int, position: int) -> tuple[str, int, str]:
+    """(source_url, statement_index, statement_id) for one event.
+
+    The id is derived from the key rather than taken from the enricher: two
+    materials on one URL both produce an event at position zero, and stage 4
+    has no way to tell them apart. The writer does, because it knows the slot.
+    """
+    index = slot * EVENTS_PER_MATERIAL + position
+    return url, index, f"{digest(url)[:16]}-{index:06d}"
+
+
+def ingested_slots(conn: sqlite3.Connection) -> set[tuple[str, int]]:
+    """(canonical URL, slot) pairs the corpus already holds."""
     return {
-        row["source_url"]
-        for row in conn.execute("SELECT DISTINCT source_url FROM event_statements")
+        (row["source_url"], int(row["statement_index"]) // EVENTS_PER_MATERIAL)
+        for row in conn.execute(
+            "SELECT DISTINCT source_url, statement_index FROM event_statements"
+        )
     }
 
 
@@ -330,27 +421,28 @@ def _prior_cost(conn: sqlite3.Connection, run_id: str) -> float:
 
 
 def persist_statements(
-    conn: sqlite3.Connection, results: list[EnrichResult]
+    conn: sqlite3.Connection, harvest: list[tuple[int, EnrichResult]]
 ) -> tuple[int, int]:
     """Write one batch's harvest to the corpus. Returns (inserted, ignored).
 
-    The index is the position of the event inside its material and is
-    recomputed the same way on every run, which is what makes the UNIQUE key
-    stable across runs instead of shifting by the number of rows already
-    stored.
+    Each result arrives with the slot of the material it came from, so the key
+    is (canonical URL, slot, position) computed the same way on every run:
+    stable across restarts, and unique even when a page hands over a hundred
+    materials under one address.
     """
     inserted = 0
     duplicate = 0
     now = datetime.now(UTC)
     with conn:
-        for result in results:
-            per_url: dict[str, int] = defaultdict(int)
-            for statement in result.statements:
-                url = canonical_url(
-                    statement.source_url or result.url, keep_fragment=True
+        for slot, result in harvest:
+            for position, statement in enumerate(result.statements):
+                url, index, statement_id = corpus_key(
+                    canonical_url(
+                        statement.source_url or result.url, keep_fragment=True
+                    ),
+                    slot,
+                    position,
                 )
-                index = per_url[url]
-                per_url[url] += 1
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO event_statements ("
                     "statement_id, cluster_id, text, vendor, product, change_type, "
@@ -359,7 +451,7 @@ def persist_statements(
                     "raw_material_ref, embedding, supersedes) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        statement.statement_id,
+                        statement_id,
                         statement.cluster_id,
                         statement.text,
                         statement.vendor,
@@ -446,9 +538,13 @@ class _Task:
     batch_index: int
     items: list[CollectedItem]
     estimates: list[float]
+    slots: list[int]
+    warmup: bool = False
 
     @property
     def stage(self) -> str:
+        if self.warmup:
+            return f"{STAGE_PREFIX}{self.source.id}:warmup"
         return batch_stage(self.source.id, self.batch_index)
 
 
@@ -457,7 +553,8 @@ class _TaskResult:
     source_id: str
     batch_index: int
     stage: str
-    results: list[EnrichResult] = field(default_factory=list)
+    harvest: list[tuple[int, EnrichResult]] = field(default_factory=list)
+    warmup: bool = False
     stopped: bool = False
     exhausted: bool = False
     error: str | None = None
@@ -467,8 +564,9 @@ def build_tasks(
     source: SourceConfig,
     items: list[CollectedItem],
     *,
-    known_urls: set[str],
+    known: set[tuple[str, int]],
     price: tuple[float, float],
+    profile: str,
     batch_size: int,
     done_stages: dict[str, Any],
     plan: SourcePlan,
@@ -479,19 +577,24 @@ def build_tasks(
     batch index means the same slice of the source on a resumed run even
     though the pending set has shrunk in between.
     """
+    slots = material_slots(items)
     tasks: list[_Task] = []
     for offset in range(0, len(items), batch_size):
         batch_index = offset // batch_size
         pending: list[CollectedItem] = []
         estimates: list[float] = []
-        for item in items[offset : offset + batch_size]:
-            if canonical_url(item.url, keep_fragment=True) in known_urls:
+        pending_slots: list[int] = []
+        for position in range(offset, min(offset + batch_size, len(items))):
+            item = items[position]
+            slot = slots[position]
+            if (canonical_url(item.url, keep_fragment=True), slot) in known:
                 # Already in the corpus: never sent to the model, which is
                 # what makes a repeat run free rather than merely deduplicated.
                 plan.already_ingested += 1
                 continue
             pending.append(item)
-            estimates.append(estimate_material_usd(item, price))
+            estimates.append(estimate_material_usd(item, price, profile))
+            pending_slots.append(slot)
         if not pending:
             continue
         if batch_stage(source.id, batch_index) in done_stages:
@@ -500,8 +603,32 @@ def build_tasks(
         plan.batches += 1
         plan.pending += len(pending)
         plan.estimated_usd += sum(estimates)
-        tasks.append(_Task(source, batch_index, pending, estimates))
+        tasks.append(_Task(source, batch_index, pending, estimates, pending_slots))
     return tasks
+
+
+def carve_warmup(tasks: list[_Task]) -> _Task | None:
+    """Take the first material out of the biggest batch as a warm-up call.
+
+    The Claude CLI prefixes every call with a system prompt of some sixteen
+    thousand tokens and caches it. Eight workers starting at once all miss
+    that cache and each pay to create it, which measured five times the warm
+    price per material. One call first, then the fan-out.
+    """
+    if not tasks:
+        return None
+    head = tasks[0]
+    warmup = _Task(
+        source=head.source,
+        batch_index=head.batch_index,
+        items=[head.items.pop(0)],
+        estimates=[head.estimates.pop(0)],
+        slots=[head.slots.pop(0)],
+        warmup=True,
+    )
+    if not head.items:
+        tasks.pop(0)
+    return warmup
 
 
 def run_backfill(
@@ -537,6 +664,7 @@ def run_backfill(
             dry_run=True,
             concurrency=concurrency,
             batch_size=batch_size,
+            cost_profile=options.cost_profile,
             sources_total=len(sources),
         )
         return _dry_run(conn, config, fetcher, sources, report, started)
@@ -615,8 +743,11 @@ def run_backfill(
     for item in items:
         by_source[str(item.extra.get("source_id", ""))].append(item)
 
-    known_urls = ingested_urls(conn)
-    price = price_for(config.models.get("enrich", ""), config)
+    known = ingested_slots(conn)
+    report.model_base = config.models.get("enrich", "") or ""
+    report.model_critical = config.models.get("enrich_critical", "") or ""
+    report.cost_profile = options.cost_profile
+    price = price_for(report.model_base, config)
 
     tasks: list[_Task] = []
     for source in sources:
@@ -624,8 +755,9 @@ def run_backfill(
             build_tasks(
                 source,
                 by_source.get(source.id, []),
-                known_urls=known_urls,
+                known=known,
                 price=price,
+                profile=options.cost_profile,
                 batch_size=batch_size,
                 done_stages=done_stages,
                 plan=plans[source.id],
@@ -635,10 +767,13 @@ def run_backfill(
     # Longest first: the naive order leaves seven workers idle while one drags
     # an 871-material changelog to the end of the run.
     tasks.sort(key=lambda t: -len(t.items))
+    warmup_task = carve_warmup(tasks) if options.warm_prefix else None
     report.batches_total = len(tasks)
     report.batches_skipped = sum(p.batches_skipped for p in plans.values())
     report.materials_already_ingested = sum(p.already_ingested for p in plans.values())
-    report.materials_pending = sum(len(t.items) for t in tasks)
+    report.materials_pending = sum(len(t.items) for t in tasks) + (
+        len(warmup_task.items) if warmup_task else 0
+    )
     report.estimated_usd = sum(p.estimated_usd for p in plans.values())
     report.longest_batch = max((len(t.items) for t in tasks), default=0)
     report.eta_seconds = estimate_eta_seconds(
@@ -648,6 +783,8 @@ def run_backfill(
     remaining_batches: dict[str, int] = defaultdict(int)
     for task in tasks:
         remaining_batches[task.source.id] += 1
+    if warmup_task is not None:
+        remaining_batches[warmup_task.source.id] += 1
     for source in sources:
         if remaining_batches[source.id] == 0:
             plans[source.id].completed = True
@@ -662,16 +799,34 @@ def run_backfill(
     )
 
     stop = threading.Event()
+    ticked = threading.Event()
+    counter_lock = threading.Lock()
+    counted = [0]
+
+    def heartbeat() -> None:
+        while not ticked.wait(HEARTBEAT_SECONDS):
+            with counter_lock:
+                done = counted[0]
+            emit(
+                f"  ... {done} из {report.materials_pending} материалов, "
+                f"потрачено {budget.spent_usd:.4f}, "
+                f"остаток {budget.remaining_usd:.4f} USD"
+            )
 
     def process_batch(task: _Task) -> _TaskResult:
         """One worker, one batch, materials in order."""
-        outcome = _TaskResult(task.source.id, task.batch_index, task.stage)
-        for item, estimate in zip(task.items, task.estimates, strict=True):
+        outcome = _TaskResult(
+            task.source.id, task.batch_index, task.stage, warmup=task.warmup
+        )
+        for item, estimate, slot in zip(
+            task.items, task.estimates, task.slots, strict=True
+        ):
             if stop.is_set():
                 outcome.stopped = True
                 return outcome
+            hold = max(estimate, budget.observed_average_usd)
             try:
-                budget.reserve(estimate)
+                budget.reserve(hold)
             except BudgetExceeded as exc:
                 # Not a crash: the ceiling did its job. Everything already
                 # extracted goes back for writing.
@@ -683,15 +838,23 @@ def run_backfill(
             try:
                 result = enricher.enrich(item, task.source)  # type: ignore[union-attr]
             except Exception as exc:  # the protocol forbids it; survive anyway
-                budget.settle(estimate, 0.0)
+                budget.settle(hold, 0.0)
                 result = EnrichResult(
                     source_id=task.source.id,
                     url=item.url,
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            except BaseException:
+                # Ctrl-C lands here: release the hold before unwinding, or the
+                # resumed run inherits a charge for a call that never happened.
+                budget.settle(hold, 0.0)
+                stop.set()
+                raise
             else:
-                budget.settle(estimate, result.cost_usd)
-            outcome.results.append(result)
+                budget.settle(hold, result.cost_usd)
+            outcome.harvest.append((slot, result))
+            with counter_lock:
+                counted[0] += 1
         return outcome
 
     consumed: set[str] = set()
@@ -699,7 +862,7 @@ def run_backfill(
     def consume(outcome: _TaskResult) -> None:
         consumed.add(outcome.stage)
         plan = plans[outcome.source_id]
-        for result in outcome.results:
+        for _slot, result in outcome.harvest:
             plan.processed += 1
             plan.spent_usd += result.cost_usd
             report.materials_processed += 1
@@ -709,9 +872,18 @@ def run_backfill(
             row = report.cost_by_model.setdefault(model, {"calls": 0, "cost_usd": 0.0})
             row["calls"] += 1
             row["cost_usd"] += result.cost_usd
+            # Tokens are read off the result when stage 4 reports them:
+            # `EnrichResult` does not carry them today, and FR-8.4 wants the
+            # log to hold both money and tokens the moment it does.
+            tokens_in = int(getattr(result, "tokens_in", 0) or 0)
+            tokens_out = int(getattr(result, "tokens_out", 0) or 0)
+            report.tokens_in += tokens_in
+            report.tokens_out += tokens_out
             run_log.model_call(
                 stage=STAGE_ENRICH,
                 model=model,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
                 cost_usd=result.cost_usd,
                 cached=result.cached,
             )
@@ -734,13 +906,16 @@ def run_backfill(
                     actor=STAGE_ENRICH,
                     target=result.url,
                     outcome=Outcome.SKIPPED,
-                    kind=rejected.kind,
-                    value=rejected.value,
+                    fact_kind=rejected.kind,
+                    fact_value=rejected.value,
                     reason=rejected.reason,
                 )
 
-        if outcome.results:
-            inserted, duplicate = persist_statements(conn, outcome.results)
+        if outcome.warmup:
+            report.warmup_usd = sum(r.cost_usd for _s, r in outcome.harvest)
+
+        if outcome.harvest:
+            inserted, duplicate = persist_statements(conn, outcome.harvest)
             plan.statements_added += inserted
             plan.statements_duplicate += duplicate
             report.statements_added += inserted
@@ -768,11 +943,9 @@ def run_backfill(
 
         # Checkpoint carries what the batch produced and what it cost, so a
         # resumed run can report the whole effort and not just its last leg.
-        report.batches_done += 1
-        plan.batches_done += 1
         journal.checkpoint(
             outcome.stage,
-            item_count=len(outcome.results),
+            item_count=len(outcome.harvest),
             statements=plan.statements_added,
             duplicates=plan.statements_duplicate,
             cost_usd=round(plan.spent_usd, 6),
@@ -781,14 +954,39 @@ def run_backfill(
         if remaining_batches[outcome.source_id] == 0:
             plan.completed = True
             report.sources_completed += 1
+        if outcome.warmup:
+            emit(
+                f"Прогрев кэша префикса: {report.warmup_usd:.4f} USD, "
+                f"остаток {budget.remaining_usd:.4f} USD"
+            )
+            return
+        report.batches_done += 1
+        plan.batches_done += 1
         emit(
             f"[{report.batches_done}/{report.batches_total}] {outcome.source_id} "
-            f"#{outcome.batch_index}: материалов {len(outcome.results)}, "
+            f"#{outcome.batch_index}: материалов {len(outcome.harvest)}, "
             f"записей +{plan.statements_added}, дублей {plan.statements_duplicate}, "
             f"потрачено {budget.spent_usd:.4f}, остаток {budget.remaining_usd:.4f} USD"
         )
 
+    if warmup_task is not None:
+        # One call first, then the fan-out: eight workers starting together
+        # all miss the prefix cache and each pay to create it, which measured
+        # five times the warm price per material.
+        emit("Прогреваю кэш системного префикса одним вызовом.")
+        warmup_result = process_batch(warmup_task)
+        consume(warmup_result)
+        failed_warmup = [r for _s, r in warmup_result.harvest if r.error]
+        if failed_warmup or not warmup_result.harvest:
+            report.notes.append(
+                "прогрев кэша префикса не удался: стоимость будет выше расчётной"
+            )
+            emit(report.notes[-1])
+
     futures: dict[Future[_TaskResult], _Task] = {}
+    ticker = threading.Thread(target=heartbeat, daemon=True)
+    if progress is not None and tasks:
+        ticker.start()
     with run_log.stage(STAGE_ENRICH, in_count=report.materials_pending) as record:
         pool = ThreadPoolExecutor(max_workers=concurrency)
         try:
@@ -804,15 +1002,22 @@ def run_backfill(
                 stop.set()
                 emit("Прерывание: сохраняю уже полученное и закрываю прогон.")
         finally:
+            ticked.set()
             pool.shutdown(wait=True, cancel_futures=True)
-        # Anything that finished while the pool was draining.
+        # Anything that finished while the pool was draining. Read the
+        # exception rather than re-raising it: one dead batch must not take
+        # the run's bookkeeping with it, and a Ctrl-C in flight is already
+        # handled above.
         for future, task in futures.items():
             if task.stage in consumed or future.cancelled() or not future.done():
                 continue
-            try:
-                consume(future.result())
-            except Exception as exc:  # a dead worker takes only its own batch
-                plans[task.source.id].error = f"{type(exc).__name__}: {exc}"
+            failure = future.exception()
+            if failure is not None:
+                plans[task.source.id].error = f"{type(failure).__name__}: {failure}"
+                if isinstance(failure, KeyboardInterrupt):
+                    report.interrupted = True
+                continue
+            consume(future.result())
         record["out_count"] = report.statements_added
 
     report.spent_usd = budget.spent_usd
@@ -853,6 +1058,17 @@ def _model_of(result: EnrichResult) -> str | None:
     return None
 
 
+def _price_ratio(critical: tuple[float, float], base: tuple[float, float]) -> float:
+    """How much dearer the critical model is, weighted the way a call is."""
+    base_cost = base[0] * PROMPT_OVERHEAD_TOKENS + base[1] * OUTPUT_TOKENS_PER_MATERIAL
+    if base_cost <= 0:
+        return 1.0
+    critical_cost = (
+        critical[0] * PROMPT_OVERHEAD_TOKENS + critical[1] * OUTPUT_TOKENS_PER_MATERIAL
+    )
+    return max(1.0, critical_cost / base_cost)
+
+
 def _dry_run(
     conn: sqlite3.Connection,
     config: ThemeConfig,
@@ -878,15 +1094,22 @@ def _dry_run(
     for item in items:
         by_source[str(item.extra.get("source_id", ""))].append(item)
 
-    known_urls = ingested_urls(conn)
-    price = price_for(config.models.get("enrich", ""), config)
+    known = ingested_slots(conn)
+    report.model_base = config.models.get("enrich", "") or ""
+    report.model_critical = config.models.get("enrich_critical", "") or ""
+    price = price_for(report.model_base, config)
+    critical_price = price_for(report.model_critical or report.model_base, config)
+    escalation_factor = (
+        _price_ratio(critical_price, price) if report.model_critical else 1.0
+    )
     batch_sizes: list[int] = []
     for source in sources:
         tasks = build_tasks(
             source,
             by_source.get(source.id, []),
-            known_urls=known_urls,
+            known=known,
             price=price,
+            profile=report.cost_profile,
             batch_size=report.batch_size,
             done_stages={},
             plan=plans[source.id],
@@ -897,6 +1120,10 @@ def _dry_run(
     report.materials_already_ingested = sum(p.already_ingested for p in plans.values())
     report.materials_pending = sum(p.pending for p in plans.values())
     report.estimated_usd = sum(p.estimated_usd for p in plans.values())
+    if report.cost_profile == COST_PROFILE_CLI and report.materials_pending:
+        # The first call pays to create the prefix cache; the rest read it.
+        report.estimated_usd += CLI_COLD_CALL_USD - CLI_WARM_CALL_USD
+    report.estimated_max_usd = report.estimated_usd * escalation_factor
     report.batches_total = len(batch_sizes)
     report.longest_batch = max(batch_sizes, default=0)
     report.eta_seconds = estimate_eta_seconds(batch_sizes, report.concurrency)
@@ -924,7 +1151,9 @@ __all__ = [
     "estimate_eta_seconds",
     "estimate_material_usd",
     "find_unfinished_run",
-    "ingested_urls",
+    "ingested_slots",
+    "material_slots",
+    "corpus_key",
     "persist_statements",
     "price_for",
     "refresh_trends",
