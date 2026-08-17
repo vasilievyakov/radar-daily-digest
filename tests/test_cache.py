@@ -217,3 +217,61 @@ class TestModelCacheKeys:
         key = ModelCache.key_for("sonnet", "extract")
         cache.put(key, {"response": "{}"})
         assert cache.get(key)["response"] == "{}"
+
+
+class TestWriteIsActuallyAtomic:
+    """The existing test asserted "no .tmp remains after put", which is equally
+    true when there is no temporary file at all. Removing atomicity entirely
+    left the whole suite green. These assert the property, not its residue.
+    """
+
+    def test_a_crash_mid_write_leaves_no_partial_entry(self, tmp_path):
+        """A reader must see the old value or the new one, never half of one.
+
+        A truncated cache entry is worse than a miss: `raw_material_ref` points
+        at the archived text that evidence is verified against, and half a
+        document silently fails quotes that are genuinely in the source.
+        """
+        from radar.cache import CacheStore
+
+        store = CacheStore(tmp_path, "http")
+        store.put("k" * 64, {"text": "полный документ"})
+
+        original = __import__("pathlib").Path.write_text
+
+        def explode(self, *args, **kwargs):
+            original(self, *args, **kwargs)
+            raise OSError("диск кончился на середине")
+
+        __import__("pathlib").Path.write_text = explode
+        try:
+            with __import__("pytest").raises(OSError):
+                store.put("k" * 64, {"text": "новый документ, записанный наполовину"})
+        finally:
+            __import__("pathlib").Path.write_text = original
+
+        # The previous value survived intact.
+        assert store.get("k" * 64)["text"] == "полный документ"
+
+    def test_the_write_goes_through_a_separate_file_first(self, tmp_path, monkeypatch):
+        """Directly asserts the mechanism: the final path is never the one
+        being written to."""
+        from pathlib import Path
+
+        from radar.cache import CacheStore
+
+        store = CacheStore(tmp_path, "http")
+        final = store.path_for("a" * 64)
+        written_to: list[Path] = []
+        original = Path.write_text
+
+        def record(self, *args, **kwargs):
+            written_to.append(Path(self))
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", record)
+        store.put("a" * 64, {"text": "x"})
+
+        assert written_to, "put did not write anything"
+        assert final not in written_to, "final path was written to directly"
+        assert final.exists()

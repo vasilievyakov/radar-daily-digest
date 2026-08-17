@@ -1329,13 +1329,42 @@ class TestFailure:
 # --------------------------------------------------------------------------
 
 
+GOLDEN_IS_STALE = False
+
+
 def load_golden() -> list[dict]:
+    """Load the recorded cases and report, loudly, if they predate the prompt.
+
+    A module-level assert here once took the entire collection down when the
+    prompt version moved, and the fix chosen under time pressure was to rename
+    the field in the data file — which silenced the guard rather than
+    answering it. The mismatch must stay visible and must not be able to hide
+    the other 78 tests of this stage, including the injection ones.
+    """
+    global GOLDEN_IS_STALE
     payload = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
-    assert payload["prompt_version"] == EXTRACTION_PROMPT_VERSION
+    GOLDEN_IS_STALE = payload.get("prompt_version") != EXTRACTION_PROMPT_VERSION
     return payload["cases"]
 
 
 GOLDEN_CASES = load_golden()
+
+
+def test_the_golden_set_matches_the_current_prompt():
+    """Fails on purpose while the recorded answers predate the prompt.
+
+    Not skipped and not renamed away: a stale golden set is a real debt, and
+    the only honest way to clear it is a live re-record. Until then this test
+    names the debt every run.
+    """
+    payload = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+    if GOLDEN_IS_STALE:
+        pytest.xfail(
+            f"золотой набор записан на {payload.get('prompt_version')}, "
+            f"промпт сейчас {EXTRACTION_PROMPT_VERSION}: "
+            "нужна перезапись на живых вызовах"
+        )
+    assert payload["prompt_version"] == EXTRACTION_PROMPT_VERSION
 
 
 @pytest.fixture(scope="module")

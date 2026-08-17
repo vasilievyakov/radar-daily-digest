@@ -1,5 +1,5 @@
 {
-  "prompt_version": "extract-v2",
+  "prompt_version": "extract-v1",
   "note": "Fragments copied verbatim out of the warm http cache; the recorded responses are the shape the extraction prompt asks for. The test replays them through LlmEnricher with a stubbed backend, so what is under test is verification, normalization and dating, not the model.",
   "cases": [
     {
@@ -1132,5 +1132,7 @@
         ]
       }
     }
-  ]
+  ],
+  "recorded_against": "extract-v1",
+  "stale_note": "Ожидания записаны на промпте extract-v1, до трёх правок, найденных живым прогоном: разделение событий по затронутым объектам, подстановка даты сбора вместо даты анонса, обнуление верных дат защитой после перехода на haiku. До перезаписи на живых вызовах набор проверяет форму разбора, а не содержание ответов текущего промпта."
 }
