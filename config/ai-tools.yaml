@@ -1397,10 +1397,13 @@ llm:
 models:
   cluster: null
   filter: anthropic/claude-haiku-4.5
-  enrich: anthropic/claude-sonnet-5
+  # Measured on a live smoke run: sonnet costs about $0.053 per material on
+  # real page sections, haiku about a tenth of that. Bulk enrichment on sonnet
+  # would put the backfill near $150, so the cheap model carries the volume.
+  enrich: anthropic/claude-haiku-4.5
   # Dates and sunset windows are what the whole product is judged on, so the
-  # deprecation path gets the expensive model while bulk enrichment does not.
-  enrich_critical: anthropic/claude-opus-5
+  # deprecation path gets the stronger model while bulk enrichment does not.
+  enrich_critical: anthropic/claude-sonnet-5
   trends: anthropic/claude-sonnet-5
   score: null
   embeddings: openai/text-embedding-3-small
@@ -1417,7 +1420,7 @@ budget:
   # critical. Mixed routing puts those on sonnet (~$10) and the rest on haiku
   # (~$9), so roughly $19. The limit carries headroom so the run stops on its
   # own terms rather than mid-corpus.
-  max_usd_per_backfill: 25.00
+  max_usd_per_backfill: 50.00
   # Second line of defence handed to the CLI itself, per call.
   max_usd_per_call: 0.50
   stop_on_exceed: true

@@ -106,6 +106,15 @@ class Fact(BaseModel):
     confidence: Literal["high", "medium", "low"] = "medium"
     # Set by verify_evidence(), not by the model.
     evidence_verified: bool = False
+    # Parsed form of `value` for date kinds. Without it every surface reparses
+    # a free-form string to say "in 59 days", and each does it differently.
+    value_date: date | None = None
+    # A date recovered from context must stay marked as such: showing
+    # "in 59 days" for a guessed year is false precision.
+    date_precision: DatePrecision = DatePrecision.DAY
+    # What the date is about, e.g. "claude-3-opus". Needed to render the
+    # upcoming-deadlines block without inventing the subject.
+    subject: str | None = None
 
 
 class Precedent(BaseModel):
@@ -193,6 +202,38 @@ class RetrievalReport(BaseModel):
     windows_days: list[int] = Field(default_factory=list)
 
 
+class RunSummary(BaseModel):
+    """Facts about the run itself, carried on every signal.
+
+    Surfaces are forbidden to read `source_runs` (SUR-1), so the names of
+    sources that failed have to travel inside the contract. Counters alone
+    make the footer of S5 and the case of DR-5 unrenderable.
+    """
+
+    sources_checked: int = 0
+    sources_failed: list[str] = Field(default_factory=list)
+    # HTTP 200 with nothing extractable: a different fault, named separately.
+    sources_empty: list[str] = Field(default_factory=list)
+    materials_collected: int = 0
+    materials_filtered: int = 0
+    last_success_date: date | None = None
+    cost_usd: float = 0.0
+
+
+class UpcomingDeadline(BaseModel):
+    """A dated obligation already extracted, shown when the day is quiet.
+
+    Silence is filled with what the reader planned to forget, and every field
+    here comes from a verified fact rather than from a new inference.
+    """
+
+    when: date
+    what: str
+    vendor: str | None = None
+    source_url: str | None = None
+    date_precision: DatePrecision = DatePrecision.DAY
+
+
 class Signal(BaseModel):
     """PRD 5.7. The contract between the core and every surface.
 
@@ -226,14 +267,27 @@ class Signal(BaseModel):
     trend_id: str | None = None
     precedents: list[Precedent] = Field(default_factory=list)
     retrieval: RetrievalReport | None = None
+    # The sentence a reader sees above the precedent list, composed by the
+    # core. A surface deriving it would be recomputing the corpus, which SUR-2
+    # forbids, and three surfaces would word the same claim three ways.
+    # Every number in it must be backed by `precedents`.
+    context_note: str | None = None
 
     score: int = 0
     score_rationale: str = ""
     rank: int = 0
     tier: Tier = Tier.STANDARD
 
-    # Populated on quiet_day and run_failure; harmless elsewhere.
+    # Carried on every signal type, not just quiet_day: the footer listing
+    # unreachable sources belongs on an ordinary day too.
+    run_summary: RunSummary | None = None
+    # Populated on quiet_day: what is coming that the reader filed away.
+    upcoming: list[UpcomingDeadline] = Field(default_factory=list)
+
+    # Free-form counters beyond RunSummary. Kept for extension; surfaces must
+    # not depend on ad-hoc keys appearing here.
     stats: dict[str, int] = Field(default_factory=dict)
     failure_reason: str | None = None
+    failure_stage: str | None = None
 
     run_log_url: str | None = None
