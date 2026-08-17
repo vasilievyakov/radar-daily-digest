@@ -43,6 +43,10 @@ class SourceConfig:
     backfill_supported: bool = False
     backfill_depth_days: int = 0
     min_expected_items: int = 1
+    # Vendor this source speaks for. Authoritative: we know that
+    # docs.mistral.ai is Mistral, and guessing it from body text is how a Zed
+    # release ends up filed under GitHub because it links to a pull request.
+    vendor: str | None = None
     # Some archives are frozen: worth backfilling, pointless to poll daily.
     live_collect: bool = True
     # Pages that only expose history through a per-month URL.

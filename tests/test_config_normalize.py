@@ -158,3 +158,39 @@ class TestChangeTypeNormalization:
     def test_every_config_change_type_round_trips(self, theme, normalizer):
         for change_type_id in theme.change_type_ids:
             assert normalizer.change_type(change_type_id) == ChangeType(change_type_id)
+
+
+class TestVendorFromSource:
+    """Vendor comes from the source config, not from guessing at body text."""
+
+    def test_every_first_party_source_declares_its_vendor(self, theme):
+        undeclared = [s.id for s in theme.sources if s.priority <= 3 and not s.vendor]
+        assert undeclared == []
+
+    def test_declared_vendors_exist_in_the_dictionary(self, theme):
+        known = set(theme.vendor_ids)
+        assert all(s.vendor in known for s in theme.sources if s.vendor)
+
+    def test_aggregators_declare_no_vendor(self, theme):
+        """Media speaks for no single vendor; the model decides per item."""
+        aggregators = [s for s in theme.sources if s.priority >= 4]
+        assert aggregators
+        assert all(s.vendor is None for s in aggregators)
+
+    def test_a_release_body_linking_to_github_is_not_filed_under_github(self, normalizer):
+        body = (
+            "Zed 0.150 fixes a crash in the terminal. See "
+            "https://github.com/zed-industries/zed/pull/12345 for details and "
+            "the full list of changes in this release."
+        )
+        assert normalizer.vendor(body) is None
+
+    def test_a_short_name_still_resolves(self, normalizer):
+        assert normalizer.vendor("Claude Code") == "anthropic"
+        assert normalizer.vendor("GitHub Copilot") == "github"
+
+    def test_a_long_document_is_not_reported_as_an_unknown_vendor(self):
+        """Reporting whole documents would drown the dictionary gap report."""
+        fresh = Normalizer.from_config([{"id": "anthropic"}], [{"id": "release"}])
+        fresh.vendor("a fairly long sentence of body text that names nobody at all here")
+        assert fresh.report_unknown() == []

@@ -48,9 +48,14 @@ corpus:
     - id: google
       label: "Google"
       aliases: [Google, Gemini, gemini, "Google AI", "Vertex AI", vertex]
+    # Голый «GitHub» из алиасов снят намеренно: нормализация ищет вхождение
+    # подстроки, а ссылка на github.com стоит в каждом пункте релизов Zed,
+    # Cline и Gemini CLI. С ним все их события ушли бы в корпус под чужим
+    # вендором, и обнаружилось бы это уже после бэкфилла.
     - id: github
       label: "GitHub"
-      aliases: [GitHub, Github, "GitHub Copilot", copilot, Copilot]
+      aliases: ["GitHub Copilot", copilot, Copilot, "github.blog",
+                "GitHub Actions", "GitHub API", "GitHub GraphQL"]
     - id: langchain
       label: "LangChain"
       aliases: [LangChain, langchain, LangGraph, langgraph, LangSmith]
@@ -84,6 +89,39 @@ corpus:
     - id: qdrant
       label: "Qdrant"
       aliases: [Qdrant, qdrant]
+    # Провайдеры моделей и инференса. Алиасы намеренно многосложные:
+    # нормализация ищет вхождение подстроки, и односложные вроде Command
+    # или Grok дают ложные срабатывания на посторонних словах.
+    - id: together
+      label: "Together AI"
+      aliases: ["Together AI", "together.ai", TogetherAI, "Together Compute"]
+    - id: groq
+      label: "Groq"
+      aliases: [Groq, GroqCloud, "groq.com"]
+    - id: mistral
+      label: "Mistral"
+      aliases: [Mistral, "Mistral AI", "mistral.ai", Codestral]
+    - id: cohere
+      label: "Cohere"
+      aliases: [Cohere, "cohere.com", "Command R", "Command A"]
+    - id: fireworks
+      label: "Fireworks AI"
+      aliases: ["Fireworks AI", "fireworks.ai", FireworksAI]
+    - id: aws
+      label: "AWS Bedrock"
+      aliases: ["AWS Bedrock", "Amazon Bedrock", Bedrock, "AWS SageMaker"]
+    - id: perplexity
+      label: "Perplexity"
+      aliases: [Perplexity, "perplexity.ai", Sonar]
+    - id: vllm
+      label: "vLLM"
+      aliases: [vLLM, "vllm-project"]
+    - id: openrouter
+      label: "OpenRouter"
+      aliases: [OpenRouter, "openrouter.ai"]
+    - id: xai
+      label: "xAI"
+      aliases: [xAI, "x.ai", "Grok API", "Grok model"]
 
   change_types:
     - id: release
@@ -107,6 +145,7 @@ sources:
 
   # --- Anthropic ---
   - id: anthropic_model_deprecations
+    vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/docs/about-claude/model-deprecations
     priority: 1
@@ -117,6 +156,7 @@ sources:
     min_expected_items: 10
 
   - id: anthropic_api_release_notes
+    vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/release-notes/api
     priority: 1
@@ -128,6 +168,7 @@ sources:
 
   # Дат мало, но это даты вступления тарифов в силу.
   - id: anthropic_pricing
+    vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/docs/about-claude/pricing
     priority: 1
@@ -140,6 +181,7 @@ sources:
   # Редиректит на GitHub CHANGELOG.md без дат. Тот же материал приходит
   # структурированно через gh_anthropics_claude_code.
   - id: anthropic_claude_code_release_notes
+    vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/release-notes/claude-code
     priority: 1
@@ -150,6 +192,7 @@ sources:
 
   # --- OpenAI ---
   - id: openai_deprecations
+    vendor: openai
     type: html_scrape
     url: https://platform.openai.com/docs/deprecations
     priority: 1
@@ -162,6 +205,7 @@ sources:
   # Двухуровневые даты: заголовок «June, 2025» задаёт год и месяц,
   # отметка «Jun 27» внутри задаёт день. 34 месячных заголовка, 154 отметки.
   - id: openai_changelog
+    vendor: openai
     type: html_scrape
     url: https://platform.openai.com/docs/changelog
     priority: 1
@@ -175,6 +219,7 @@ sources:
   # Домен уходит в цепочку OAuth-редиректов при браузерном User-Agent.
   # Наш UA не браузерный, менять его на этих источниках нельзя.
   - id: google_gemini_deprecations
+    vendor: google
     type: html_scrape
     url: https://ai.google.dev/gemini-api/docs/deprecations
     priority: 1
@@ -185,6 +230,7 @@ sources:
     min_expected_items: 10
 
   - id: google_gemini_changelog
+    vendor: google
     type: html_scrape
     url: https://ai.google.dev/gemini-api/docs/changelog
     priority: 1
@@ -195,6 +241,7 @@ sources:
     min_expected_items: 20
 
   - id: google_agent_platform_release_notes
+    vendor: google
     type: html_scrape
     url: https://docs.cloud.google.com/gemini-enterprise-agent-platform/release-notes
     priority: 1
@@ -206,6 +253,7 @@ sources:
 
   # Страница помечена как более не обновляемая: только для бэкфилла.
   - id: google_vertex_release_notes_archive
+    vendor: google
     type: html_scrape
     url: https://cloud.google.com/vertex-ai/generative-ai/docs/release-notes
     priority: 1
@@ -217,6 +265,7 @@ sources:
     live_collect: false
 
   - id: google_vertex_model_versions
+    vendor: google
     type: html_scrape
     url: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
     priority: 1
@@ -231,6 +280,7 @@ sources:
   # 56 об отключениях, 57 о лимитах, 23 о ценах. Четыре ячейки одной лентой.
   # История берётся помесячным шаблоном, суточное окно — с корневой страницы.
   - id: github_changelog
+    vendor: github
     type: html_scrape
     url: https://github.blog/changelog/
     priority: 1
@@ -242,6 +292,7 @@ sources:
     min_expected_items: 5
 
   - id: github_graphql_breaking_changes
+    vendor: github
     type: html_scrape
     url: https://docs.github.com/en/graphql/overview/breaking-changes
     priority: 1
@@ -252,6 +303,7 @@ sources:
     min_expected_items: 10
 
   - id: github_graphql_changelog
+    vendor: github
     type: html_scrape
     url: https://docs.github.com/en/graphql/overview/changelog
     priority: 1
@@ -264,6 +316,7 @@ sources:
   # --- LangChain ---
   # Единственный источник с явными датами снятия: «scheduled for removal on».
   - id: langchain_changelog
+    vendor: langchain
     type: html_scrape
     url: https://changelog.langchain.com/
     priority: 1
@@ -274,6 +327,7 @@ sources:
     min_expected_items: 20
 
   - id: langsmith_selfhosted_changelog
+    vendor: langchain
     type: html_scrape
     url: https://docs.langchain.com/langsmith/self-hosted-changelog
     priority: 1
@@ -285,6 +339,7 @@ sources:
 
   # --- n8n ---
   - id: n8n_release_notes
+    vendor: n8n
     type: html_scrape
     url: https://docs.n8n.io/release-notes/
     priority: 1
@@ -297,6 +352,7 @@ sources:
   # Ветка 1.x заморожена: 18 разделов breaking changes, ни одного за год.
   # Берётся только ради исторической глубины.
   - id: n8n_release_notes_1x_archive
+    vendor: n8n
     type: html_scrape
     url: https://docs.n8n.io/changelog/release-notes-1.x
     priority: 1
@@ -311,6 +367,7 @@ sources:
   # Индекс постов лежит во встроенном JSON той же страницы. Единственный
   # способ получить датированную историю цен Cursor.
   - id: cursor_blog
+    vendor: cursor
     type: html_scrape
     url: https://cursor.com/blog
     priority: 2
@@ -323,6 +380,7 @@ sources:
   # Проверено дважды: 191 КБ, шесть дат, из десяти адресов записей дату
   # кодирует один. Рендеринг не помогает. Оставлен выключенным.
   - id: cursor_changelog
+    vendor: cursor
     type: html_scrape
     url: https://cursor.com/changelog
     priority: 1
@@ -335,6 +393,7 @@ sources:
   # Пять ревизий спецификации за всё время, две за последний год.
   # Ячейку не закрывает, но это единственный датированный след протокола.
   - id: mcp_spec_versioning
+    vendor: mcp
     type: html_scrape
     url: https://modelcontextprotocol.io/specification/versioning
     priority: 1
@@ -344,6 +403,129 @@ sources:
     backfill_depth_days: 900
     min_expected_items: 3
 
+  # --- Провайдеры моделей и инференса ---
+  # Восемь первоклассных реестров отключений, все берутся обычным curl.
+  # Это самая ценная находка разведки: ячейка deprecation набирается
+  # у десяти вендоров сразу.
+
+  # 118 дат, глубина до 2028 года. Внимание на адрес: соседняя страница
+  # concepts/model-retirements отдаёт 200 и содержит только политику,
+  # таблица переехала сюда. По коду ответа их не различить.
+  - id: azure_model_retirement_schedule
+    vendor: microsoft_ai
+    type: html_scrape
+    url: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/model-retirement-schedule
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 20
+
+  - id: together_deprecations
+    vendor: together
+    type: html_scrape
+    url: https://docs.together.ai/docs/deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  - id: together_changelog
+    vendor: together
+    type: html_scrape
+    url: https://docs.together.ai/docs/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 20
+
+  # Таблица требует формата дат M/D/YYYY: на ISO-шаблоне страница выглядит
+  # мёртвой, хотя несёт 43 строки с датами объявления и вывода.
+  - id: mistral_models
+    vendor: mistral
+    type: html_scrape
+    url: https://docs.mistral.ai/models
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  - id: aws_bedrock_model_lifecycle
+    vendor: aws
+    type: html_scrape
+    url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  - id: google_model_versions
+    vendor: google
+    type: html_scrape
+    url: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 10
+
+  - id: fireworks_changelog
+    vendor: fireworks
+    type: html_scrape
+    url: https://docs.fireworks.ai/updates/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  # В сыром HTML 58 ISO-дат, в DOM остаётся 10-11: бэкфилл невозможен,
+  # ежедневный сбор работает.
+  - id: cohere_deprecations
+    vendor: cohere
+    type: html_scrape
+    url: https://docs.cohere.com/docs/deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: false
+    min_expected_items: 5
+
+  # ISO-дата лежит только внутри script Next.js, в DOM видно «Apr 18» без
+  # года. Включится, когда парсер научится читать встроенный JSON.
+  - id: groq_deprecations
+    vendor: groq
+    type: html_scrape
+    url: https://console.groq.com/docs/deprecations
+    priority: 1
+    enabled: false
+    parser_hint: embedded_json_index
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 10
+
+  # Единственный в срезе с явными разделами Breaking Changes в релизах.
+  - id: gh_vllm
+    vendor: vllm
+    type: github_releases
+    url: https://github.com/vllm-project/vllm
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
   # --- Агентная инфраструктура и хранилища ---
   # Проверено curl. Срез почти не даёт pricing и limits: инфраструктурные
   # проекты объявляют цены в блогах, а не в changelog. Зато breaking_change
@@ -351,6 +533,7 @@ sources:
 
   # 319 дат, 39 заголовков breaking changes, 112 упоминаний устаревания.
   - id: llamaindex_changelog
+    vendor: llamaindex
     type: html_scrape
     url: https://developers.llamaindex.ai/python/framework/changelog/
     priority: 1
@@ -361,6 +544,7 @@ sources:
     min_expected_items: 20
 
   - id: crewai_changelog
+    vendor: crewai
     type: html_scrape
     url: https://docs.crewai.com/en/changelog
     priority: 1
@@ -372,6 +556,7 @@ sources:
 
   # Единственный вендор среза с потоком датированных объявлений об отключениях.
   - id: pinecone_release_notes
+    vendor: pinecone
     type: html_scrape
     url: https://docs.pinecone.io/release-notes/2026
     priority: 1
@@ -382,6 +567,7 @@ sources:
     min_expected_items: 10
 
   - id: pinecone_release_notes_2025
+    vendor: pinecone
     type: html_scrape
     url: https://docs.pinecone.io/release-notes/2025
     priority: 1
@@ -395,6 +581,7 @@ sources:
   # 240 дат с 2022 года, записи размечены по компонентам и по типу
   # (Feature, Deprecation) — готовая разметка под vendor и change_type.
   - id: temporal_changelog
+    vendor: temporal
     type: html_scrape
     url: https://temporal.io/changelog
     priority: 1
@@ -407,6 +594,7 @@ sources:
   # Эталон структуры: Migration Log из записей «версия — дата», у каждой
   # раздел breaking changes. Последняя запись от 2025-03-01.
   - id: chroma_migration_log
+    vendor: chroma
     type: html_scrape
     url: https://docs.trychroma.com/docs/overview/migration
     priority: 1
@@ -418,6 +606,7 @@ sources:
     live_collect: false
 
   - id: pydantic_ai_changelog
+    vendor: pydantic
     type: html_scrape
     url: https://pydantic.dev/docs/ai/project/changelog/
     priority: 1
@@ -429,6 +618,7 @@ sources:
 
   # 100 релизов за год, 59 с разделами breaking changes, тела по 2900 знаков.
   - id: gh_microsoft_agent_framework
+    vendor: microsoft_ai
     type: github_releases
     url: https://github.com/microsoft/agent-framework
     priority: 3
@@ -439,6 +629,7 @@ sources:
 
   # 93 из 100 релизов несут явный breaking-раздел: это пункт их шаблона.
   - id: gh_weaviate
+    vendor: weaviate
     type: github_releases
     url: https://github.com/weaviate/weaviate
     priority: 3
@@ -448,6 +639,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_qdrant
+    vendor: qdrant
     type: github_releases
     url: https://github.com/qdrant/qdrant
     priority: 3
@@ -457,6 +649,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_llamaindex
+    vendor: llamaindex
     type: github_releases
     url: https://github.com/run-llama/llama_index
     priority: 3
@@ -471,6 +664,7 @@ sources:
   # с ценами и сроками. Найдена через link rel=alternate на странице docs;
   # все угаданные адреса вида anthropic.com/rss.xml отдают 404.
   - id: anthropic_release_notes_feed
+    vendor: anthropic
     type: rss
     url: https://platform.claude.com/docs/en/release-notes/feed.xml
     priority: 1
@@ -481,6 +675,7 @@ sources:
   # Закрывает вендора, который через HTML не парсится: 50 записей за
   # полгода, полный текст в content:encoded.
   - id: cursor_changelog_feed
+    vendor: cursor
     type: rss
     url: https://cursor.com/changelog/rss.xml
     priority: 1
@@ -489,6 +684,7 @@ sources:
     min_expected_items: 10
 
   - id: github_changelog_feed
+    vendor: github
     type: rss
     url: https://github.blog/changelog/feed/
     priority: 2
@@ -497,6 +693,7 @@ sources:
     min_expected_items: 5
 
   - id: mcp_blog_feed
+    vendor: mcp
     type: rss
     url: https://blog.modelcontextprotocol.io/index.xml
     priority: 2
@@ -505,6 +702,7 @@ sources:
     min_expected_items: 5
 
   - id: n8n_blog_feed
+    vendor: n8n
     type: rss
     url: https://n8n.io/blog/rss/
     priority: 2
@@ -515,6 +713,7 @@ sources:
   # 1132 записи с 2015 года, но тело — сниппет на 150 знаков.
   # Обогащение всё равно ходит в первоисточник, так что этого достаточно.
   - id: openai_news_feed
+    vendor: openai
     type: rss
     url: https://openai.com/news/rss.xml
     priority: 2
@@ -560,6 +759,7 @@ sources:
 
   # --- Приоритет 3: GitHub Releases, полная история через пагинацию ---
   - id: gh_anthropics_claude_code
+    vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/claude-code
     priority: 3
@@ -569,6 +769,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_openai_python
+    vendor: openai
     type: github_releases
     url: https://github.com/openai/openai-python
     priority: 3
@@ -578,6 +779,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_anthropic_sdk_python
+    vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/anthropic-sdk-python
     priority: 3
@@ -588,6 +790,7 @@ sources:
 
   # Релизится тегами пакетов, а не GitHub Releases: 2 за полгода, 7 за год.
   - id: gh_modelcontextprotocol_servers
+    vendor: mcp
     type: github_releases
     url: https://github.com/modelcontextprotocol/servers
     priority: 3
@@ -597,6 +800,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_n8n
+    vendor: n8n
     type: github_releases
     url: https://github.com/n8n-io/n8n
     priority: 3
@@ -608,6 +812,7 @@ sources:
   # Монорепо: почти каждый релиз это версия отдельного пакета-интеграции.
   # Объём есть, плотность полезного на запись низкая.
   - id: gh_langchain
+    vendor: langchain
     type: github_releases
     url: https://github.com/langchain-ai/langchain
     priority: 3

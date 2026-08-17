@@ -19,6 +19,9 @@ from typing import Any
 
 from radar.models import ChangeType
 
+# Above this, an input is a document rather than a vendor name.
+MAX_TOKENS_FOR_SUBSTRING_MATCH = 6
+
 
 def _fold(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).casefold()
@@ -59,12 +62,17 @@ class Normalizer:
             return None
         if key in self.vendor_by_alias:
             return self.vendor_by_alias[key]
-        # Longest alias contained in the string, so "Anthropic Claude Code"
-        # resolves without needing an entry of its own.
-        candidates = [alias for alias in self.vendor_by_alias if alias and alias in key]
-        if candidates:
-            return self.vendor_by_alias[max(candidates, key=len)]
-        self.unknown_vendors[raw.strip()] = self.unknown_vendors.get(raw.strip(), 0) + 1
+        # Substring matching only for short inputs — a name, not a document.
+        # Folding strips separators, so on a full release body "github.com" in
+        # any link matches the vendor id "github". Long text must get its
+        # vendor from the source config instead of from a guess.
+        if len(raw.split()) <= MAX_TOKENS_FOR_SUBSTRING_MATCH:
+            candidates = [a for a in self.vendor_by_alias if a and a in key]
+            if candidates:
+                return self.vendor_by_alias[max(candidates, key=len)]
+            # A short unrecognized name is a dictionary gap worth reporting.
+            # A whole document is not: it would fill the report with noise.
+            self.unknown_vendors[raw.strip()] = self.unknown_vendors.get(raw.strip(), 0) + 1
         return None
 
     def vendor_from_url(self, url: str) -> str | None:
