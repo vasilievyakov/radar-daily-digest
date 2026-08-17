@@ -189,3 +189,87 @@ class TestTokensAreRecorded:
             "the enricher must pass the backend's log through, otherwise "
             "run_log=None overrides it and token counts are lost"
         )
+
+
+class TestDeliveryIsActuallyWired:
+    """Three times in one night the orchestrator called a name that does not
+    exist: `keep()` on the filter, `extract-v1` in the golden set, and
+    `TelegramSurface` inside the fix for the previous two. Names are checked
+    here by construction, not by reading."""
+
+    def test_the_run_command_builds_surfaces_that_exist(self):
+        from radar.cli import _deliver_run
+        import inspect
+
+        # Every attribute the wiring reaches for must resolve on the module.
+        from radar.surfaces import telegram
+
+        assert hasattr(telegram, "send_digest"), (
+            "delivery calls telegram.send_digest; if the surface renames it, "
+            "the run silently reports 'канал недоступен' forever"
+        )
+        assert callable(telegram.send_digest)
+        # The helper must not reference a class that was never defined.
+        source = inspect.getsource(_deliver_run)
+        code_lines = [
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        ]
+        assert "TelegramSurface" not in "\n".join(code_lines)
+
+    def test_the_built_surface_satisfies_the_delivery_protocol(self, env):
+        """Constructs it the way the CLI does and hands it a signal."""
+        conn, journal = env
+        publish_signals(conn, RUN, [make_signal()])
+
+        from radar.surfaces import telegram as tg
+
+        class _Telegram:
+            name = "telegram"
+
+            def send_digest(self, signals):
+                return tg.DeliveryResult(delivered=False, error="токена нет")
+
+        report = deliver(conn, {"telegram": _Telegram()}, RUN, journal)
+        # No token in the environment, so it must fail cleanly and be recorded
+        # rather than raise or silently do nothing.
+        assert report.results
+        assert report.results[0].channel == "telegram"
+        assert not report.results[0].delivered
+
+
+class TestRunCommandWiring:
+    """Three defects of one kind: an object is created and handed to nobody.
+
+    The filter can record reasons but was built without the run log, so every
+    rejected material vanished. The call log collected tokens and was never
+    written, so the run reported zero spend. The budget was constructed and
+    passed to no stage, so the ceiling could not trigger.
+    """
+
+    def test_the_filter_receives_the_run_log(self):
+        import inspect
+
+        from radar.cli import cmd_run
+
+        source = inspect.getsource(cmd_run)
+        assert "run_log=run.log" in source
+        assert "budget=run.budget" in source
+
+    def test_the_call_log_is_written_to_the_database(self):
+        import inspect
+
+        from radar.cli import cmd_run
+
+        source = inspect.getsource(cmd_run)
+        assert "call_log.write(conn" in source, (
+            "collected token rows must reach model_calls, otherwise the run "
+            "prints 0.0000 USD while checkpoints show real spend"
+        )
+
+    def test_spend_is_read_back_from_the_database(self):
+        """Printing the in-memory counter hides everything a crash lost."""
+        import inspect
+
+        from radar.cli import cmd_run
+
+        assert "FROM model_calls WHERE run_id" in inspect.getsource(cmd_run)

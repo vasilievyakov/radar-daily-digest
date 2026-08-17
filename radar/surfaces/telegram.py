@@ -45,6 +45,7 @@ from radar.models import (
     Signal,
     SignalType,
     Tier,
+    UpcomingDeadline,
 )
 
 MAX_MESSAGE_CHARS = 4096
@@ -465,19 +466,36 @@ def _upcoming_from_fact(fact: Fact, signal: Signal) -> _Upcoming | None:
     return _Upcoming(target, precision, label)
 
 
+def _upcoming_from_deadline(item: UpcomingDeadline) -> _Upcoming | None:
+    text = " ".join((item.what or "").split())
+    if not text:
+        return None
+    return _Upcoming(item.when, item.date_precision, text)
+
+
 def _upcoming_block(signal: Signal | None, today: date) -> str | None:
-    """Silence is filled with the deadlines the reader planned to forget."""
+    """Silence is filled with the deadlines the reader planned to forget.
+
+    `upcoming` is the field the core fills for this block, and its wording is
+    written for a reader. Precedents and facts are the fallback for a signal
+    published before the field existed: they carry the vendor's own sentence.
+    """
     if signal is None:
         return None
-    entries: list[_Upcoming] = []
-    for precedent in signal.precedents:
-        entry = _upcoming_from_precedent(precedent)
-        if entry:
-            entries.append(entry)
-    for fact in signal.facts:
-        entry = _upcoming_from_fact(fact, signal)
-        if entry:
-            entries.append(entry)
+    entries: list[_Upcoming] = [
+        entry
+        for entry in (_upcoming_from_deadline(d) for d in signal.upcoming)
+        if entry
+    ]
+    if not entries:
+        for precedent in signal.precedents:
+            entry = _upcoming_from_precedent(precedent)
+            if entry:
+                entries.append(entry)
+        for fact in signal.facts:
+            entry = _upcoming_from_fact(fact, signal)
+            if entry:
+                entries.append(entry)
 
     seen: set[tuple[date, str]] = set()
     ahead: list[_Upcoming] = []

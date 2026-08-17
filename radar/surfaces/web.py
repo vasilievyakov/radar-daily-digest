@@ -196,8 +196,7 @@ STALL_AFTER = timedelta(minutes=30)
 MISSING_SUNSET_DATE = "дата отключения в источнике не указана"
 NOTHING_LEAD = "Записей за этот день нет"
 NOTHING_NOTE = (
-    "За этот день не записано ни изменений в вашем стеке, "
-    "ни отметки о тихом дне."
+    "За этот день не записано ни изменений в вашем стеке, ни отметки о тихом дне."
 )
 INFERRED_YEAR_NOTE = "год не указан в источнике"
 QUIET_DAY_LEAD = "Сегодня в вашем стеке ничего не изменилось"
@@ -458,7 +457,7 @@ def read_theme_names(path: str | Path) -> Names:
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return NO_NAMES
     labels: dict[str, str] = {}
     words: dict[str, str] = {}

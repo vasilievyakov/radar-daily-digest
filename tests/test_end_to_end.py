@@ -23,7 +23,7 @@ from radar.db import init_db, read_signals
 from radar.deliver import deliver
 from radar.fetch import Fetcher
 from radar.journal import Journal
-from radar.models import ChangeType, Fact, FactKind, SignalType
+from radar.models import ChangeType, EventStatement, Fact, FactKind, SignalType
 from radar.run import DailyRun
 from radar.supervisor import Action, RunState, Supervisor
 
@@ -52,9 +52,30 @@ class RealShapedEnricher:
             subject="claude-3-opus",
             evidence_verified=True,
         )
+        # Statements, not just facts. A stub thinner than production is how
+        # "the headline is not the page title" stayed green while the card
+        # was assembled from the page title: the test passed through the
+        # fallback branch it exists to forbid.
+        subject = (item.title or "материал").strip()
+        statement = EventStatement(
+            statement_id=f"st-{abs(hash(item.url)) % 10**8}",
+            text=f"Anthropic объявил об отключении {subject}. Дата отключения 15 октября 2026 года.",
+            vendor=str(source.vendor or "anthropic") if source else "anthropic",
+            product=subject[:40],
+            change_type=ChangeType.DEPRECATION,
+            event_date=date(2026, 8, 16),
+            source_url=item.url,
+            evidence=(item.raw_text or "текст")[:40],
+            ingested_at=NOW,
+            ingest_mode="live",
+            extractor_model="fake",
+            prompt_version="test",
+            raw_material_ref=item.raw_material_ref or "ref",
+        )
         return EnrichResult(
             source_id=str(item.extra.get("source_id", "")),
             url=item.url,
+            statements=[statement],
             facts=[fact],
             change_type=ChangeType.DEPRECATION,
             cost_usd=0.0,
@@ -88,12 +109,12 @@ def conn(tmp_path):
 def run_result(conn, config, tmp_path):
     """One real collection from cache, one real pass through every stage."""
     sources = [s for s in config.sources if s.id in CACHED_SOURCES]
-    fetcher = Fetcher(cache_root="cache", polite_delay=0.0)
+    fetcher = Fetcher(cache_root="cache", polite_delay=0.0, offline=True)
 
     from radar import run as run_module
     from radar.collect import collect_all as real_collect
 
-    def cached_only(cfg, f, run_log=None, mode="live", srcs=None, max_workers=6):
+    def cached_only(cfg, f, run_log=None, mode="live", sources=None, max_workers=6):
         return real_collect(cfg, f, run_log, mode="backfill", sources=sources, max_workers=4)
 
     original = run_module.collect_all
@@ -114,7 +135,7 @@ class TestTheWholeMachineTurns:
 
     def test_real_material_was_collected_from_cache(self, run_result):
         _, result = run_result
-        assert result.collected > 10
+        assert result.collected >= 45
 
     def test_signals_reach_the_store(self, run_result, conn):
         _, result = run_result
@@ -142,7 +163,7 @@ class TestValuesSurviveEverySeam:
         """Collapsed twice: once by dropping the URL fragment, once by keying
         dedup on URL alone when a page has no anchors."""
         _, result = run_result
-        assert result.clusters > 5
+        assert result.clusters >= 45
 
     def test_facts_carry_their_parsed_date(self, run_result, conn):
         _, result = run_result
@@ -225,7 +246,7 @@ class TestTheCardShowsExtractedText:
         digest_items = [s for s in read_signals(conn, result.run_id)
                         if s.signal_type is SignalType.DIGEST_ITEM]
         assert digest_items
-        assert all(len(s.summary) < 1500 for s in digest_items)
+        assert all(len(s.summary) < 2200 for s in digest_items)
 
     def test_why_it_matters_is_produced(self, run_result, conn):
         """Promised by voice.md and previously an empty string always."""

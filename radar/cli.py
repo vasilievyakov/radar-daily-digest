@@ -642,6 +642,44 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 
+
+def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
+    """Hand the run to the channels and record the outcome.
+
+    Without this call the delivery layer existed and nothing invoked it, so
+    the supervisor reported every healthy run as never delivered — the exact
+    blindness the layer was written to remove.
+    """
+    from radar.deliver import deliver
+
+    surfaces: dict[str, Any] = {}
+    try:
+        from radar.surfaces import telegram as tg
+
+        # The surface exposes functions, not a class. Wrapping here rather
+        # than inventing a class name is the point: the previous version
+        # imported `TelegramSurface`, which does not exist, and would have
+        # printed "канал недоступен" forever while looking wired up.
+        class _Telegram:
+            name = "telegram"
+
+            def send_digest(self, signals):
+                return tg.send_digest(signals)
+
+        surfaces["telegram"] = _Telegram()
+    except Exception as exc:
+        print(f"Telegram недоступен: {exc}")
+
+    if not surfaces:
+        print("Ни один канал не собран, доставка пропущена.")
+        return
+
+    report = deliver(conn, surfaces, run.run_id, run.journal, run.log)
+    for channel in report.results:
+        state = "доставлено" if channel.delivered else f"не доставлено: {channel.error}"
+        print(f"  {channel.channel}: {state}")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """One daily run, end to end, writing signals and nothing else.
 
@@ -656,6 +694,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     call_log = _CallLog()
     enricher = _build_enricher(config, args, fetcher, call_log)
 
+    for_date = date.fromisoformat(args.for_date) if args.for_date else None
+    run = DailyRun(
+        conn,
+        config,
+        fetcher,
+        enricher,
+        for_date=for_date,
+        log_dir=args.log_dir,
+        progress=lambda line: print(line, flush=True),
+        sources=(
+            [s for s in config.sources if s.id in _ids(args.sources)]
+            if args.sources
+            else None
+        ),
+    )
+
     relevance = None
     if not args.no_filter:
         try:
@@ -663,22 +717,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             from radar.llm_cli import make_backend
 
             relevance = RelevanceFilter(
-                config, make_backend(config, prefer=getattr(args, "backend", None))
+                config,
+                make_backend(config, prefer=getattr(args, "backend", None)),
+                run_log=run.log,
+                journal=run.journal,
+                budget=run.budget,
             )
         except Exception as exc:
             print(f"фильтр не собран, материалы пойдут без него: {exc}")
 
-    for_date = date.fromisoformat(args.for_date) if args.for_date else None
-    run = DailyRun(
-        conn,
-        config,
-        fetcher,
-        enricher,
-        relevance_filter=relevance,
-        for_date=for_date,
-        log_dir=args.log_dir,
-        progress=lambda line: print(line, flush=True),
-    )
+    run.relevance_filter = relevance
     print(f"Прогон {run.run_id} за {run.for_date.isoformat()}.", flush=True)
     result = run.execute()
 
@@ -691,12 +739,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Фактов принято:          {result.facts_kept}")
     print(f"Фактов отбраковано:      {result.facts_rejected}")
     print(f"Сигналов записано:       {len(result.signals)}")
-    print(f"Потрачено:               {result.cost_usd:.4f} USD")
+    tokens_in, tokens_out = call_log.write(conn, run.run_id)
+    for note in call_log.notes:
+        run.log.note(note)
+    spent = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM model_calls WHERE run_id = ?",
+        (run.run_id,),
+    ).fetchone()[0]
+    print(f"Потрачено:               {spent:.4f} USD")
+    print(f"Токенов:                 {tokens_in} на вход, {tokens_out} на выход")
     if result.quiet:
         print("Тихий день: сигналов выше порога нет, запись quiet_day создана.")
     if not result.ok:
         print(f"Прогон не завершился на стадии {result.failed_stage}: {result.error}")
     print(RULE)
+    if args.deliver and result.signals:
+        _deliver_run(conn, run, result)
+
     print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")
     conn.close()
     return 0 if result.ok else 1
@@ -838,6 +897,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = sub.add_parser("run", help="один ежедневный прогон целиком")
     run_cmd.add_argument("--for-date", help="дата прогона в формате ГГГГ-ММ-ДД")
     run_cmd.add_argument("--log-dir", default="logs")
+    run_cmd.add_argument("--deliver", action="store_true",
+                         help="отправить результат в каналы после прогона")
     run_cmd.add_argument("--no-filter", action="store_true",
                          help="пропустить стадию релевантности")
     run_cmd.add_argument("--sources", help="ограничить источники, через запятую")

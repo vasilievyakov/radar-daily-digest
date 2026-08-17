@@ -133,6 +133,7 @@ class DailyRun:
         for_date: date | None = None,
         log_dir: str = "logs",
         progress: Any = None,
+        sources: list[Any] | None = None,
     ) -> None:
         self.conn = conn
         self.config = config
@@ -150,6 +151,7 @@ class DailyRun:
         # Injected rather than printing directly: the orchestrator stays
         # usable from a test and from a scheduler that wants silence.
         self.progress = progress
+        self.sources = sources
 
     def execute(self) -> RunResult:
         result = RunResult(run_id=self.run_id, for_date=self.for_date)
@@ -185,7 +187,9 @@ class DailyRun:
 
         result.failed_stage = "collect"
         with self.log.stage("collect") as record:
-            items, outcomes = collect_all(self.config, self.fetcher, self.log)
+            items, outcomes = collect_all(
+                self.config, self.fetcher, self.log, sources=self.sources
+            )
             record["out_count"] = len(items)
         result.collected = len(items)
         self.journal.checkpoint("collect", item_count=len(items))

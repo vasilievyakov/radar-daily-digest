@@ -29,6 +29,7 @@ from radar.models import (
     Signal,
     SignalType,
     Tier,
+    UpcomingDeadline,
 )
 from radar.surfaces import telegram
 
@@ -361,13 +362,41 @@ class TestDigest:
         text = telegram.render_digest(digest_run(), TODAY)
         assert "Cursor меняет формат файла конфигурации</a> — завтра" in text
 
-    def test_precedents_render_as_context_with_navigation(self):
-        text = telegram.render_digest(digest_run(), TODAY)
-        assert (
-            "Повторяется: самая ранняя запись в корпусе — 12 мая, 97 дней назад."
-            in text
-        )
+    def test_context_sentence_is_the_one_the_core_wrote(self):
+        """DR-10: one record, three faces, and one wording of the claim."""
+        note = "Anthropic: отключения, третий раз с 12 мая."
+        text = telegram.render_digest([lead_signal(context_note=note)], TODAY)
+
+        assert note in text
+        # The label is gone: it named the block instead of saying anything.
+        assert "Повторяется" not in text
+        assert "самая ранняя запись" not in text
         assert f'<a href="{RUN_LOG}">Показать три записи.</a>' in text
+
+    def test_without_the_field_the_surface_states_only_what_it_can_show(self):
+        text = telegram.render_digest(digest_run(), TODAY)
+
+        assert "Самая ранняя запись в корпусе — 12 мая, 97 дней назад." in text
+        assert "Повторяется" not in text
+        assert f'<a href="{RUN_LOG}">Показать три записи.</a>' in text
+
+    def test_precedents_without_dates_leave_the_navigation_alone(self):
+        signal = lead_signal(
+            precedents=[
+                Precedent(
+                    statement_id="st-1",
+                    text="Anthropic объявил об отключении claude-2.1",
+                    source_url=DEPRECATION_URL,
+                    event_date=None,
+                    vendor="anthropic",
+                    change_type=ChangeType.DEPRECATION,
+                )
+            ]
+        )
+        text = telegram.render_digest([signal], TODAY)
+
+        assert f'<a href="{RUN_LOG}">Показать одну запись.</a>' in text
+        assert "Повторяется" not in text
 
     def test_signal_without_precedents_renders_whole(self):
         signal = lead_signal(
@@ -451,6 +480,33 @@ class TestQuietDay:
         assert "Проверено 14 источников, 23 материала отклонено." in text
         assert f'<a href="{RUN_LOG}">Лог прогона.</a>' in text
         assert text.endswith("<code>sig-quiet-2026-08-17</code>")
+
+    def test_the_quiet_day_block_reads_the_field_the_core_fills(self):
+        """A quiet-day signal written by the core carries `upcoming` and no
+        precedents at all, so a surface reading precedents shows nothing."""
+        signal = quiet_signal(
+            precedents=[],
+            upcoming=[
+                UpcomingDeadline(
+                    when=date(2026, 10, 15),
+                    what="отключается claude-3-opus",
+                    vendor="anthropic",
+                    source_url=DEPRECATION_URL,
+                ),
+                UpcomingDeadline(
+                    when=date(2026, 11, 1),
+                    what="новые лимиты Tier 1 в OpenAI API",
+                    vendor="openai",
+                    source_url="https://platform.openai.com/docs/guides/rate-limits",
+                ),
+            ],
+        )
+        text = telegram.render_quiet_day(signal, TODAY)
+
+        assert (
+            "Ближайшее:\n15 октября, через 59 дней — отключается claude-3-opus" in text
+        )
+        assert "1 ноября, через 76 дней — новые лимиты Tier 1 в OpenAI API" in text
 
     def test_quiet_day_without_deadlines_drops_the_heading(self):
         text = telegram.render_quiet_day(quiet_signal(precedents=[]), TODAY)
@@ -869,6 +925,52 @@ class TestDelivery:
 
         assert result.ok is False
         assert result.error == "chat not found"
+
+    def test_the_lock_screen_line_is_produced_on_the_delivery_path(
+        self, monkeypatch, credentials
+    ):
+        """voice.md section 1 wants «Прогон не завершился» on a failed run.
+
+        The message itself opens with section 6, which names the day and the
+        stage. Building the preview out of the head of the message therefore
+        gets the failed run wrong, and the line has to be built where the
+        message is sent, not only in a test.
+        """
+        sent = {}
+
+        def fake_urlopen(request, timeout=None):
+            sent["payload"] = json.loads(request.data.decode("utf-8"))
+            return _FakeResponse({"ok": True, "result": {"message_id": 11}})
+
+        monkeypatch.setattr(telegram, "urlopen", fake_urlopen)
+        result = telegram.send_digest([failure_signal()], TODAY)
+
+        assert result.ok is True
+        assert result.notification == "Прогон не завершился"
+        assert len(result.notification) <= telegram.NOTIFICATION_CHARS
+        # The message keeps its own opening, which is not the preview.
+        assert sent["payload"]["text"].startswith("Прогон 17 августа не завершился")
+
+    def test_an_ordinary_day_carries_the_main_fact_to_the_lock_screen(
+        self, monkeypatch, credentials
+    ):
+        def fake_urlopen(request, timeout=None):
+            return _FakeResponse({"ok": True, "result": {"message_id": 12}})
+
+        monkeypatch.setattr(telegram, "urlopen", fake_urlopen)
+        result = telegram.send_digest(digest_run(), TODAY)
+
+        assert result.notification == "Anthropic отключает claude-3-opus 15 окт"
+
+    def test_a_refused_send_still_reports_what_the_reader_would_have_seen(
+        self, monkeypatch, no_network
+    ):
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+        result = telegram.send_digest([quiet_signal()], TODAY)
+
+        assert result.ok is False
+        assert result.notification == "Сегодня без изменений"
 
     def test_quiet_day_is_delivered_like_any_other_day(self, monkeypatch, credentials):
         sent = {}

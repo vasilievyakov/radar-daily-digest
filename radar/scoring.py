@@ -325,11 +325,25 @@ def nearest_due_date(
     found = [
         parsed
         for fact in signal.facts
-        if str(fact.kind) in wanted and (parsed := _parse_date(fact.value)) is not None
+        if str(fact.kind) in wanted
+        and (parsed := fact.value_date or _parse_date(fact.value)) is not None
     ]
     if not found:
         return None, None
-    due = min(found)
+
+    # The nearest deadline still ahead, not the earliest date on the card. A
+    # deprecations registry carries its whole history, so a single material
+    # can hold dates from two years back; taking the minimum produced "срок
+    # истёк 649 дней назад" under a headline about today's announcement.
+    ahead = [d for d in found if d >= as_of]
+    if ahead:
+        due = min(ahead)
+        return due, (due - as_of).days
+
+    # Everything is in the past: the obligation has already come due, and the
+    # most recent one is what still matters. Urgency of a closed deadline is
+    # not a reason to rank a signal higher.
+    due = max(found)
     return due, (due - as_of).days
 
 

@@ -153,6 +153,15 @@ def _count(n: int, one: str, few: str, many: str) -> str:
     return f"{n} {_plural(n, one, few, many)}"
 
 
+_SPELLED = ("один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
+
+
+def _spelled_count(n: int, one: str, few: str, many: str) -> str:
+    """«Два источника не ответили» — small counts are words in a sentence."""
+    word = _SPELLED[n - 1] if 1 <= n <= len(_SPELLED) else str(n)
+    return f"{word} {_plural(n, one, few, many)}"
+
+
 def _sentence(text: str) -> str:
     text = " ".join(text.split())
     if not text:
@@ -300,11 +309,13 @@ class _CardView:
     summary: str
     why: str
     facts: list[_FactView]
+    # The sentence above the precedent list, written by the core, and the
+    # heading used only when a signal was published without it.
+    context_note: str
     context_title: str
     precedents: list[_PrecedentView]
     delta: str
     primary_url: str
-    run_log_url: str
     signal_id: str
 
 
@@ -313,6 +324,9 @@ class _UpcomingView:
     date_text: str
     text: str
     url: str
+    # A verbatim quote from a source is shown as one; a line the core wrote
+    # for the reader is not dressed up as a quotation.
+    quoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -333,6 +347,8 @@ class _LetterView:
     failure: _BlockView | None
     cards: list[_CardView]
     quiet: _BlockView | None
+    # Sources that did not answer, named in the footer (voice.md, section 5).
+    sources_line: str
     closing: str
     run_log_url: str
     schema_note: str
@@ -426,8 +442,17 @@ def _delta_line(signal: Signal) -> str:
 
 
 def _card_view(signal: Signal, today: date) -> _CardView:
+    """One card. The context sentence is quoted from the core, never composed.
+
+    `context_note` is written once, in publish.build_context_note, and every
+    number in it is backed by the precedent list underneath. Three surfaces
+    wording the same claim three ways is what DR-10 promises not to do, so the
+    heading below is a fallback for signals published before the field
+    existed, not a second voice.
+    """
     context_title = CONTEXT_TITLES.get(signal.context_label, "")
     precedents = [_precedent_view(p, today) for p in signal.precedents]
+    note = _sentence(" ".join((signal.context_note or "").split()))
     if not context_title and precedents:
         context_title = "Прецеденты в корпусе"
     why = " ".join(signal.why_it_matters.split())
@@ -436,18 +461,33 @@ def _card_view(signal: Signal, today: date) -> _CardView:
         summary=signal.summary.strip(),
         why=_sentence(f"Почему это важно: {why}") if why else "",
         facts=[_fact_view(f, today) for f in signal.facts],
-        context_title=context_title,
+        context_note=note if precedents else "",
+        context_title="" if (note and precedents) else context_title,
         precedents=precedents,
         delta=_delta_line(signal),
         primary_url=_safe_url(signal.primary_url),
-        run_log_url=_safe_url(signal.run_log_url),
         signal_id=signal.signal_id,
     )
 
 
 def _upcoming_views(signal: Signal, today: date) -> list[_UpcomingView]:
-    """Deadlines the core already extracted, shown in the order it gave."""
-    views: list[_UpcomingView] = []
+    """Deadlines the core already extracted, shown in the order it gave.
+
+    `upcoming` is the field the core fills for exactly this block, and its
+    wording is meant for the reader. A fact carries the vendor's own sentence
+    instead, in the vendor's language, so it is the fallback for a signal
+    published without the field.
+    """
+    views = [
+        _UpcomingView(
+            date_text=_date_phrase(item.when, today, item.date_precision),
+            text=" ".join((item.what or "").split()),
+            url=_safe_url(item.source_url),
+        )
+        for item in signal.upcoming
+    ]
+    if views:
+        return views
     for fact in signal.facts:
         kind = str(fact.kind)
         if kind not in MISSING_DATE:
@@ -460,6 +500,7 @@ def _upcoming_views(signal: Signal, today: date) -> list[_UpcomingView]:
                 date_text=_date_phrase(parsed[0], today, parsed[1]),
                 text=" ".join(fact.evidence.split()),
                 url=_safe_url(fact.source_url),
+                quoted=True,
             )
         )
     return views
@@ -517,7 +558,13 @@ def _failure_view(signal: Signal, today: date) -> _BlockView:
 
 
 def _closing_line(signals: Sequence[Signal]) -> str:
-    """Close a story when one closed today (voice.md, section 7)."""
+    """Close a story when one closed today (voice.md, section 7).
+
+    Every signal of the run is scanned, not only the ones drawn as cards. A
+    story that closed is by definition not urgent, the core files it in the
+    background band, and a letter looking only at its own cards would never
+    close anything at all.
+    """
     for signal in signals:
         if signal.delta_status is not DeltaStatus.RESOLVED:
             continue
@@ -528,6 +575,28 @@ def _closing_line(signals: Sequence[Signal]) -> str:
             line = f"{line}, история велась {history}"
         return _sentence(line)
     return ""
+
+
+def _sources_line(signals: Sequence[Signal]) -> str:
+    """Sources that did not answer, in a calm tone (voice.md, section 5).
+
+    The names travel inside the contract (`RunSummary`), because a surface may
+    not read `source_runs` (SUR-1). A footer of counts without names would
+    tell the reader that something is missing and refuse to say what.
+    """
+    summary = next((s.run_summary for s in signals if s.run_summary), None)
+    if summary is None:
+        return ""
+    parts: list[str] = []
+    failed = list(summary.sources_failed)
+    if failed:
+        head = _spelled_count(len(failed), "источник", "источника", "источников")
+        verb = "не ответил" if len(failed) == 1 else "не ответили"
+        parts.append(f"{head[:1].upper()}{head[1:]} {verb}: {', '.join(failed)}.")
+    for name in summary.sources_empty:
+        # HTTP 200 with nothing in it is a different fault, named apart.
+        parts.append(f"{name} ответил, но ничего не отдал.")
+    return " ".join(parts)
 
 
 def _subject(
@@ -577,12 +646,6 @@ def build_view(signals: Sequence[Signal], today: date | None = None) -> _LetterV
             "Показано то, что письмо умеет прочитать."
         )
 
-    closing = _closing_line(selected)
-    if cards and not closing and cards[-1].run_log_url == run_log_url:
-        # The last card already offers the same link; a footer copy of it
-        # right underneath reads as clutter.
-        run_log_url = ""
-
     header = f"Разбор за {_date_phrase(reference, reference)}"
     return _LetterView(
         subject=_subject(failure, selected, quiet is not None),
@@ -590,7 +653,10 @@ def build_view(signals: Sequence[Signal], today: date | None = None) -> _LetterV
         failure=failure,
         cards=cards,
         quiet=quiet,
-        closing=closing,
+        sources_line=_sources_line(signals),
+        closing=_closing_line(signals),
+        # One address, once, at the end of the letter: five cards each ending
+        # in the same link is the same sentence printed five times.
         run_log_url=run_log_url,
         schema_note=schema_note,
     )
@@ -617,8 +683,8 @@ def _card_text(card: _CardView) -> list[str]:
                 lines += _wrap(f"«{fact.quote}»", indent="    ")
             if fact.url:
                 lines.append(f"    {fact.url}")
-    if card.context_title:
-        lines += ["", card.context_title]
+    if card.context_note or card.context_title:
+        lines += ["", *_wrap(card.context_note or card.context_title)]
         for precedent in card.precedents:
             head = f"{precedent.date_text} — {precedent.text}"
             lines += _wrap(head, indent="  ")
@@ -628,13 +694,8 @@ def _card_text(card: _CardView) -> list[str]:
                 lines.append(f"    {precedent.url}")
     if card.delta:
         lines += ["", *_wrap(card.delta)]
-    tail = []
-    if card.run_log_url:
-        tail.append(f"{RUN_LOG_LABEL}: {card.run_log_url}")
     if card.signal_id:
-        tail.append(card.signal_id)
-    if tail:
-        lines += ["", *tail]
+        lines += ["", card.signal_id]
     return lines
 
 
@@ -645,7 +706,8 @@ def _block_text(block: _BlockView) -> list[str]:
     if block.upcoming:
         lines += ["", "Ближайшее:"]
         for item in block.upcoming:
-            lines += _wrap(f"{item.date_text} — «{item.text}»", hang="  ")
+            what = f"«{item.text}»" if item.quoted else item.text
+            lines += _wrap(f"{item.date_text} — {what}", hang="  ")
             if item.url:
                 lines.append(f"  {item.url}")
     if block.stats_line:
@@ -663,6 +725,8 @@ def render_text(view: _LetterView) -> str:
         sections.append(_block_text(view.quiet))
     sections.extend(_card_text(card) for card in view.cards)
     tail: list[str] = []
+    if view.sources_line:
+        tail += _wrap(view.sources_line)
     if view.closing:
         tail += _wrap(view.closing)
     if view.run_log_url:
@@ -789,8 +853,11 @@ def _card_html(card: _CardView) -> str:
             if block:
                 parts.append(_spacer(6))
                 parts.append(block)
-    if card.context_title:
+    if card.context_note:
+        parts.append(_para(card.context_note, size=15, top=20))
+    elif card.context_title:
         parts.append(_label(card.context_title))
+    if card.context_note or card.context_title:
         for precedent in card.precedents:
             parts.append(_para(precedent.date_text, size=14, top=10, bold=True))
             parts.append(_para(precedent.text, size=14, top=4))
@@ -806,20 +873,12 @@ def _card_html(card: _CardView) -> str:
                 )
     if card.delta:
         parts.append(_para(card.delta, size=14, top=16, color=C_MUTED))
-    tail = []
-    if card.run_log_url:
-        tail.append(_anchor(card.run_log_url, RUN_LOG_LABEL, size=12))
     if card.signal_id:
-        tail.append(
-            f'<span style="font-family:{FONT};font-size:12px;line-height:18px;'
-            f'color:{C_MUTED};background-color:{C_CARD};">'
-            f"{escape(card.signal_id)}</span>"
-        )
-    if tail:
         parts.append(
             f'<p style="margin:18px 0 0 0;padding:0;background-color:{C_CARD};">'
-            + " &nbsp;·&nbsp; ".join(tail)
-            + "</p>"
+            f'<span style="font-family:{FONT};font-size:12px;line-height:18px;'
+            f'color:{C_MUTED};background-color:{C_CARD};">'
+            f"{escape(card.signal_id)}</span></p>"
         )
     return "".join(parts)
 
@@ -832,10 +891,19 @@ def _block_html(block: _BlockView) -> str:
         parts.append(_label("Ближайшее"))
         for item in block.upcoming:
             parts.append(_para(item.date_text, size=15, top=10, bold=True))
-            block_html = _quote_block(item.text, item.url)
-            if block_html:
-                parts.append(_spacer(6))
-                parts.append(block_html)
+            if item.quoted:
+                block_html = _quote_block(item.text, item.url)
+                if block_html:
+                    parts.append(_spacer(6))
+                    parts.append(block_html)
+                continue
+            if item.text:
+                parts.append(_para(item.text, size=14, top=4))
+            if item.url:
+                parts.append(
+                    f'<p style="margin:4px 0 0 0;padding:0;'
+                    f'background-color:{C_CARD};">' + _anchor(item.url) + "</p>"
+                )
     if block.stats_line:
         parts.append(_para(block.stats_line, size=13, top=18, color=C_MUTED))
     if block.signal_id:
@@ -859,8 +927,12 @@ def render_html(view: _LetterView) -> str:
         rows.append(_row(_card_html(card), top_rule=index > 0))
 
     footer = []
+    if view.sources_line:
+        footer.append(_para(view.sources_line, size=14, top=0, color=C_MUTED))
     if view.closing:
-        footer.append(_para(view.closing, size=14, top=0, color=C_TEXT))
+        footer.append(
+            _para(view.closing, size=14, top=10 if footer else 0, color=C_TEXT)
+        )
     if view.run_log_url:
         footer.append(
             f'<p style="margin:10px 0 0 0;padding:0;background-color:{C_CARD};">'

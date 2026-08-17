@@ -784,3 +784,61 @@ class TestClusterVendorSurvives:
         )
         [cluster] = cluster_items([item])
         assert cluster.vendor == "openai"
+
+
+class TestDeadlineLooksForward:
+    """A deprecations registry carries its whole history on one page, so a
+    single material can hold dates two years old. Taking the earliest of them
+    printed "срок истёк 649 дней назад" under a headline about an
+    announcement made today."""
+
+    def _signal(self, dates):
+        from datetime import date as _date
+
+        from radar.models import Fact, FactKind, Signal, SignalType
+
+        return Signal(
+            signal_id="s1", run_id="r1", signal_type=SignalType.DIGEST_ITEM,
+            created_at=datetime(2026, 8, 17, tzinfo=UTC), for_date=_date(2026, 8, 17),
+            headline="Anthropic отключает модель",
+            facts=[
+                Fact(kind=FactKind.SUNSET_DATE, value=d.isoformat(), source_url="u",
+                     evidence="q", value_date=d)
+                for d in dates
+            ],
+        )
+
+    def test_the_nearest_future_date_wins_over_an_older_one(self):
+        from datetime import date as _date
+
+        from radar.scoring import nearest_due_date
+
+        signal = self._signal([_date(2024, 11, 6), _date(2026, 10, 15), _date(2027, 5, 1)])
+        due, days = nearest_due_date(signal, ["sunset_date"], _date(2026, 8, 17))
+        assert due == _date(2026, 10, 15)
+        assert days == 59
+
+    def test_all_dates_past_reports_the_most_recent(self):
+        from datetime import date as _date
+
+        from radar.scoring import nearest_due_date
+
+        signal = self._signal([_date(2024, 11, 6), _date(2025, 7, 21)])
+        due, days = nearest_due_date(signal, ["sunset_date"], _date(2026, 8, 17))
+        assert due == _date(2025, 7, 21)
+        assert days < 0
+
+    def test_the_parsed_field_is_preferred_over_the_string(self):
+        from datetime import date as _date
+
+        from radar.models import Fact, FactKind, Signal, SignalType
+        from radar.scoring import nearest_due_date
+
+        signal = Signal(
+            signal_id="s", run_id="r", signal_type=SignalType.DIGEST_ITEM,
+            created_at=datetime(2026, 8, 17, tzinfo=UTC), for_date=_date(2026, 8, 17),
+            facts=[Fact(kind=FactKind.SUNSET_DATE, value="15 октября 2026",
+                        source_url="u", evidence="q", value_date=_date(2026, 10, 15))],
+        )
+        due, days = nearest_due_date(signal, ["sunset_date"], _date(2026, 8, 17))
+        assert due == _date(2026, 10, 15)

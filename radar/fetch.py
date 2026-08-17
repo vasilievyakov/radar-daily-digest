@@ -44,11 +44,16 @@ class Fetcher:
         max_retries: int = 2,
         polite_delay: float = 1.0,
         client: httpx.Client | None = None,
+        offline: bool = False,
     ) -> None:
         self.cache = HttpCache(cache_root)
         self.timeout = timeout
         self.max_retries = max_retries
         self.polite_delay = polite_delay
+        # A miss must fail loudly rather than quietly reach the network:
+        # a test claiming to run against the archive while fetching live
+        # pages proves nothing about the archive.
+        self.offline = offline
         self._client = client or httpx.Client(
             timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}
         )
@@ -83,6 +88,17 @@ class Fetcher:
                     ref=key,
                     from_cache=True,
                 )
+
+        if self.offline:
+            return FetchResult(
+                url=canonical_url(url),
+                status_code=0,
+                text="",
+                headers={},
+                ref=key,
+                from_cache=False,
+                error=f"offline: страницы нет в архиве ({canonical_url(url)})",
+            )
 
         last_error: str | None = None
         for attempt in range(self.max_retries + 1):

@@ -21,9 +21,11 @@ from radar.models import (
     Fact,
     FactKind,
     Precedent,
+    RunSummary,
     Signal,
     SignalType,
     Tier,
+    UpcomingDeadline,
 )
 from radar.surfaces import email as surface
 from radar.surfaces.email import (
@@ -529,6 +531,136 @@ def test_closed_story_gets_the_last_line():
         "Закрыто: миграция на Responses API завершена, история велась 12 дней."
         in digest.text
     )
+
+
+# --------------------------------------------------------------------------
+# The letter as a whole: one wording, one footer, one address
+# --------------------------------------------------------------------------
+
+
+def test_the_context_sentence_is_the_one_the_core_wrote():
+    """DR-10: three faces of one record, and one wording of the claim."""
+    note = "Anthropic: отключения, третий раз с 12 мая."
+    signal = digest_item(
+        context_label=ContextLabel.RECURRING,
+        context_note=note,
+        precedents=[
+            Precedent(
+                statement_id="st-1",
+                text="Anthropic объявила отключение claude-2.1",
+                source_url="https://docs.claude.com/deprecations#claude-2",
+                event_date=date(2026, 5, 12),
+                vendor="anthropic",
+                change_type=ChangeType.DEPRECATION,
+            )
+        ],
+    )
+    digest = build_email([signal], today=TODAY)
+
+    for rendered in (flat(digest.text), digest.html):
+        assert note in rendered
+        # The letter's own heading was a third wording of the same claim.
+        assert "Похожее уже случалось" not in rendered
+        assert "Anthropic объявила отключение claude-2.1" in rendered
+
+
+def test_a_story_closed_in_the_background_still_closes_the_letter():
+    """A closed story is never urgent, so it never arrives as a card."""
+    closed = digest_item(
+        "sig-closed",
+        Tier.BACKGROUND,
+        "Миграция на Responses API",
+        delta_status=DeltaStatus.RESOLVED,
+        delta_note="миграция на Responses API завершена",
+        days_tracked=12,
+    )
+    digest = build_email([digest_item(), closed], today=TODAY)
+
+    assert [s.signal_id for s in select_cards([digest_item(), closed])] == ["sig-001"]
+    for rendered in (flat(digest.text), digest.html):
+        assert (
+            "Закрыто: миграция на Responses API завершена, история велась 12 дней."
+            in rendered
+        )
+
+
+def test_the_footer_names_the_sources_that_did_not_answer():
+    signal = digest_item(
+        run_summary=RunSummary(
+            sources_checked=14,
+            sources_failed=["Cursor changelog", "MCP servers"],
+            sources_empty=["Pinecone release notes"],
+            materials_collected=41,
+            materials_filtered=23,
+        )
+    )
+    digest = build_email([signal], today=TODAY)
+
+    for rendered in (flat(digest.text), digest.html):
+        assert "Два источника не ответили: Cursor changelog, MCP servers." in rendered
+        assert "Pinecone release notes ответил, но ничего не отдал." in rendered
+
+
+def test_a_run_where_every_source_answered_says_nothing_about_sources():
+    digest = build_email(
+        [digest_item(run_summary=RunSummary(sources_checked=14))], today=TODAY
+    )
+
+    assert "не ответил" not in digest.text
+    assert "ничего не отдал" not in digest.text
+
+
+def test_the_run_log_address_is_printed_once():
+    """Five cards ending in the same link is one sentence printed five times."""
+    signals = [
+        digest_item(f"sig-{index}", Tier.STANDARD, f"Заголовок {index}")
+        for index in range(5)
+    ]
+    digest = build_email(signals, today=TODAY)
+
+    assert digest.text.count("https://radar.local/runs/run-1") == 1
+    assert digest.text.count(surface.RUN_LOG_LABEL) == 1
+    assert digest.html.count("https://radar.local/runs/run-1") == 1
+
+
+def test_upcoming_shows_the_line_the_core_wrote_for_the_reader():
+    """The block is for a Russian reader, not for the vendor's own sentence."""
+    signal = quiet_day(
+        upcoming=[
+            UpcomingDeadline(
+                when=date(2026, 10, 15),
+                what="отключается claude-3-opus",
+                vendor="anthropic",
+                source_url="https://docs.claude.com/deprecations",
+            ),
+            UpcomingDeadline(
+                when=date(2026, 11, 1),
+                what="новые лимиты Tier 1 в OpenAI API",
+                vendor="openai",
+                source_url="https://platform.openai.com/docs/guides/rate-limits",
+            ),
+        ]
+    )
+    digest = build_email([signal], today=TODAY)
+
+    assert (
+        "15 октября, через 59 дней — отключается claude-3-opus"
+        in flat(digest.text)
+    )
+    for rendered in (flat(digest.text), digest.html):
+        assert "отключается claude-3-opus" in rendered
+        assert "новые лимиты Tier 1 в OpenAI API" in rendered
+        # The English sentence from the source belongs to the card, not here.
+        assert "will be retired on October 15" not in rendered
+        # And a line written for the reader is not dressed as a quotation.
+        assert "«отключается claude-3-opus»" not in rendered
+
+
+def test_upcoming_falls_back_to_the_facts_and_quotes_them_as_quotes():
+    digest = build_email([quiet_day()], today=TODAY)
+
+    assert "«claude-3-opus will be retired on October 15, 2026»" in flat(digest.text)
+    assert "15 октября, через 59 дней" in digest.text
 
 
 # --------------------------------------------------------------------------
