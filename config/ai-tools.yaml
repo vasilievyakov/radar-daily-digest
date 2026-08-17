@@ -1,0 +1,236 @@
+theme:
+  name: "Изменения в AI-инструментах"
+  description: >
+    Изменения в продуктах и API инструментов, на которых практик ежедневно
+    ведёт разработку: Claude Code, Anthropic API, OpenAI API, Cursor, n8n,
+    MCP-серверы, SDK и CLI вокруг них.
+  relevance_criteria: >
+    Релевантно то, что меняет поведение работающего кода или условия его
+    эксплуатации: выпуск версии, ломающее изменение, объявление об отключении,
+    изменение цены, изменение лимитов, уязвимость и патч к ней.
+  exclusion_criteria: >
+    Нерелевантно: маркетинг без фактов, обзоры и мнения, слухи и утечки без
+    первоисточника, новости об индустрии ИИ в целом, кадровые и инвестиционные
+    новости, бенчмарки без изменения продукта.
+
+# Словарь нормализации. Решение 1.2 записки: фиксируется до первого запроса
+# к источникам и применяется единообразно. Пустой vendor или change_type
+# ломает обязательные фильтры ретривала (FR-5.16, FR-6.13).
+corpus:
+  retention: forever
+
+  # Целевой критерий готовности корпуса. Абсолютный объём (300 записей) не
+  # предсказывает работоспособность ретривала: фильтры конъюнктивны, и решает
+  # плотность на ячейку (vendor, change_type).
+  readiness:
+    min_statements: 300
+    min_depth_days: 180
+    min_vendors_with_dense_cell: 3
+    min_events_per_dense_cell: 3
+    dense_cell_change_types: [deprecation, breaking_change, pricing, limits]
+
+  vendors:
+    - id: anthropic
+      label: "Anthropic"
+      aliases: [Anthropic, claude, Claude, claude-code, "Claude Code", anthropics, "claude.ai"]
+    - id: openai
+      label: "OpenAI"
+      aliases: [OpenAI, "Open AI", gpt, GPT, chatgpt, ChatGPT, openai-python]
+    - id: cursor
+      label: "Cursor"
+      aliases: [Cursor, "Cursor IDE", anysphere, Anysphere]
+    - id: n8n
+      label: "n8n"
+      aliases: [n8n, "n8n.io", "n8n-io"]
+    - id: mcp
+      label: "Model Context Protocol"
+      aliases: [MCP, "Model Context Protocol", modelcontextprotocol, "MCP servers"]
+    - id: google
+      label: "Google"
+      aliases: [Google, Gemini, gemini, "Google AI", "Vertex AI", vertex]
+    - id: github
+      label: "GitHub"
+      aliases: [GitHub, Github, "GitHub Copilot", copilot, Copilot]
+    - id: langchain
+      label: "LangChain"
+      aliases: [LangChain, langchain, LangGraph, langgraph, LangSmith]
+
+  change_types:
+    - id: release
+      label: "Релиз"
+    - id: breaking_change
+      label: "Ломающее изменение"
+    - id: deprecation
+      label: "Объявление об отключении"
+    - id: pricing
+      label: "Изменение цены"
+    - id: limits
+      label: "Изменение лимитов"
+    - id: security
+      label: "Безопасность"
+    - id: other
+      label: "Прочее"
+
+sources:
+  # Приоритет 1: официальные реестры отключений и changelog.
+  # Проверено curl без JS: страницы отдаются целиком и содержат даты.
+  - id: anthropic_model_deprecations
+    type: html_scrape
+    url: https://docs.claude.com/en/docs/about-claude/model-deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_table
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  - id: openai_deprecations
+    type: html_scrape
+    url: https://platform.openai.com/docs/deprecations
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  - id: anthropic_api_release_notes
+    type: html_scrape
+    url: https://docs.claude.com/en/release-notes/api
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 20
+
+  - id: anthropic_claude_code_release_notes
+    type: html_scrape
+    url: https://docs.claude.com/en/release-notes/claude-code
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 10
+
+  # Рендерится на клиенте: HTTP 200, 499 КБ, ноль извлекаемых дат.
+  # Оставлен включённым намеренно как реальный кейс отказа вида
+  # "успешный ответ с нулём результатов" (FR-1.4, DR-5).
+  - id: cursor_changelog
+    type: html_scrape
+    url: https://docs.cursor.com/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: false
+    min_expected_items: 5
+
+  # Приоритет 3: GitHub Releases, полная история через пагинацию.
+  - id: gh_anthropics_claude_code
+    type: github_releases
+    url: https://github.com/anthropics/claude-code
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
+  - id: gh_openai_python
+    type: github_releases
+    url: https://github.com/openai/openai-python
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
+  - id: gh_anthropic_sdk_python
+    type: github_releases
+    url: https://github.com/anthropics/anthropic-sdk-python
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
+  - id: gh_modelcontextprotocol_servers
+    type: github_releases
+    url: https://github.com/modelcontextprotocol/servers
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 1
+
+  - id: gh_n8n
+    type: github_releases
+    url: https://github.com/n8n-io/n8n
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 180
+    min_expected_items: 5
+
+  - id: gh_langchain
+    type: github_releases
+    url: https://github.com/langchain-ai/langchain
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 180
+    min_expected_items: 5
+
+collection:
+  window_hours: 26
+  timeout_seconds: 30
+  max_retries: 2
+  polite_delay_seconds: 1.0
+
+retrieval:
+  windows: [180, 365]
+  required_filters: [vendor, change_type]
+  max_results_per_cluster: 12
+  min_evidence_for_trend: 2
+  # Второй запрос по смежным типам. Строгий фильтр институционализирует
+  # ложноотрицательный результат; расширенный делает пропуск видимым числом.
+  relaxed_change_type_groups:
+    - [pricing, limits]
+    - [deprecation, breaking_change]
+
+trends:
+  min_members: 3
+  dormant_after_days: 90
+
+scoring:
+  weights:
+    change_type:
+      breaking_change: 30
+      deprecation: 30
+      security: 25
+      limits: 18
+      pricing: 18
+      release: 10
+      other: 4
+    stack_overlap: 20
+    urgency: 20
+    source_authority: 15
+    novelty:
+      new: 15
+      updated: 12
+      continuing: 4
+      resolved: 6
+  publish_threshold: 55
+  digest_threshold: 35
+
+enrichment:
+  fact_kinds: [version, effective_date, sunset_date, price, limit, affected_product]
+  require_evidence: true
+  max_evidence_words: 15
+
+delivery:
+  channels: [telegram, email]
+  schedule: "0 8 * * *"
+  timezone: "Europe/Moscow"
+  max_items_telegram: 5
+  quiet_day_message: true
