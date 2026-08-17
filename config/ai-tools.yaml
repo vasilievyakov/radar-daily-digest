@@ -247,17 +247,45 @@ delivery:
   max_items_telegram: 5
   quiet_day_message: true
 
-# Stage to model routing. Scoring is arithmetic over the weights above and
-# deliberately has no model: weights stop being weights once a model applies
-# them (FR-6.3).
+# Backend selection. The local Claude Code CLI is the working backend; the
+# OpenRouter client takes over automatically once OPENROUTER_API_KEY exists.
+# Both share one call cache keyed by (model, prompt, schema, params), so a
+# corpus built on one backend is not re-paid for on the other.
+llm:
+  backend: auto        # auto | claude_cli | openrouter
+  timeout_seconds: 180
+  max_schema_retries: 2
+  concurrency: 8
+
+# Stage to model routing. Measured CLI cost per call with a warm prefix cache:
+# haiku about $0.005, and the first call of a stage pays roughly $0.033 to
+# create that cache. The system prompt of a stage must therefore stay byte
+# identical between calls, otherwise every call pays creation instead of read.
+#
+# Scoring and clustering have no model at all: weights stop being weights once
+# a model applies them (FR-6.3), and a cluster key assigned by a model drifts
+# between runs, which quietly breaks days_tracked.
 models:
   cluster: null
-  filter: anthropic/claude-sonnet-5
-  enrich: anthropic/claude-opus-5
-  trends: anthropic/claude-opus-5
+  filter: anthropic/claude-haiku-4.5
+  enrich: anthropic/claude-sonnet-5
+  # Dates and sunset windows are what the whole product is judged on, so the
+  # deprecation path gets the expensive model while bulk enrichment does not.
+  enrich_critical: anthropic/claude-opus-5
+  trends: anthropic/claude-sonnet-5
   score: null
   embeddings: openai/text-embedding-3-small
 
+# Change types routed to enrich_critical rather than enrich.
+critical_change_types: [deprecation, breaking_change, security]
+
 budget:
+  # NFR-5 target for a daily run: roughly 40 materials through the filter on
+  # haiku plus a dozen enrichments on sonnet.
   max_usd_per_run: 0.50
-  max_usd_per_backfill: 15.00
+  # Backfill is the one large spend of the project and runs once. Bulk
+  # enrichment on sonnet with the deprecation pages on opus.
+  max_usd_per_backfill: 8.00
+  # Second line of defence handed to the CLI itself, per call.
+  max_usd_per_call: 0.50
+  stop_on_exceed: true
