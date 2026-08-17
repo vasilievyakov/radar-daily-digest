@@ -11,6 +11,7 @@ Output is Russian because a person reads it; code and identifiers are English.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import os
 import sqlite3
 import threading
@@ -635,6 +636,66 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # -- argument parsing -------------------------------------------------
 
 
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """One daily run, end to end, writing signals and nothing else.
+
+    Delivery stays outside: the pipeline ends at the store (PUB-1), and a
+    surface reads from there. Without this command the orchestrator existed
+    only for its tests, which is another way of saying it did not exist.
+    """
+    from radar.run import DailyRun
+
+    config, conn = _load(args)
+    fetcher = _fetcher(config, args.cache)
+    call_log = _CallLog()
+    enricher = _build_enricher(config, args, fetcher, call_log)
+
+    relevance = None
+    if not args.no_filter:
+        try:
+            from radar.filter import RelevanceFilter
+            from radar.llm_cli import make_backend
+
+            relevance = RelevanceFilter(
+                config, make_backend(config, prefer=getattr(args, "backend", None))
+            )
+        except Exception as exc:
+            print(f"фильтр не собран, материалы пойдут без него: {exc}")
+
+    for_date = date.fromisoformat(args.for_date) if args.for_date else None
+    run = DailyRun(
+        conn,
+        config,
+        fetcher,
+        enricher,
+        relevance_filter=relevance,
+        for_date=for_date,
+        log_dir=args.log_dir,
+    )
+    print(f"Прогон {run.run_id} за {run.for_date.isoformat()}.")
+    result = run.execute()
+
+    print()
+    print(_RULE)
+    print(f"Собрано материалов:      {result.collected}")
+    print(f"Историй после склейки:   {result.clusters}")
+    print(f"Прошло фильтр:           {result.relevant}")
+    print(f"Обогащено:               {result.enriched}")
+    print(f"Фактов принято:          {result.facts_kept}")
+    print(f"Фактов отбраковано:      {result.facts_rejected}")
+    print(f"Сигналов записано:       {len(result.signals)}")
+    print(f"Потрачено:               {result.cost_usd:.4f} USD")
+    if result.quiet:
+        print("Тихий день: сигналов выше порога нет, запись quiet_day создана.")
+    if not result.ok:
+        print(f"Прогон не завершился на стадии {result.failed_stage}: {result.error}")
+    print(_RULE)
+    print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")
+    conn.close()
+    return 0 if result.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m radar.cli",
@@ -691,6 +752,14 @@ def build_parser() -> argparse.ArgumentParser:
     trends = sub.add_parser("trends", help="пересчёт трендов по корпусу")
     trends.add_argument("--min-members", type=int, default=None)
     trends.set_defaults(func=cmd_trends)
+
+    run_cmd = sub.add_parser("run", help="один ежедневный прогон целиком")
+    run_cmd.add_argument("--for-date", help="дата прогона в формате ГГГГ-ММ-ДД")
+    run_cmd.add_argument("--log-dir", default="logs")
+    run_cmd.add_argument("--no-filter", action="store_true",
+                         help="пропустить стадию релевантности")
+    run_cmd.add_argument("--sources", help="ограничить источники, через запятую")
+    run_cmd.set_defaults(func=cmd_run)
 
     doctor = sub.add_parser("doctor", help="проверка окружения")
     doctor.set_defaults(func=cmd_doctor)

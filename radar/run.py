@@ -248,9 +248,12 @@ class DailyRun:
         if self.relevance_filter is None:
             return clusters
         try:
-            return self.relevance_filter.keep(
-                clusters, run_log=self.log, budget=self.budget
-            )
+            outcome = self.relevance_filter.run(clusters)
+            for decision in outcome.unjudged:
+                # Passed through without the model having judged it: worth
+                # naming, because it is neither a keep nor a drop.
+                self.log.note(f"{decision.url}: пропущен без решения модели")
+            return outcome.clusters
         except BudgetExceeded:
             raise
         except Exception as exc:

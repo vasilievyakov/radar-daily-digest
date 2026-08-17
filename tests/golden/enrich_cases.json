@@ -1,5 +1,5 @@
 {
-  "prompt_version": "extract-v1",
+  "prompt_version": "extract-v2",
   "note": "Fragments copied verbatim out of the warm http cache; the recorded responses are the shape the extraction prompt asks for. The test replays them through LlmEnricher with a stubbed backend, so what is under test is verification, normalization and dating, not the model.",
   "cases": [
     {

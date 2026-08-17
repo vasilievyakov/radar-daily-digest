@@ -276,3 +276,46 @@ class TestFunnelAddsUp:
             (result.run_id,),
         ).fetchone()[0]
         assert "оценка" in note and "порог" in note
+
+
+class TestFilterWiring:
+    """The orchestrator must call the filter that exists, not one it imagines."""
+
+    def test_the_real_filter_interface_is_used(self, env):
+        conn, config, fetcher, tmp = env
+
+        class RealShapedFilter:
+            """Mirrors radar.filter.RelevanceFilter: one `run` returning an outcome."""
+
+            def __init__(self):
+                self.called = 0
+
+            def run(self, clusters):
+                self.called += 1
+
+                class Outcome:
+                    def __init__(self, kept):
+                        self.clusters = kept
+                        self.unjudged = []
+
+                return Outcome(list(clusters))
+
+        spy = RealShapedFilter()
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          relevance_filter=spy, for_date=TODAY,
+                          log_dir=str(tmp / "logs")).execute()
+        assert spy.called == 1
+        assert result.ok
+
+    def test_a_filter_raising_lets_material_through(self, env):
+        conn, config, fetcher, tmp = env
+
+        class Broken:
+            def run(self, clusters):
+                raise RuntimeError("бэкенд недоступен")
+
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          relevance_filter=Broken(), for_date=TODAY,
+                          log_dir=str(tmp / "logs")).execute()
+        assert result.ok
+        assert result.relevant > 0
