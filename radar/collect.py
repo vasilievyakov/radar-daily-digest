@@ -94,15 +94,26 @@ def collect_source(
     return SourceOutcome(source.id, SourceStatus.OK, items=items, latency_ms=latency)
 
 
+def dedupe_key(item: CollectedItem) -> str:
+    """Identity of a material.
+
+    URL alone is not enough. A page whose headings carry no `id` gives every
+    section the same address: the OpenAI changelog yields 103 dated sections
+    on one URL, and keying by URL collapses them into a single material. So
+    content participates in the key, and two sources publishing the identical
+    text under one address still merge as they should (FR-1.6).
+    """
+    from radar.cache import canonical_url, digest
+
+    return digest(canonical_url(item.url, keep_fragment=True), item.raw_text[:2000])
+
+
 def dedupe_by_url(outcomes: list[SourceOutcome]) -> list[CollectedItem]:
     """One URL seen through two sources is one material with two `seen_in` (FR-1.6)."""
-    from radar.cache import canonical_url
-
     merged: dict[str, CollectedItem] = {}
     for outcome in outcomes:
         for item in outcome.items:
-            # Anchor kept: one page carries many events, each with its own.
-            key = canonical_url(item.url, keep_fragment=True)
+            key = dedupe_key(item)
             existing = merged.get(key)
             if existing is None:
                 item.extra.setdefault("seen_in", [outcome.source_id])

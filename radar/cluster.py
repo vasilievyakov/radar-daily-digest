@@ -165,7 +165,11 @@ def cluster_items(
 
     by_url: dict[str, list[CollectedItem]] = defaultdict(list)
     for item in items:
-        by_url[canonical_url(item.url, keep_fragment=True)].append(item)
+        # Content participates: sections of one page share a URL when the
+        # source markup gives its headings no anchors.
+        by_url[
+            digest(canonical_url(item.url, keep_fragment=True), item.raw_text[:2000])
+        ].append(item)
 
     groups: dict[tuple[str | None, str | None, str], list[CollectedItem]] = defaultdict(
         list

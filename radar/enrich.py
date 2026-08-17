@@ -773,11 +773,32 @@ class LlmEnricher:
         text: str,
         rejected: list[RejectedFact],
     ) -> tuple[date | None, DatePrecision]:
-        """FR-5.17 and FR-4.4: the event's own date, or nothing at all."""
+        """FR-5.17 and FR-4.4: the event's own date, or nothing at all.
+
+        A date is the value a model is most willing to invent, and a wrong
+        shutdown date is the worst thing this pipeline can publish. So the ISO
+        value is only ever a re-formatting of something the page prints, and
+        the page decides what that something means.
+        """
         printed = event.event_date_text.strip()
-        if printed and not verify_evidence(printed, text)[0]:
-            # The model reformatted a date that is not on the page, which is
-            # how an invented deadline gets published.
+        stated, precision = _parse_stated_date(event.event_date)
+
+        if not printed:
+            # No pointer into the page. The ISO value stands only if the page
+            # prints it literally, or if the collector read the same date off
+            # the page structure.
+            if stated is None:
+                return _fallback_date(item)
+            if verify_evidence(event.event_date.strip(), text)[0] or (
+                item.event_date == stated
+            ):
+                return stated, precision
+            rejected.append(
+                RejectedFact("event_date", event.event_date, "", "date_without_quote")
+            )
+            return _fallback_date(item)
+
+        if not verify_evidence(printed, text)[0]:
             rejected.append(
                 RejectedFact(
                     "event_date", event.event_date, printed, "date_not_in_source"
@@ -785,23 +806,20 @@ class LlmEnricher:
             )
             return _fallback_date(item)
 
-        stated, precision = _parse_stated_date(event.event_date)
-        if stated is not None:
-            return stated, precision
-
-        if printed:
-            parsed = parse_date_fragment(printed)
-            if parsed is not None and parsed.value is not None:
-                return parsed.value, parsed.precision
-            if parsed is not None and parsed.year_missing:
-                year = _year_source(item)
-                if year is None:
-                    return None, DatePrecision.INFERRED
-                filled = parsed.with_year(year)
-                # The year came from the collector, not from the page, and the
-                # record has to keep saying so.
-                return filled.value, DatePrecision.INFERRED
-        return _fallback_date(item)
+        parsed = parse_date_fragment(printed)
+        if parsed is not None and parsed.value is not None:
+            # The page wins over the model's reading of it, including the
+            # precision: "August 2026" must not become a day.
+            return parsed.value, parsed.precision
+        if parsed is not None and parsed.year_missing:
+            year = _year_source(item)
+            if year is None:
+                return None, DatePrecision.INFERRED
+            filled = parsed.with_year(year)
+            # The year came from the collector, not from the page, and the
+            # record has to keep saying so.
+            return filled.value, DatePrecision.INFERRED
+        return (stated, precision) if stated is not None else _fallback_date(item)
 
     # -- logging -------------------------------------------------------
 
