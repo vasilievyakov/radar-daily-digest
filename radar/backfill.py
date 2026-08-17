@@ -5,22 +5,27 @@ Four properties decide whether the money spent here is recoverable.
 * **A ceiling is mandatory** (FR-6.8). There is no default and no fallback to
   "unlimited": a run without a limit is refused before the first fetch. The
   limit is checked before every call, not recorded after it.
-* **The unit of work is a source, not a material.** One worker owns one source
-  and walks its materials in order; several sources run at once. That makes a
-  checkpoint mean something ("this source is done, or it was never started"),
-  so resuming never has to remember a position inside a source; it keeps the
-  polite per-domain interval intact, because nobody else is touching that
-  domain; and it takes the races out of `statement_index`.
-* **It resumes.** Checkpoints are written per source, so a run killed on the
-  two hundredth material continues from the first unfinished source. An
-  unfinished source restarts whole, which the model cache makes nearly free.
+* **The unit of work is a batch of one source's materials**, walked in order
+  by a single worker, with several batches running at once. Whole sources
+  would be the tidier unit, but the distribution forbids it: at priority 1 one
+  changelog holds 36 percent of all materials, so a per-source walk finishes
+  when that one source finishes and seven workers idle meanwhile. Batching
+  keeps everything a per-source walk was for — order inside a source is
+  preserved, so `statement_index` stays sequential and race-free — while the
+  tail disappears. Enrichment makes no network requests (the HTTP cache is
+  warmed by collection), so splitting a source across workers cannot break the
+  polite per-domain interval; the only shared external resource is the model,
+  whose limits are global rather than per domain.
+* **It resumes.** A checkpoint is written per finished batch, so an
+  interruption loses at most one batch of work rather than a whole source.
   Spend already recorded on the run carries into the resumed run's budget, so
   the limit covers the whole effort rather than each attempt separately.
 * **It is idempotent** (FR-6.7). The corpus key is the canonical source URL
   plus the position of the event inside its material, enforced by the UNIQUE
   index rather than by a lookup: `INSERT OR IGNORE` cannot race. Materials
   already in the corpus are never sent to the model, so a repeat run neither
-  duplicates nor pays twice.
+  duplicates nor pays twice — and a source whose parser later starts returning
+  more materials simply contributes the new ones on the next run.
 
 Enrichment is reached only through the `Enricher` protocol from
 radar.contracts. This module never imports radar.enrich: stage 4 is written in
@@ -65,10 +70,11 @@ RUN_PREFIX = "backfill-"
 STAGE_COLLECT = "collect"
 STAGE_ENRICH = "enrich"
 STAGE_TRENDS = "trends"
-# Checkpoint stage per source: "backfill:github_changelog".
-SOURCE_STAGE_PREFIX = "backfill:"
+# Checkpoint stage per batch: "backfill:github_changelog:3".
+STAGE_PREFIX = "backfill:"
 
 DEFAULT_CONCURRENCY = 8
+DEFAULT_BATCH_SIZE = 100
 
 # Shape of one extraction call, used to price a run before it starts and to
 # reserve budget before each call. Deliberately generous: an estimate that
@@ -77,6 +83,10 @@ PROMPT_OVERHEAD_TOKENS = 1200
 OUTPUT_TOKENS_PER_MATERIAL = 700
 CHARS_PER_TOKEN = 4
 MAX_MATERIAL_TOKENS = 24000
+
+# Measured shape of one extraction call end to end. Only used to tell the
+# operator how long a run will take before they start it.
+SECONDS_PER_MATERIAL = 6.0
 
 # List prices in USD per million tokens (input, output), August 2026. Kept
 # here rather than in the theme config because it is a property of the
@@ -122,7 +132,7 @@ def resolve_limit(limit_usd: float | None, config: ThemeConfig) -> float:
 
 
 def resolve_concurrency(concurrency: int | None, config: ThemeConfig) -> int:
-    """Number of sources processed at once, from `llm.concurrency`."""
+    """How many batches run at once, from `llm.concurrency`."""
     if concurrency is None:
         concurrency = int(config.section("llm").get("concurrency", DEFAULT_CONCURRENCY))
     return max(1, int(concurrency))
@@ -185,6 +195,7 @@ class BackfillOptions:
     source_ids: list[str] | None = None
     priorities: list[int] | None = None
     concurrency: int | None = None
+    batch_size: int = DEFAULT_BATCH_SIZE
     resume: bool = False
     dry_run: bool = False
     min_trend_members: int | None = None
@@ -199,6 +210,9 @@ class SourcePlan:
     pending: int = 0
     processed: int = 0
     already_ingested: int = 0
+    batches: int = 0
+    batches_done: int = 0
+    batches_skipped: int = 0
     estimated_usd: float = 0.0
     spent_usd: float = 0.0
     statements_added: int = 0
@@ -215,11 +229,16 @@ class BackfillReport:
     dry_run: bool = False
     resumed: bool = False
     concurrency: int = DEFAULT_CONCURRENCY
+    batch_size: int = DEFAULT_BATCH_SIZE
     duration_s: float = 0.0
     sources_total: int = 0
     sources_completed: int = 0
-    sources_skipped: int = 0
     sources_unfinished: int = 0
+    batches_total: int = 0
+    batches_done: int = 0
+    batches_skipped: int = 0
+    longest_batch: int = 0
+    eta_seconds: float = 0.0
     materials_collected: int = 0
     materials_pending: int = 0
     materials_processed: int = 0
@@ -256,8 +275,8 @@ class BackfillReport:
 # -- helpers ----------------------------------------------------------
 
 
-def source_stage(source_id: str) -> str:
-    return f"{SOURCE_STAGE_PREFIX}{source_id}"
+def batch_stage(source_id: str, batch_index: int) -> str:
+    return f"{STAGE_PREFIX}{source_id}:{batch_index}"
 
 
 def select_sources(
@@ -313,7 +332,7 @@ def _prior_cost(conn: sqlite3.Connection, run_id: str) -> float:
 def persist_statements(
     conn: sqlite3.Connection, results: list[EnrichResult]
 ) -> tuple[int, int]:
-    """Write one source's harvest to the corpus. Returns (inserted, ignored).
+    """Write one batch's harvest to the corpus. Returns (inserted, ignored).
 
     The index is the position of the event inside its material and is
     recomputed the same way on every run, which is what makes the UNIQUE key
@@ -409,23 +428,80 @@ def corpus_cells(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def estimate_eta_seconds(batch_sizes: list[int], concurrency: int) -> float:
+    """Wall clock a run will take: whichever binds, the queue or the longest batch."""
+    if not batch_sizes:
+        return 0.0
+    total = sum(batch_sizes) * SECONDS_PER_MATERIAL
+    longest = max(batch_sizes) * SECONDS_PER_MATERIAL
+    return max(total / max(1, concurrency), longest)
+
+
 # -- the run ----------------------------------------------------------
 
 
 @dataclass(slots=True)
-class _SourceWork:
+class _Task:
     source: SourceConfig
+    batch_index: int
     items: list[CollectedItem]
     estimates: list[float]
 
+    @property
+    def stage(self) -> str:
+        return batch_stage(self.source.id, self.batch_index)
+
 
 @dataclass(slots=True)
-class _SourceResult:
+class _TaskResult:
     source_id: str
+    batch_index: int
+    stage: str
     results: list[EnrichResult] = field(default_factory=list)
     stopped: bool = False
     exhausted: bool = False
     error: str | None = None
+
+
+def build_tasks(
+    source: SourceConfig,
+    items: list[CollectedItem],
+    *,
+    known_urls: set[str],
+    price: tuple[float, float],
+    batch_size: int,
+    done_stages: dict[str, Any],
+    plan: SourcePlan,
+) -> list[_Task]:
+    """Slice one source into batches, dropping what the corpus already has.
+
+    Batches are cut over the collected list, not over the pending one, so a
+    batch index means the same slice of the source on a resumed run even
+    though the pending set has shrunk in between.
+    """
+    tasks: list[_Task] = []
+    for offset in range(0, len(items), batch_size):
+        batch_index = offset // batch_size
+        pending: list[CollectedItem] = []
+        estimates: list[float] = []
+        for item in items[offset : offset + batch_size]:
+            if canonical_url(item.url, keep_fragment=True) in known_urls:
+                # Already in the corpus: never sent to the model, which is
+                # what makes a repeat run free rather than merely deduplicated.
+                plan.already_ingested += 1
+                continue
+            pending.append(item)
+            estimates.append(estimate_material_usd(item, price))
+        if not pending:
+            continue
+        if batch_stage(source.id, batch_index) in done_stages:
+            plan.batches_skipped += 1
+            continue
+        plan.batches += 1
+        plan.pending += len(pending)
+        plan.estimated_usd += sum(estimates)
+        tasks.append(_Task(source, batch_index, pending, estimates))
+    return tasks
 
 
 def run_backfill(
@@ -448,6 +524,7 @@ def run_backfill(
 
     limit_usd = resolve_limit(options.limit_usd, config)
     concurrency = resolve_concurrency(options.concurrency, config)
+    batch_size = max(1, int(options.batch_size or DEFAULT_BATCH_SIZE))
     if not options.dry_run and enricher is None:
         raise ValueError("нужен обогатитель: без него запускается только --dry-run")
 
@@ -459,6 +536,7 @@ def run_backfill(
             limit_usd=limit_usd,
             dry_run=True,
             concurrency=concurrency,
+            batch_size=batch_size,
             sources_total=len(sources),
         )
         return _dry_run(conn, config, fetcher, sources, report, started)
@@ -475,6 +553,7 @@ def run_backfill(
         limit_usd=limit_usd,
         resumed=resumed_id is not None,
         concurrency=concurrency,
+        batch_size=batch_size,
         sources_total=len(sources),
         spent_usd=prior_cost,
     )
@@ -485,7 +564,10 @@ def run_backfill(
 
     run_log = RunLog(conn, run_id, for_date or datetime.now(UTC).date())
     run_log.cost_usd = prior_cost
-    run_log.note(f"backfill, лимит {limit_usd:.2f} USD, источников разом {concurrency}")
+    run_log.note(
+        f"backfill, лимит {limit_usd:.2f} USD, параллель {concurrency}, "
+        f"пачка {batch_size}"
+    )
     budget = SharedBudget(limit_usd)
     budget.spent_usd = prior_cost
 
@@ -503,38 +585,24 @@ def run_backfill(
         )
 
     done_stages = journal.completed_stages(run_id)
-    pending_sources = [s for s in sources if source_stage(s.id) not in done_stages]
-    report.sources_skipped = len(sources) - len(pending_sources)
-    report.sources_completed = report.sources_skipped
-    if report.sources_skipped:
-        emit(f"Пропускаю {report.sources_skipped} источников: уже есть чекпоинт.")
 
-    plans: dict[str, SourcePlan] = {
-        s.id: SourcePlan(source_id=s.id, priority=s.priority) for s in sources
-    }
-    for source in sources:
-        if source_stage(source.id) in done_stages:
-            plans[source.id].completed = True
-            state = done_stages[source_stage(source.id)]
-            plans[source.id].statements_added = int(
-                state.get("state", {}).get("statements", 0) or 0
-            )
-
-    # -- collection: one pass, so the enrichment stage can be handed whole
-    # sources sorted by size.
-    with run_log.stage(STAGE_COLLECT, in_count=len(pending_sources)) as record:
+    # -- collection: one pass, so batches can be cut and sorted by size.
+    with run_log.stage(STAGE_COLLECT, in_count=len(sources)) as record:
         items, outcomes = collect_all(
             config,
             fetcher,
             run_log=run_log,
             mode="backfill",
-            sources=pending_sources,
+            sources=sources,
             max_workers=min(concurrency, 8),
         )
         record["out_count"] = len(items)
     journal.checkpoint(STAGE_COLLECT, item_count=len(items))
     report.materials_collected = len(items)
 
+    plans: dict[str, SourcePlan] = {
+        s.id: SourcePlan(source_id=s.id, priority=s.priority) for s in sources
+    }
     for outcome in outcomes:
         plan = plans.setdefault(
             outcome.source_id, SourcePlan(source_id=outcome.source_id)
@@ -543,51 +611,62 @@ def run_backfill(
         plan.collected = outcome.count
         plan.error = outcome.error
 
-    by_id = {s.id: s for s in pending_sources}
+    by_source: dict[str, list[CollectedItem]] = defaultdict(list)
+    for item in items:
+        by_source[str(item.extra.get("source_id", ""))].append(item)
+
     known_urls = ingested_urls(conn)
     price = price_for(config.models.get("enrich", ""), config)
 
-    grouped: dict[str, _SourceWork] = {
-        sid: _SourceWork(source=source, items=[], estimates=[])
-        for sid, source in by_id.items()
-    }
-    for item in items:
-        source_id = str(item.extra.get("source_id", ""))
-        work = grouped.get(source_id)
-        if work is None:
-            continue
-        plan = plans[source_id]
-        if canonical_url(item.url, keep_fragment=True) in known_urls:
-            # Already in the corpus: never sent to the model, which is what
-            # makes a repeat run free rather than merely deduplicated.
-            plan.already_ingested += 1
-            report.materials_already_ingested += 1
-            continue
-        estimate = estimate_material_usd(item, price)
-        work.items.append(item)
-        work.estimates.append(estimate)
-        plan.pending += 1
-        plan.estimated_usd += estimate
+    tasks: list[_Task] = []
+    for source in sources:
+        tasks.extend(
+            build_tasks(
+                source,
+                by_source.get(source.id, []),
+                known_urls=known_urls,
+                price=price,
+                batch_size=batch_size,
+                done_stages=done_stages,
+                plan=plans[source.id],
+            )
+        )
 
     # Longest first: the naive order leaves seven workers idle while one drags
     # an 871-material changelog to the end of the run.
-    works = sorted(
-        (w for w in grouped.values() if w.items), key=lambda w: -len(w.items)
+    tasks.sort(key=lambda t: -len(t.items))
+    report.batches_total = len(tasks)
+    report.batches_skipped = sum(p.batches_skipped for p in plans.values())
+    report.materials_already_ingested = sum(p.already_ingested for p in plans.values())
+    report.materials_pending = sum(len(t.items) for t in tasks)
+    report.estimated_usd = sum(p.estimated_usd for p in plans.values())
+    report.longest_batch = max((len(t.items) for t in tasks), default=0)
+    report.eta_seconds = estimate_eta_seconds(
+        [len(t.items) for t in tasks], concurrency
     )
-    report.materials_pending = sum(len(w.items) for w in works)
-    report.estimated_usd = sum(plan.estimated_usd for plan in plans.values())
+
+    remaining_batches: dict[str, int] = defaultdict(int)
+    for task in tasks:
+        remaining_batches[task.source.id] += 1
+    for source in sources:
+        if remaining_batches[source.id] == 0:
+            plans[source.id].completed = True
+            report.sources_completed += 1
+
     emit(
         f"К обработке {report.materials_pending} материалов из "
-        f"{report.materials_collected} собранных, источников {len(works)}; "
-        f"оценка {report.estimated_usd:.2f} USD при лимите {limit_usd:.2f}."
+        f"{report.materials_collected} собранных: {len(tasks)} заданий по "
+        f"{batch_size}, параллель {concurrency}. Оценка "
+        f"{report.estimated_usd:.2f} USD при лимите {limit_usd:.2f}, "
+        f"примерно {report.eta_seconds / 60:.0f} минут."
     )
 
     stop = threading.Event()
 
-    def process_source(work: _SourceWork) -> _SourceResult:
-        """One worker, one source, materials in order."""
-        outcome = _SourceResult(source_id=work.source.id)
-        for item, estimate in zip(work.items, work.estimates, strict=True):
+    def process_batch(task: _Task) -> _TaskResult:
+        """One worker, one batch, materials in order."""
+        outcome = _TaskResult(task.source.id, task.batch_index, task.stage)
+        for item, estimate in zip(task.items, task.estimates, strict=True):
             if stop.is_set():
                 outcome.stopped = True
                 return outcome
@@ -602,11 +681,11 @@ def run_backfill(
                 outcome.error = str(exc)
                 return outcome
             try:
-                result = enricher.enrich(item, work.source)  # type: ignore[union-attr]
+                result = enricher.enrich(item, task.source)  # type: ignore[union-attr]
             except Exception as exc:  # the protocol forbids it; survive anyway
                 budget.settle(estimate, 0.0)
                 result = EnrichResult(
-                    source_id=work.source.id,
+                    source_id=task.source.id,
                     url=item.url,
                     error=f"{type(exc).__name__}: {exc}",
                 )
@@ -617,8 +696,8 @@ def run_backfill(
 
     consumed: set[str] = set()
 
-    def consume(outcome: _SourceResult) -> None:
-        consumed.add(outcome.source_id)
+    def consume(outcome: _TaskResult) -> None:
+        consumed.add(outcome.stage)
         plan = plans[outcome.source_id]
         for result in outcome.results:
             plan.processed += 1
@@ -681,60 +760,65 @@ def run_backfill(
             )
 
         if outcome.stopped:
-            report.sources_unfinished += 1
             emit(
-                f"[!] {outcome.source_id}: источник не закончен, чекпоинт не ставлю; "
-                f"при следующем запуске он начнётся заново"
+                f"[!] {outcome.source_id} #{outcome.batch_index}: пачка не закончена, "
+                "чекпоинт не ставлю — при продолжении она начнётся заново"
             )
             return
 
-        plan.completed = True
-        report.sources_completed += 1
+        # Checkpoint carries what the batch produced and what it cost, so a
+        # resumed run can report the whole effort and not just its last leg.
+        report.batches_done += 1
+        plan.batches_done += 1
         journal.checkpoint(
-            source_stage(outcome.source_id),
-            item_count=plan.processed,
+            outcome.stage,
+            item_count=len(outcome.results),
             statements=plan.statements_added,
             duplicates=plan.statements_duplicate,
             cost_usd=round(plan.spent_usd, 6),
         )
+        remaining_batches[outcome.source_id] -= 1
+        if remaining_batches[outcome.source_id] == 0:
+            plan.completed = True
+            report.sources_completed += 1
         emit(
-            f"[{report.sources_completed}/{report.sources_total}] {outcome.source_id}: "
-            f"материалов {plan.processed}, записей +{plan.statements_added}, "
-            f"дублей {plan.statements_duplicate}, потрачено {budget.spent_usd:.4f}, "
-            f"остаток {budget.remaining_usd:.4f} USD"
+            f"[{report.batches_done}/{report.batches_total}] {outcome.source_id} "
+            f"#{outcome.batch_index}: материалов {len(outcome.results)}, "
+            f"записей +{plan.statements_added}, дублей {plan.statements_duplicate}, "
+            f"потрачено {budget.spent_usd:.4f}, остаток {budget.remaining_usd:.4f} USD"
         )
 
-    futures: dict[Future[_SourceResult], str] = {}
+    futures: dict[Future[_TaskResult], _Task] = {}
     with run_log.stage(STAGE_ENRICH, in_count=report.materials_pending) as record:
         pool = ThreadPoolExecutor(max_workers=concurrency)
         try:
-            futures = {
-                pool.submit(process_source, work): work.source.id for work in works
-            }
+            futures = {pool.submit(process_batch, task): task for task in tasks}
             try:
                 for future in as_completed(futures):
                     consume(future.result())
             except KeyboardInterrupt:
-                # Ctrl-C is a supported way to stop: workers finish the call
-                # in flight, everything already extracted is written, and the
-                # completed sources keep their checkpoints.
+                # Ctrl-C is a supported way to stop: workers drop out between
+                # materials, everything already extracted is written, and the
+                # finished batches keep their checkpoints.
                 report.interrupted = True
                 stop.set()
                 emit("Прерывание: сохраняю уже полученное и закрываю прогон.")
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
         # Anything that finished while the pool was draining.
-        for future, source_id in futures.items():
-            if source_id in consumed or future.cancelled() or not future.done():
+        for future, task in futures.items():
+            if task.stage in consumed or future.cancelled() or not future.done():
                 continue
             try:
                 consume(future.result())
-            except Exception as exc:  # a worker that died takes only its source
-                plans[source_id].error = f"{type(exc).__name__}: {exc}"
-                report.sources_unfinished += 1
+            except Exception as exc:  # a dead worker takes only its own batch
+                plans[task.source.id].error = f"{type(exc).__name__}: {exc}"
         record["out_count"] = report.statements_added
 
     report.spent_usd = budget.spent_usd
+    report.sources_unfinished = sum(
+        1 for count in remaining_batches.values() if count > 0
+    )
 
     # -- trends over the whole corpus, then the readiness verdict
     with run_log.stage(STAGE_TRENDS):
@@ -790,23 +874,33 @@ def _dry_run(
         plan.collected = outcome.count
         plan.error = outcome.error
 
+    by_source: dict[str, list[CollectedItem]] = defaultdict(list)
+    for item in items:
+        by_source[str(item.extra.get("source_id", ""))].append(item)
+
     known_urls = ingested_urls(conn)
     price = price_for(config.models.get("enrich", ""), config)
-    for item in items:
-        plan = plans.get(str(item.extra.get("source_id", "")))
-        if plan is None:
-            continue
-        if canonical_url(item.url, keep_fragment=True) in known_urls:
-            plan.already_ingested += 1
-            report.materials_already_ingested += 1
-            continue
-        plan.pending += 1
-        plan.estimated_usd += estimate_material_usd(item, price)
+    batch_sizes: list[int] = []
+    for source in sources:
+        tasks = build_tasks(
+            source,
+            by_source.get(source.id, []),
+            known_urls=known_urls,
+            price=price,
+            batch_size=report.batch_size,
+            done_stages={},
+            plan=plans[source.id],
+        )
+        batch_sizes.extend(len(t.items) for t in tasks)
 
     report.materials_collected = len(items)
+    report.materials_already_ingested = sum(p.already_ingested for p in plans.values())
     report.materials_pending = sum(p.pending for p in plans.values())
     report.estimated_usd = sum(p.estimated_usd for p in plans.values())
-    report.plans = sorted(plans.values(), key=lambda p: -p.estimated_usd)
+    report.batches_total = len(batch_sizes)
+    report.longest_batch = max(batch_sizes, default=0)
+    report.eta_seconds = estimate_eta_seconds(batch_sizes, report.concurrency)
+    report.plans = sorted(plans.values(), key=lambda p: -p.pending)
     report.cells = corpus_cells(conn)
     report.readiness = corpus_readiness(conn, config.data)
     report.duration_s = time.monotonic() - started
@@ -816,3 +910,26 @@ def _dry_run(
             f"{report.limit_usd:.2f} USD: прогон остановится, не закончив"
         )
     return report
+
+
+__all__ = [
+    "BackfillOptions",
+    "BackfillReport",
+    "BudgetNotSet",
+    "SharedBudget",
+    "SourcePlan",
+    "batch_stage",
+    "build_tasks",
+    "corpus_cells",
+    "estimate_eta_seconds",
+    "estimate_material_usd",
+    "find_unfinished_run",
+    "ingested_urls",
+    "persist_statements",
+    "price_for",
+    "refresh_trends",
+    "resolve_concurrency",
+    "resolve_limit",
+    "run_backfill",
+    "select_sources",
+]
