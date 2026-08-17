@@ -54,6 +54,36 @@ corpus:
     - id: langchain
       label: "LangChain"
       aliases: [LangChain, langchain, LangGraph, langgraph, LangSmith]
+    - id: llamaindex
+      label: "LlamaIndex"
+      aliases: [LlamaIndex, llamaindex, "llama-index", LlamaCloud]
+    - id: crewai
+      label: "CrewAI"
+      aliases: [CrewAI, crewai, "Crew AI"]
+    - id: pinecone
+      label: "Pinecone"
+      aliases: [Pinecone, pinecone]
+    - id: temporal
+      label: "Temporal"
+      aliases: [Temporal, temporal, "Temporal.io", "temporal.io"]
+    # AutoGen влит в Agent Framework: три вендора дали бы три полупустые
+    # ячейки вместо одной плотной.
+    - id: microsoft_ai
+      label: "Microsoft AI"
+      aliases: [Microsoft, "Semantic Kernel", "semantic-kernel", AutoGen, autogen,
+                "Agent Framework", "agent-framework", "Azure OpenAI"]
+    - id: weaviate
+      label: "Weaviate"
+      aliases: [Weaviate, weaviate]
+    - id: chroma
+      label: "Chroma"
+      aliases: [Chroma, chroma, ChromaDB, chromadb, "trychroma"]
+    - id: pydantic
+      label: "Pydantic"
+      aliases: [Pydantic, pydantic, "Pydantic AI", "pydantic-ai", PydanticAI]
+    - id: qdrant
+      label: "Qdrant"
+      aliases: [Qdrant, qdrant]
 
   change_types:
     - id: release
@@ -314,7 +344,150 @@ sources:
     backfill_depth_days: 900
     min_expected_items: 3
 
-  # --- Приоритет 2: ленты ---
+  # --- Агентная инфраструктура и хранилища ---
+  # Проверено curl. Срез почти не даёт pricing и limits: инфраструктурные
+  # проекты объявляют цены в блогах, а не в changelog. Зато breaking_change
+  # набирается у всех, и это самая дефицитная ячейка.
+
+  # 319 дат, 39 заголовков breaking changes, 112 упоминаний устаревания.
+  - id: llamaindex_changelog
+    type: html_scrape
+    url: https://developers.llamaindex.ai/python/framework/changelog/
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 20
+
+  - id: crewai_changelog
+    type: html_scrape
+    url: https://docs.crewai.com/en/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 20
+
+  # Единственный вендор среза с потоком датированных объявлений об отключениях.
+  - id: pinecone_release_notes
+    type: html_scrape
+    url: https://docs.pinecone.io/release-notes/2026
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 10
+
+  - id: pinecone_release_notes_2025
+    type: html_scrape
+    url: https://docs.pinecone.io/release-notes/2025
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 10
+    live_collect: false
+
+  # 240 дат с 2022 года, записи размечены по компонентам и по типу
+  # (Feature, Deprecation) — готовая разметка под vendor и change_type.
+  - id: temporal_changelog
+    type: html_scrape
+    url: https://temporal.io/changelog
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 720
+    min_expected_items: 20
+
+  # Эталон структуры: Migration Log из записей «версия — дата», у каждой
+  # раздел breaking changes. Последняя запись от 2025-03-01.
+  - id: chroma_migration_log
+    type: html_scrape
+    url: https://docs.trychroma.com/docs/overview/migration
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 900
+    min_expected_items: 5
+    live_collect: false
+
+  - id: pydantic_ai_changelog
+    type: html_scrape
+    url: https://pydantic.dev/docs/ai/project/changelog/
+    priority: 1
+    enabled: true
+    parser_hint: dated_sections
+    backfill_supported: true
+    backfill_depth_days: 540
+    min_expected_items: 5
+
+  # 100 релизов за год, 59 с разделами breaking changes, тела по 2900 знаков.
+  - id: gh_microsoft_agent_framework
+    type: github_releases
+    url: https://github.com/microsoft/agent-framework
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
+  # 93 из 100 релизов несут явный breaking-раздел: это пункт их шаблона.
+  - id: gh_weaviate
+    type: github_releases
+    url: https://github.com/weaviate/weaviate
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 5
+
+  - id: gh_qdrant
+    type: github_releases
+    url: https://github.com/qdrant/qdrant
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 360
+    min_expected_items: 3
+
+  - id: gh_llamaindex
+    type: github_releases
+    url: https://github.com/run-llama/llama_index
+    priority: 3
+    enabled: true
+    backfill_supported: true
+    backfill_depth_days: 180
+    min_expected_items: 3
+
+  # --- Ленты. Проверены feedparser: указано число записей и полнота тела ---
+
+  # Официальная лента Anthropic: 130 записей с 2024-05-10, полный текст
+  # с ценами и сроками. Найдена через link rel=alternate на странице docs;
+  # все угаданные адреса вида anthropic.com/rss.xml отдают 404.
+  - id: anthropic_release_notes_feed
+    type: rss
+    url: https://platform.claude.com/docs/en/release-notes/feed.xml
+    priority: 1
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 10
+
+  # Закрывает вендора, который через HTML не парсится: 50 записей за
+  # полгода, полный текст в content:encoded.
+  - id: cursor_changelog_feed
+    type: rss
+    url: https://cursor.com/changelog/rss.xml
+    priority: 1
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 10
+
   - id: github_changelog_feed
     type: rss
     url: https://github.blog/changelog/feed/
@@ -322,6 +495,68 @@ sources:
     enabled: true
     backfill_supported: false
     min_expected_items: 5
+
+  - id: mcp_blog_feed
+    type: rss
+    url: https://blog.modelcontextprotocol.io/index.xml
+    priority: 2
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 5
+
+  - id: n8n_blog_feed
+    type: rss
+    url: https://n8n.io/blog/rss/
+    priority: 2
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 5
+
+  # 1132 записи с 2015 года, но тело — сниппет на 150 знаков.
+  # Обогащение всё равно ходит в первоисточник, так что этого достаточно.
+  - id: openai_news_feed
+    type: rss
+    url: https://openai.com/news/rss.xml
+    priority: 2
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 5
+
+  - id: simonwillison_llms
+    type: rss
+    url: https://simonwillison.net/tags/llms.atom
+    priority: 4
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 3
+
+  # --- Приоритет 5: Telegram. По SRC-2 не может быть единственным
+  # основанием для публикации факта, нужен первоисточник приоритета 1-3.
+  # Читается через веб-превью t.me/s/, авторизация не нужна.
+  - id: tg_tsingular
+    type: telegram_channel
+    url: https://t.me/s/tsingular
+    priority: 5
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 3
+
+  - id: tg_data_secrets
+    type: telegram_channel
+    url: https://t.me/s/data_secrets
+    priority: 5
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 3
+
+  # Единственный найденный канал, закрывающий change_type: security.
+  - id: tg_pwnai
+    type: telegram_channel
+    url: https://t.me/s/pwnai
+    priority: 5
+    enabled: true
+    backfill_supported: false
+    min_expected_items: 3
 
   # --- Приоритет 3: GitHub Releases, полная история через пагинацию ---
   - id: gh_anthropics_claude_code
