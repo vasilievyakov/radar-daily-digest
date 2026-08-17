@@ -1,0 +1,160 @@
+import pytest
+
+from radar.config import ConfigError, ThemeConfig
+from radar.models import ChangeType
+from radar.normalize import Normalizer
+
+CONFIG_PATH = "config/ai-tools.yaml"
+
+
+@pytest.fixture(scope="module")
+def theme() -> ThemeConfig:
+    return ThemeConfig.load(CONFIG_PATH)
+
+
+@pytest.fixture(scope="module")
+def normalizer(theme: ThemeConfig) -> Normalizer:
+    return Normalizer.from_config(theme.vendors, theme.change_types)
+
+
+class TestThemeConfig:
+    def test_shipped_config_loads(self, theme):
+        assert theme.name
+        assert theme.vendor_ids
+        assert theme.change_type_ids
+
+    def test_every_source_has_a_known_type(self, theme):
+        known = {"rss", "github_releases", "html_scrape", "telegram_channel"}
+        assert {s.type for s in theme.sources} <= known
+
+    def test_enabled_sources_can_be_filtered_by_type(self, theme):
+        assert all(
+            s.type == "github_releases"
+            for s in theme.enabled_sources("github_releases")
+        )
+
+    def test_backfillable_sources_are_a_subset(self, theme):
+        assert set(s.id for s in theme.backfillable_sources()) <= set(
+            s.id for s in theme.enabled_sources()
+        )
+
+    def test_thresholds_come_from_config(self, theme):
+        assert theme.scoring["publish_threshold"] > theme.scoring["digest_threshold"]
+
+    def test_missing_file_raises(self):
+        with pytest.raises(ConfigError):
+            ThemeConfig.load("config/does-not-exist.yaml")
+
+    def test_missing_section_raises(self):
+        with pytest.raises(ConfigError):
+            ThemeConfig({"theme": {}, "corpus": {}})
+
+    def test_duplicate_source_id_raises(self):
+        data = {
+            "theme": {},
+            "corpus": {"vendors": [{"id": "a"}], "change_types": [{"id": "release"}]},
+            "sources": [
+                {"id": "x", "type": "rss", "url": "u"},
+                {"id": "x", "type": "rss", "url": "u2"},
+            ],
+        }
+        with pytest.raises(ConfigError, match="duplicate source id"):
+            ThemeConfig(data)
+
+    def test_empty_vendor_dictionary_raises(self):
+        """Retrieval filters are mandatory, so an empty dictionary is fatal."""
+        data = {
+            "theme": {},
+            "corpus": {"vendors": [], "change_types": [{"id": "release"}]},
+            "sources": [],
+        }
+        with pytest.raises(ConfigError, match="vendors"):
+            ThemeConfig(data)
+
+
+class TestVendorNormalization:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "anthropic",
+            "Anthropic",
+            "ANTHROPIC",
+            "claude",
+            "Claude",
+            "Claude Code",
+            "claude-code",
+        ],
+    )
+    def test_all_spellings_collapse_to_one_id(self, normalizer, raw):
+        assert normalizer.vendor(raw) == "anthropic"
+
+    def test_distinct_vendors_stay_distinct(self, normalizer):
+        assert normalizer.vendor("OpenAI") == "openai"
+        assert normalizer.vendor("Cursor") == "cursor"
+        assert normalizer.vendor("OpenAI") != normalizer.vendor("Cursor")
+
+    def test_alias_inside_a_longer_phrase_resolves(self, normalizer):
+        assert normalizer.vendor("Anthropic Claude Code CLI") == "anthropic"
+
+    def test_unknown_vendor_is_reported_not_invented(self, normalizer):
+        fresh = Normalizer.from_config(
+            [{"id": "anthropic", "label": "Anthropic", "aliases": ["claude"]}],
+            [{"id": "release"}],
+        )
+        assert fresh.vendor("Perplexity") is None
+        assert fresh.report_unknown() == [("Perplexity", 1)]
+
+    def test_unknown_vendors_are_counted(self, normalizer):
+        fresh = Normalizer.from_config([{"id": "anthropic"}], [{"id": "release"}])
+        fresh.vendor("Perplexity")
+        fresh.vendor("Perplexity")
+        assert fresh.report_unknown()[0] == ("Perplexity", 2)
+
+    def test_empty_input_is_none_without_being_reported(self, normalizer):
+        fresh = Normalizer.from_config([{"id": "anthropic"}], [{"id": "release"}])
+        assert fresh.vendor("") is None
+        assert fresh.vendor(None) is None
+        assert fresh.report_unknown() == []
+
+    def test_url_fallback_resolves_the_vendor(self, normalizer):
+        assert (
+            normalizer.vendor_from_url("https://docs.claude.com/en/release-notes/api")
+            == "anthropic"
+        )
+        assert (
+            normalizer.vendor_from_url("https://platform.openai.com/docs/deprecations")
+            == "openai"
+        )
+
+    def test_url_fallback_returns_none_for_a_stranger(self, normalizer):
+        assert normalizer.vendor_from_url("https://example.test/blog") is None
+
+
+class TestChangeTypeNormalization:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("deprecation", ChangeType.DEPRECATION),
+            ("Deprecated", ChangeType.DEPRECATION),
+            ("sunset", ChangeType.DEPRECATION),
+            ("retirement", ChangeType.DEPRECATION),
+            ("breaking_change", ChangeType.BREAKING_CHANGE),
+            ("Breaking Change", ChangeType.BREAKING_CHANGE),
+            ("rate limits", ChangeType.LIMITS),
+            ("quota", ChangeType.LIMITS),
+            ("price", ChangeType.PRICING),
+            ("CVE", ChangeType.SECURITY),
+        ],
+    )
+    def test_synonyms_map_to_the_dictionary(self, normalizer, raw, expected):
+        assert normalizer.change_type(raw) == expected
+
+    def test_unknown_falls_back_to_other_never_to_empty(self, normalizer):
+        """FR-5.16 forbids an empty change_type; the filter would silently miss it."""
+        assert normalizer.change_type("никогда такого не было") is ChangeType.OTHER
+        assert normalizer.change_type(None) is ChangeType.OTHER
+        assert normalizer.change_type("") is ChangeType.OTHER
+
+    def test_every_config_change_type_round_trips(self, theme, normalizer):
+        for change_type_id in theme.change_type_ids:
+            assert normalizer.change_type(change_type_id) == ChangeType(change_type_id)
