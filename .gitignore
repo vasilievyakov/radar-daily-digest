@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# data artifacts
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+cache/
+raw/
+out/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# macos
+.DS_Store
