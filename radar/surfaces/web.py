@@ -22,7 +22,7 @@ import argparse
 import json
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -78,6 +78,7 @@ DAY_FORMS = ("день", "дня", "дней")
 RECORD_FORMS = ("запись", "записи", "записей")
 SOURCE_FORMS = ("источник", "источника", "источников")
 MATERIAL_FORMS = ("материал", "материала", "материалов")
+CALL_FORMS = ("вызов", "вызова", "вызовов")
 STATEMENT_FORMS = ("запись", "записи", "записей")
 
 NUMERALS_FEMININE = {
@@ -148,6 +149,22 @@ STAGE_LABELS = {
     "publish": "Публикация сигналов",
     "observe": "Лог прогона",
     "deliver": "Доставка",
+}
+
+# Reason codes as the pipeline writes them (filter.ReasonCode, the three
+# enrich drops, and the publication threshold). A code shown raw is a code the
+# reader has to decode, and FR-9.2 puts that work on the page instead.
+REASON_LABELS = {
+    "не_относится_к_стеку": "не относится к стеку",
+    "маркетинг_без_фактов": "маркетинг без фактов",
+    "дубль_вчерашнего": "дубль вчерашнего",
+    "слишком_общее": "слишком общее",
+    "спекуляция_без_первоисточника": "спекуляция без первоисточника",
+    "другое": "другое",
+    "vendor_unresolved": "вендор не опознан по словарю",
+    "unsupported_quantifier": "обобщение без числа",
+    "statement_unsupported": "утверждение без подтверждающей цитаты",
+    "ниже_порога_публикации": "ниже порога публикации",
 }
 
 SOURCE_STATUS_LABELS = {
@@ -843,6 +860,15 @@ class StageRow:
     duration_ms: int | None = None
     errors: list[str] = field(default_factory=list)
 
+    @property
+    def dropped(self) -> int:
+        """Objects that entered and did not leave.
+
+        Only meaningful when a stage narrows its input; a stage that turns
+        14 sources into 61 items drops nothing.
+        """
+        return max(0, self.in_count - self.out_count) if self.in_count else 0
+
 
 @dataclass(frozen=True)
 class SourceRow:
@@ -900,6 +926,30 @@ class RunLogView:
     notes: list[str] = field(default_factory=list)
     delivery: list[dict[str, Any]] = field(default_factory=list)
     history: list[RunHistoryRow] = field(default_factory=list)
+    # How many sources the run set out to check. Travels on the signal
+    # (`RunSummary.sources_checked`); without it the page cannot tell a source
+    # that stayed silent from a source that was never asked.
+    sources_configured: int | None = None
+
+    @property
+    def itemized_calls(self) -> int:
+        return sum(cost.calls for cost in self.costs)
+
+    @property
+    def itemized_tokens_in(self) -> int:
+        return sum(cost.tokens_in for cost in self.costs)
+
+    @property
+    def itemized_tokens_out(self) -> int:
+        return sum(cost.tokens_out for cost in self.costs)
+
+    @property
+    def itemized_usd(self) -> float:
+        return sum(cost.usd for cost in self.costs)
+
+    @property
+    def dropped_total(self) -> int:
+        return sum(stage.dropped for stage in self.stages)
 
     @property
     def failed_sources(self) -> list[SourceRow]:
@@ -1232,12 +1282,20 @@ def _nothing_body(for_date: date, today: date) -> str:
 # -- run log page ------------------------------------------------------
 
 
-def _stage_table(stages: list[StageRow]) -> str:
+def _stage_table(stages: list[StageRow], reasons: dict[str, int]) -> str:
+    """FR-8.1 plus the arithmetic FR-8.3 implies.
+
+    A reader subtracts 44 minus 19 in three seconds. The page does the
+    subtraction first and says how many of those drops carry a recorded
+    reason, so the funnel closes on screen instead of in the reader's head.
+    """
     if not stages:
         return "<p>Стадии не записаны.</p>"
     rows = []
     for stage in stages:
         errors = "; ".join(stage.errors) if stage.errors else "—"
+        recorded = reasons.get(stage.name, 0)
+        dropped = stage.dropped
         rows.append(
             "<tr>"
             f"<td>{esc(STAGE_LABELS.get(stage.name, stage.name))}</td>"
@@ -1245,6 +1303,8 @@ def _stage_table(stages: list[StageRow]) -> str:
             f'<td class="num">{esc(fmt_duration(stage.duration_ms))}</td>'
             f'<td class="num">{esc(fmt_int(stage.in_count))}</td>'
             f'<td class="num">{esc(fmt_int(stage.out_count))}</td>'
+            f'<td class="num">{esc(fmt_int(dropped) if dropped else "—")}</td>'
+            f'<td class="num">{esc(fmt_int(recorded) if recorded else "—")}</td>'
             f"<td>{esc(errors)}</td>"
             "</tr>"
         )
@@ -1252,9 +1312,63 @@ def _stage_table(stages: list[StageRow]) -> str:
         '<div class="scroll"><table>\n'
         '<thead><tr><th>Стадия</th><th class="num">Начало</th>'
         '<th class="num">Длительность</th><th class="num">Вошло</th>'
-        '<th class="num">Вышло</th><th>Ошибки</th></tr></thead>\n'
+        '<th class="num">Вышло</th><th class="num">Отсеяно</th>'
+        '<th class="num">Причин записано</th><th>Ошибки</th></tr></thead>\n'
         "<tbody>\n" + "\n".join(rows) + "\n</tbody></table></div>"
     )
+
+
+def funnel_sentence(run: RunLogView) -> str:
+    """Say the discrepancy out loud, or say that there is none."""
+    dropped = run.dropped_total
+    recorded = len(run.filtered)
+    if dropped == 0 and recorded == 0:
+        return "Ни один материал не отсеян."
+    if recorded == dropped:
+        return (
+            f"Отсеяно {count_phrase(dropped, MATERIAL_FORMS)}, "
+            "причина записана у каждого."
+        )
+    if recorded < dropped:
+        gap = dropped - recorded
+        return (
+            f"Стадии отсеяли {count_phrase(dropped, MATERIAL_FORMS)}, "
+            f"причины записаны у {fmt_int(recorded)}. "
+            f"У {count_phrase(gap, MATERIAL_FORMS)} причина не записана."
+        )
+    return (
+        f"Причин записано {fmt_int(recorded)} при "
+        f"{count_phrase(dropped, MATERIAL_FORMS)} по счётчикам стадий: "
+        "часть материалов отклонена на нескольких стадиях."
+    )
+
+
+def sources_sentence(run: RunLogView) -> str:
+    """Seven rows under a run that set out to check fourteen reads as loss."""
+    answered = len(run.sources)
+    counts = {"ok": 0, "empty": 0, "failed": 0}
+    for source in run.sources:
+        counts[source.status] = counts.get(source.status, 0) + 1
+    configured = run.sources_configured
+    if configured and configured != answered:
+        head = (
+            f"В прогоне участвовало {count_phrase(configured, SOURCE_FORMS)}, "
+            f"результат записан по {fmt_int(answered)}"
+        )
+    else:
+        head = f"Опрошено {count_phrase(answered, SOURCE_FORMS)}"
+    parts = []
+    if counts.get("ok"):
+        parts.append(f"{fmt_int(counts['ok'])} " + ("ответил" if counts["ok"] == 1 else "ответили"))
+    if counts.get("failed"):
+        verb = "не ответил" if counts["failed"] == 1 else "не ответили"
+        parts.append(f"{fmt_int(counts['failed'])} {verb}")
+    if counts.get("empty"):
+        verb = "ответил" if counts["empty"] == 1 else "ответили"
+        parts.append(f"{fmt_int(counts['empty'])} {verb} без записей")
+    if not parts:
+        return head + "."
+    return head + ": " + ", ".join(parts) + "."
 
 
 def _source_table(sources: list[SourceRow]) -> str:
@@ -1278,13 +1392,15 @@ def _source_table(sources: list[SourceRow]) -> str:
         '<div class="scroll"><table>\n'
         "<thead><tr><th>Источник</th><th>Ответ</th>"
         '<th class="num">Материалов</th><th class="num">Время ответа</th>'
-        "<th>Причина отказа</th></tr></thead>\n"
+        # Covers both a refusal and a 200 that carried nothing: the second is
+        # not a refusal, and the column must not call it one.
+        "<th>Причина</th></tr></thead>\n"
         "<tbody>\n" + "\n".join(rows) + "\n</tbody></table></div>"
     )
 
 
 def _reason_text(row: FilteredRow) -> str:
-    text = row.reason_code.replace("_", " ")
+    text = REASON_LABELS.get(row.reason_code, row.reason_code.replace("_", " "))
     if row.reason_note:
         text += f" ({row.reason_note})"
     return text
@@ -1314,12 +1430,34 @@ def _filtered_block(filtered: list[FilteredRow]) -> str:
 
 
 def _cost_block(run: RunLogView) -> str:
-    sentence = (
-        f"Вызовов модели: {fmt_int(run.model_calls)}. "
-        f"Токены: {fmt_int(run.tokens_in)} на вход, {fmt_int(run.tokens_out)} на выход. "
-        f"Стоимость прогона: {fmt_money(run.usd)}."
+    """FR-8.4. The total is the sum of the itemized calls, by construction.
+
+    `runs.model_calls` is an in-memory counter and `model_calls` is the record
+    of each call; a resumed run makes them disagree. The page adds up the
+    records it shows and names the counter separately when the two differ,
+    because a total that does not match the table below it destroys the only
+    thing this page is for.
+    """
+    itemized = bool(run.costs)
+    calls = run.itemized_calls if itemized else run.model_calls
+    tokens_in = run.itemized_tokens_in if itemized else run.tokens_in
+    tokens_out = run.itemized_tokens_out if itemized else run.tokens_out
+    usd = run.itemized_usd if itemized else run.usd
+    head = (
+        f"Вызовов модели: {fmt_int(calls)}. "
+        f"Токены: {fmt_int(tokens_in)} на вход, {fmt_int(tokens_out)} на выход. "
+        f"Стоимость прогона: {fmt_money(usd)}."
     )
-    parts = [f"<p>{esc(sentence)}</p>"]
+    parts = [f"<p>{esc(head)}</p>"]
+    if itemized and (
+        run.model_calls != calls or abs(run.usd - usd) > 0.005
+    ):
+        note = (
+            f"Счётчик прогона называет {count_phrase(run.model_calls, CALL_FORMS)} "
+            f"и {fmt_money(run.usd)}. На странице сложены подробные записи: "
+            f"{count_phrase(calls, CALL_FORMS)}, {fmt_money(usd)}."
+        )
+        parts.append(f'<p class="legend">{esc(note)}</p>')
     if run.costs:
         rows = "\n".join(
             "<tr>"
@@ -1331,12 +1469,21 @@ def _cost_block(run: RunLogView) -> str:
             "</tr>"
             for cost in run.costs
         )
+        total = (
+            "<tr>"
+            "<td>Всего</td>"
+            f'<td class="num dense">{esc(fmt_int(calls))}</td>'
+            f'<td class="num dense">{esc(fmt_int(tokens_in))}</td>'
+            f'<td class="num dense">{esc(fmt_int(tokens_out))}</td>'
+            f'<td class="num dense">{esc(fmt_money(usd))}</td>'
+            "</tr>"
+        )
         parts.append(
             '<div class="scroll"><table>\n'
             '<thead><tr><th>Стадия</th><th class="num">Вызовов</th>'
             '<th class="num">Токенов на вход</th><th class="num">Токенов на выход</th>'
             '<th class="num">Стоимость</th></tr></thead>\n'
-            "<tbody>\n" + rows + "\n</tbody></table></div>"
+            "<tbody>\n" + rows + "\n" + total + "\n</tbody></table></div>"
         )
     return "\n".join(parts)
 
@@ -1402,11 +1549,16 @@ def render_run_log(
         f'<p class="when-line">{esc(when)}. {esc(timing)}</p>\n'
         "</header>"
     )
+    reasons: dict[str, int] = {}
+    for row in run.filtered:
+        reasons[row.stage] = reasons.get(row.stage, 0) + 1
     parts = [
         head,
         "<h3>Стадии</h3>",
-        _stage_table(run.stages),
+        _stage_table(run.stages, reasons),
+        f'<p class="legend">{esc(funnel_sentence(run))}</p>',
         "<h3>Источники</h3>",
+        f"<p>{esc(sources_sentence(run))}</p>",
         _source_table(run.sources),
         "<h3>Отклонённые материалы</h3>",
         _filtered_block(run.filtered),
@@ -1578,6 +1730,14 @@ def build_site(
     finally:
         conn.close()
 
+    # How many sources the run set out to check lives in the contract rather
+    # than in the log tables, and only the signals carry it.
+    checked = next(
+        (s.run_summary.sources_checked for s in signals if s.run_summary), None
+    )
+    if run is not None and checked:
+        run = replace(run, sources_configured=checked)
+
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     pages = {
@@ -1593,32 +1753,62 @@ def build_site(
     return {name: path for name, (path, _) in pages.items()}
 
 
+def reference_date(
+    db_path: str | Path, run_id: str | None = None, override: date | None = None
+) -> date | None:
+    """The date relative dates are measured from, taken from the data.
+
+    Never the system clock: a page rebuilt a week later has to say what it said
+    on the morning it was published.
+    """
+    if override is not None:
+        return override
+    conn = connect(db_path, read_only=True)
+    try:
+        signals = read_signals(conn, run_id)
+        if signals:
+            return signals[0].for_date
+        query = "SELECT for_date FROM runs"
+        params: tuple[Any, ...] = ()
+        if run_id:
+            query += " WHERE run_id = ?"
+            params = (run_id,)
+        query += " ORDER BY started_at DESC, rowid DESC LIMIT 1"
+        row = conn.execute(query, params).fetchone()
+    finally:
+        conn.close()
+    return _as_date(row["for_date"]) if row else None
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Build the pages for the latest run: `python -m radar.surfaces.web`."""
     parser = argparse.ArgumentParser(
-        description="Собрать статические страницы поверхности"
+        description="Собрать статические страницы поверхности из хранилища сигналов"
     )
-    parser.add_argument("--db", default="data/radar.db")
-    parser.add_argument("--out", default="out")
-    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--db", default="data/radar.db", help="файл хранилища")
+    parser.add_argument("--out", default="out", help="каталог для страниц")
+    parser.add_argument(
+        "--run-id", default=None, help="прогон; по умолчанию последний записанный"
+    )
     parser.add_argument(
         "--today",
         default=None,
-        help="опорная дата ISO; по умолчанию берётся дата прогона",
+        help="опорная дата ISO; по умолчанию дата прогона из хранилища",
     )
     args = parser.parse_args(argv)
 
-    today = date.fromisoformat(args.today) if args.today else None
+    override = date.fromisoformat(args.today) if args.today else None
+    try:
+        today = reference_date(args.db, args.run_id, override)
+    except sqlite3.OperationalError as error:
+        parser.error(f"хранилище {args.db} не открывается на чтение: {error}")
     if today is None:
-        conn = connect(args.db, read_only=True)
-        try:
-            signals = read_signals(conn, args.run_id)
-        finally:
-            conn.close()
-        if not signals:
-            parser.error("в хранилище нет сигналов, укажите --today")
-        today = signals[0].for_date
+        parser.error(
+            "в хранилище нет ни сигналов, ни прогонов; укажите --today явно"
+        )
 
     paths = build_site(args.db, args.out, today=today, run_id=args.run_id)
+    print(f"опорная дата: {today.isoformat()}")
     for name, path in paths.items():
         print(f"{name}: {path}")
     return 0

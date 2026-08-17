@@ -286,6 +286,19 @@ def make_run_view(**overrides) -> web.RunLogView:
                 reason_code="дубль_вчерашнего",
                 stage="filter",
             ),
+            web.FilteredRow(
+                title="Supabase меняет заголовки ответов",
+                url="https://example.test/supabase#stmt-1",
+                reason_code="vendor_unresolved",
+                stage="enrich",
+            ),
+            web.FilteredRow(
+                title="LangChain 0.3.9",
+                url="https://example.test/langchain",
+                reason_code="ниже_порога_публикации",
+                stage="score",
+                reason_note="оценка 31, порог 45",
+            ),
         ],
         costs=[
             web.StageCost(
@@ -655,8 +668,10 @@ def test_run_log_page_is_readable_prose_and_tables():
     assert "не ответил" in html and "HTTP 503" in html
     assert "ответил, ничего не отдал" in html
     assert "430\u00a0мс" in html
-    # FR-8.3 filtered materials
+    # FR-8.3 filtered materials, with codes turned into Russian
     assert "маркетинг без фактов (анонс вебинара)" in html
+    assert "вендор не опознан по словарю" in html
+    assert "ниже порога публикации (оценка 31, порог 45)" in html
     assert "https://example.test/n8n" in html
     # FR-8.4 cost
     assert "Вызовов модели: 10." in html
@@ -1090,3 +1105,134 @@ def test_digest_reads_signals_and_nothing_else():
     used = {node.attr for node in ast.walk(footer) if isinstance(node, ast.Attribute)}
     assert "run_summary" in used
     assert "source_id" not in used
+
+
+# -- the run log has to add up -----------------------------------------
+
+
+def test_cost_total_matches_the_rows_below_it():
+    """The headline number is the sum of the itemized calls, not a counter."""
+    html = web.render_run_log(make_run_view(), today=TODAY)
+    assert "Вызовов модели: 10." in html
+    assert "Счётчик прогона называет" not in html
+    body = html.split("<h3>Стоимость</h3>", 1)[1]
+    assert '<td class="num dense">10</td>' in body
+
+
+def test_a_counter_disagreeing_with_the_records_is_named():
+    run = make_run_view(model_calls=37, usd=0.48)
+    html = web.render_run_log(run, today=TODAY)
+    # the page counts what it can show
+    assert "Вызовов модели: 10." in html
+    assert "Счётчик прогона называет 37 вызовов" in html
+    assert "На странице сложены подробные записи: 10 вызовов, $0.27." in html
+
+
+def test_cost_falls_back_to_the_run_row_without_itemized_calls():
+    run = make_run_view(costs=[])
+    html = web.render_run_log(run, today=TODAY)
+    assert "Вызовов модели: 10." in html
+    assert "Счётчик прогона называет" not in html
+
+
+def test_funnel_names_the_materials_dropped_without_a_reason():
+    html = web.render_run_log(make_run_view(), today=TODAY)
+    # filter 61 -> 19 drops 42, and four reasons are recorded in the fixture
+    assert "Стадии отсеяли 42 материала, причины записаны у 4." in html
+    assert "У 38 материалов причина не записана." in html
+
+
+def test_funnel_closes_when_every_drop_has_a_reason():
+    run = make_run_view(
+        stages=[
+            web.StageRow(
+                name="filter",
+                in_count=10,
+                out_count=8,
+                started_at="2026-08-17T06:00:12+00:00",
+                duration_ms=1000,
+            )
+        ],
+        filtered=[
+            web.FilteredRow("A", "https://example.test/a", "слишком_общее", "filter"),
+            web.FilteredRow("B", "https://example.test/b", "другое", "filter"),
+        ],
+    )
+    html = web.render_run_log(run, today=TODAY)
+    assert "Отсеяно 2 материала, причина записана у каждого." in html
+
+
+def test_stage_table_shows_the_drop_and_the_recorded_reasons():
+    html = web.render_run_log(make_run_view(), today=TODAY)
+    assert "<th class=\"num\">Отсеяно</th>" in html
+    assert "<th class=\"num\">Причин записано</th>" in html
+
+
+def test_sources_line_names_configured_and_answered():
+    run = make_run_view(sources_configured=14)
+    html = web.render_run_log(run, today=TODAY)
+    assert "В прогоне участвовало 14 источников, результат записан по 3" in html
+    assert "1 ответил, 1 не ответил, 1 ответил без записей." in html
+
+
+def test_sources_line_without_a_configured_count():
+    html = web.render_run_log(make_run_view(), today=TODAY)
+    assert "Опрошено 3 источника:" in html
+
+
+def test_no_reason_code_reaches_the_page_with_underscores():
+    """FR-9.2: a code the reader has to decode is not a readable log."""
+    for row in make_run_view().filtered:
+        text = web._reason_text(row)
+        assert "_" not in text, text
+    # every code the pipeline can write has a Russian wording
+    for code in (
+        "не_относится_к_стеку",
+        "маркетинг_без_фактов",
+        "дубль_вчерашнего",
+        "слишком_общее",
+        "спекуляция_без_первоисточника",
+        "другое",
+        "vendor_unresolved",
+        "unsupported_quantifier",
+        "statement_unsupported",
+        "ниже_порога_публикации",
+    ):
+        assert code in web.REASON_LABELS, code
+        assert "_" not in web.REASON_LABELS[code]
+
+
+def test_build_site_passes_the_source_count_from_the_contract(tmp_path):
+    db_path = tmp_path / "radar.db"
+    seed_store(db_path)
+    paths = web.build_site(db_path, tmp_path / "site", today=TODAY)
+    run_log = paths["run_log"].read_text(encoding="utf-8")
+    # the lead signal carries run_summary.sources_checked = 14, one row exists
+    assert "В прогоне участвовало 14 источников, результат записан по 1" in run_log
+
+
+def test_cli_builds_from_the_store_without_arguments(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "radar.db"
+    seed_store(db_path)
+    out = tmp_path / "site"
+    code = web.main(["--db", str(db_path), "--out", str(out)])
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "опорная дата: 2026-08-17" in printed
+    for name in ("digest.html", "run-log.html", "corpus.html"):
+        assert (out / name).exists()
+
+
+def test_cli_reference_date_comes_from_the_data(tmp_path):
+    db_path = tmp_path / "radar.db"
+    seed_store(db_path)
+    assert web.reference_date(db_path) == TODAY
+    assert web.reference_date(db_path, override=date(2026, 1, 1)) == date(2026, 1, 1)
+
+
+def test_cli_refuses_an_empty_store_instead_of_guessing_the_date(tmp_path):
+    db_path = tmp_path / "empty.db"
+    init_db(db_path).close()
+    assert web.reference_date(db_path) is None
+    with pytest.raises(SystemExit):
+        web.main(["--db", str(db_path), "--out", str(tmp_path / "site")])

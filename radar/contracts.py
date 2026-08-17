@@ -15,7 +15,13 @@ from radar.models import ChangeType, EventStatement, Fact
 # Bumped whenever the extraction prompt changes in a way that would alter
 # output. Recorded on every EventStatement so the corpus stays auditable and
 # can be selectively rebuilt rather than wholesale.
-EXTRACTION_PROMPT_VERSION = "extract-v1"
+# Bumped on 2026-08-17 after a live run exposed three extraction defects:
+# one announcement retiring nine snapshots produced nine near-identical
+# events; lifecycle tables without an announcement date had the collection
+# date substituted; and the date guard, written against sonnet, zeroed valid
+# dates once the stage moved to haiku. Records made before the fixes are a
+# different generation and must be distinguishable from the corpus itself.
+EXTRACTION_PROMPT_VERSION = "extract-v2"
 
 
 @dataclass(slots=True)

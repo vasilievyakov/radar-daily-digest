@@ -61,7 +61,9 @@ def collect_source(
     adapter = build_adapter(source, fetcher)
     if adapter is None:
         return SourceOutcome(
-            source.id, SourceStatus.FAILED, error=f"no adapter for {source.type}"
+            source.id,
+            SourceStatus.FAILED,
+            error=f"нет адаптера для типа источника {source.type}",
         )
 
     try:
@@ -89,7 +91,10 @@ def collect_source(
             SourceStatus.EMPTY,
             items=items,
             latency_ms=latency,
-            error=f"expected at least {source.min_expected_items}, got {len(items)}",
+            error=(
+                f"источник ответил, но записей меньше ожидаемого: "
+                f"{len(items)} вместо {source.min_expected_items}"
+            ),
         )
     return SourceOutcome(source.id, SourceStatus.OK, items=items, latency_ms=latency)
 
