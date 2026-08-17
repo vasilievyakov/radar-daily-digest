@@ -1368,7 +1368,11 @@ llm:
   backend: auto        # auto | claude_cli | openrouter
   timeout_seconds: 180
   max_schema_retries: 2
+  # Concurrent batches, not concurrent records. One source is split into
+  # batches of this size so a single large source stops being the tail:
+  # github_changelog alone is 871 of the 2405 materials.
   concurrency: 8
+  batch_size: 100
 
 # Stage to model routing. Measured CLI cost per call with a warm prefix cache:
 # haiku about $0.005, and the first call of a stage pays roughly $0.033 to
@@ -1396,9 +1400,12 @@ budget:
   # NFR-5 target for a daily run: roughly 40 materials through the filter on
   # haiku plus a dozen enrichments on sonnet.
   max_usd_per_run: 0.50
-  # Backfill is the one large spend of the project and runs once. Bulk
-  # enrichment on sonnet with the deprecation pages on opus.
-  max_usd_per_backfill: 8.00
+  # Backfill is the one large spend of the project and runs once. Measured on
+  # the real cache: priority 1 gives 2405 materials, of which about 692 are
+  # critical. Mixed routing puts those on sonnet (~$10) and the rest on haiku
+  # (~$9), so roughly $19. The limit carries headroom so the run stops on its
+  # own terms rather than mid-corpus.
+  max_usd_per_backfill: 25.00
   # Second line of defence handed to the CLI itself, per call.
   max_usd_per_call: 0.50
   stop_on_exceed: true

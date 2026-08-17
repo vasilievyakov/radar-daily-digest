@@ -1,11 +1,21 @@
 """Adapter for documentation pages scraped as HTML (`html_scrape`).
 
-The sources in config come in two shapes, both stated in `parser_hint`:
+The sources in config come in four shapes, each stated in `parser_hint`:
 
 * `dated_sections` - one heading per event ("August 11, 2026",
   "2026-06-11: GPT-5 and o3 model deprecations"), body until the next heading.
 * `dated_table` - a table whose rows carry dates ("Retirement date",
   "Deprecated"), one row per event.
+* `month_then_day` - "June, 2025" as a heading, "Jun 27" as a badge inside it.
+  The badge is the event; the heading is where its year comes from.
+* `embedded_json_index` - the page renders no entries at all and ships the
+  index as JSON inside a script tag.
+
+Two more shapes have no hint because no config asks for them by name, and
+both are reached by falling through: a date label standing outside the
+headings (docs.n8n.io prints "Released: 2026-08-04" under the version, the
+Mintlify changelogs print a week or a day in a pill), and, last of all, a
+dated sentence in plain prose - the only thing the pricing page has.
 
 Two properties the rest of the pipeline leans on:
 
@@ -25,9 +35,11 @@ parse failures come out the same way, never as an exception.
 from __future__ import annotations
 
 import calendar
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, CData, Comment, Declaration, Doctype
 from bs4 import NavigableString, ProcessingInstruction, Tag
@@ -37,6 +49,8 @@ from radar.models import DatePrecision
 
 PARSER_SECTIONS = "dated_sections"
 PARSER_TABLE = "dated_table"
+PARSER_MONTH_THEN_DAY = "month_then_day"
+PARSER_JSON_INDEX = "embedded_json_index"
 
 # A grouping heading ("2026") owns no event of its own; only its children do.
 MIN_SECTION_BODY_CHARS = 16
@@ -51,6 +65,9 @@ MAX_MARK_CHARS = 80
 MARK_HEADING_GAP_CHARS = 120
 # Prose is the last thing tried, and one page of it must not become a corpus.
 MAX_PROSE_SECTIONS = 200
+# A per-month archive walk is bounded by the window, and by this if the
+# window is ever set to something the archive cannot answer.
+MAX_ARCHIVE_MONTHS = 60
 
 _SKIP_TAGS = frozenset(
     {
@@ -154,6 +171,8 @@ _GENERIC_IDS = frozenset(
     }
 )
 _PUA_RE = re.compile("[\ue000-\uf8ff]")
+# Mintlify puts a zero-width space inside every heading as the anchor link.
+_ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\ufeff]")
 
 
 # --------------------------------------------------------------------------
@@ -522,7 +541,8 @@ class _TextBuilder:
 
 
 def _clean_title(text: str) -> str:
-    return re.sub(r"\s+", " ", _PUA_RE.sub("", text)).strip()
+    text = _ZERO_WIDTH_RE.sub("", _PUA_RE.sub("", text))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _anchor_of(node: Tag) -> str | None:
@@ -636,6 +656,9 @@ class Section:
     precision: DatePrecision
     date_text: str
     year_source: str | None = None
+    # Set only where the page states an address for the entry itself, which is
+    # the whole of what an index page gives.
+    url: str | None = None
 
 
 def _ancestor_year(
@@ -758,9 +781,321 @@ def _heading_before(page: PageText, offset: int) -> Heading | None:
     return found
 
 
+def sections_from_date_marks(page: PageText) -> list[Section]:
+    """One section per date label standing outside the headings.
+
+    Three pages that look nothing alike are the same shape underneath: a
+    weekly pill on changelog.langchain.com, a day badge under a month heading
+    on platform.openai.com (`month_then_day`), a "Released:" line on
+    docs.n8n.io. The label opens the entry and the next label closes it.
+    """
+    marks = page.marks
+    if not marks:
+        return []
+    # Only a heading that states a date can supply a year, and it closes the
+    # run of labels underneath it: "August, 2026" owns its days, not July's.
+    dated_headings = [
+        (heading, parsed)
+        for heading, parsed in (
+            (heading, parse_date_fragment(heading.title)) for heading in page.headings
+        )
+        if parsed is not None and parsed.value is not None
+    ]
+
+    starts: list[int] = []
+    lead_headings: list[Heading | None] = []
+    for mark in marks:
+        lead = _lead_heading(page, mark, dated_headings)
+        lead_headings.append(lead)
+        starts.append(lead.start if lead is not None else mark.start)
+
+    sections: list[Section] = []
+    for index, mark in enumerate(marks):
+        parsed = parse_date_fragment(mark.text)
+        if parsed is None:
+            continue
+        year_source: str | None = None
+        if parsed.year_missing:
+            found = _year_above(dated_headings, mark.start)
+            if found is None:
+                parsed = ParsedDate(
+                    None,
+                    DatePrecision.INFERRED,
+                    mark.text,
+                    parsed.month,
+                    parsed.day,
+                    True,
+                )
+            else:
+                parsed = parsed.with_year(found[0])
+                year_source = found[1] if parsed.value is not None else None
+        start = starts[index]
+        end = starts[index + 1] if index + 1 < len(starts) else len(page.text)
+        for heading, _ in dated_headings:
+            if mark.end <= heading.start < end:
+                end = heading.start
+                break
+        text = page.text[start : min(end, start + MAX_SECTION_CHARS)].strip()
+        if not text:
+            continue
+        lead = lead_headings[index]
+        sections.append(
+            Section(
+                title=_mark_title(page, mark, lead, start, end),
+                text=text,
+                anchor=(lead.anchor if lead is not None else None) or mark.anchor,
+                event_date=parsed.value,
+                precision=parsed.precision,
+                date_text=mark.text,
+                year_source=year_source,
+            )
+        )
+    return sections
+
+
+def _lead_heading(
+    page: PageText, mark: DateMark, dated: list[tuple[Heading, ParsedDate]]
+) -> Heading | None:
+    """The heading a label belongs to, when the label sits right under it.
+
+    docs.n8n.io prints the version as a heading and the date on the next line,
+    so the heading is part of the entry. Anywhere else the nearest heading
+    above belongs to the previous entry and must not be swallowed.
+    """
+    heading = _heading_before(page, mark.start)
+    if heading is None or heading.end > mark.start:
+        return None
+    if page.text[heading.end : mark.start].strip():
+        return None
+    if any(candidate is heading for candidate, _ in dated):
+        return None  # a dated heading gives context to many labels, not one
+    return heading
+
+
+def _year_above(
+    dated: list[tuple[Heading, ParsedDate]], offset: int
+) -> tuple[int, str] | None:
+    """Year from the dated heading the label sits under, never from a label."""
+    found = None
+    for heading, parsed in dated:
+        if heading.start >= offset:
+            break
+        if parsed.value is not None:
+            found = (parsed.value.year, heading.title)
+    return found
+
+
+def _mark_title(
+    page: PageText, mark: DateMark, lead: Heading | None, start: int, end: int
+) -> str:
+    if lead is not None:
+        return lead.title
+    for heading in page.headings:
+        if mark.end <= heading.start < min(end, mark.end + MARK_HEADING_GAP_CHARS):
+            return f"{mark.text} - {heading.title}"
+    body = page.text[mark.end : end]
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    lead_line = next(
+        (line for line in lines if len(line) >= 24), lines[0] if lines else ""
+    )
+    return f"{mark.text} - {lead_line[:120]}" if lead_line else mark.text
+
+
+# --------------------------------------------------------------------------
+# embedded json index
+# --------------------------------------------------------------------------
+
+# A record without braces around it is not a record; a record longer than this
+# is a page payload that happens to carry a date.
+_JSON_RECORD_RE = re.compile(r"\{[^{}]{8,2000}\}")
+_JSON_LABEL_RE = re.compile(r'"(version|title|name|label)"\s*:\s*"([^"\\]{4,48})"')
+_LINK_KEYS = ("href", "url", "link", "permalink", "slug", "path")
+_DATE_KEYS = (
+    "date",
+    "published",
+    "publishedat",
+    "published_at",
+    "datepublished",
+    "publishdate",
+    "releasedate",
+    "released",
+    "pubdate",
+)
+_LABEL_KEYS = ("title", "name", "version", "label", "heading")
+
+
+@dataclass(slots=True)
+class IndexRecord:
+    date: ParsedDate
+    label: str
+    href: str
+    start: int
+    end: int
+
+
+@dataclass(slots=True)
+class JsonIndex:
+    """The index as one text plus offsets, so a record is still a slice."""
+
+    text: str
+    records: list[IndexRecord] = field(default_factory=list)
+
+
+def extract_json_index(html: str) -> JsonIndex:
+    """Dated entries from an index serialised into the page.
+
+    cursor.com/blog renders no post bodies at all and modelcontextprotocol.io
+    keeps its revision list in the navigation payload. Both ship the index as
+    JSON inside a script, escaped once for the surrounding string literal.
+    """
+    payload = html.replace('\\"', '"')
+    seen: set[tuple[date | None, str]] = set()
+    lines: list[str] = []
+    records: list[IndexRecord] = []
+    offset = 0
+
+    def keep(parsed: ParsedDate, label: str, href: str) -> None:
+        nonlocal offset
+        key = (parsed.value, label)
+        if key in seen:
+            return
+        seen.add(key)
+        line = " | ".join(part for part in (parsed.text, label, href) if part)
+        lines.append(line)
+        records.append(IndexRecord(parsed, label, href, offset, offset + len(line)))
+        offset += len(line) + 1
+
+    for match in _JSON_RECORD_RE.finditer(payload):
+        record = _index_record(match.group(0))
+        if record is not None:
+            keep(*record)
+    # A revision list nests its pages, so the record around the label is not
+    # flat and only the label itself survives the scan above.
+    for match in _JSON_LABEL_RE.finditer(payload):
+        label = match.group(2).strip()
+        parsed = parse_date_fragment(label)
+        if parsed is None or parsed.value is None:
+            continue
+        if not date_stated_alone(label, parsed):
+            continue
+        keep(parsed, label, "")
+
+    return JsonIndex("\n".join(lines), records)
+
+
+def _index_record(blob: str) -> tuple[ParsedDate, str, str] | None:
+    """A flat JSON object that names both an address and a date."""
+    if '"' not in blob:
+        return None
+    try:
+        obj = json.loads(blob)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    flat = {
+        str(key).lower(): value
+        for key, value in obj.items()
+        if isinstance(value, str) and value
+    }
+    href = next((flat[key] for key in _LINK_KEYS if key in flat), "")
+    if not href:
+        return None
+    label = next((flat[key] for key in _LABEL_KEYS if key in flat), "")
+    for key in _DATE_KEYS:
+        parsed = parse_date_fragment(flat.get(key, ""))
+        if parsed is not None and parsed.value is not None:
+            return parsed, label, href
+    # No date field: the entry may still name its revision, "Version 2025-11-25".
+    for key in _LABEL_KEYS:
+        value = flat.get(key, "")
+        if not value or len(value) > 48:
+            continue
+        parsed = parse_date_fragment(value)
+        if parsed is not None and parsed.value is not None:
+            if date_stated_alone(value, parsed):
+                return parsed, value, href
+    return None
+
+
+def sections_from_json_index(page: PageText) -> list[Section]:
+    """One section per record of an embedded index (`embedded_json_index`)."""
+    index = extract_json_index(page.html)
+    return [
+        Section(
+            title=record.label or record.href,
+            text=index.text[record.start : record.end],
+            anchor=None,
+            event_date=record.date.value,
+            precision=record.date.precision,
+            date_text=record.date.text,
+            # A bare slug is proof the record is an index entry, but it is not
+            # an address: joining it to the page invents a URL that 404s.
+            url=record.href if record.href.startswith(("/", "http")) else None,
+        )
+        for record in index.records
+    ]
+
+
+# --------------------------------------------------------------------------
+# prose
+# --------------------------------------------------------------------------
+
+_SENTENCE_RE = re.compile(r"[^\n.!?]+(?:[.!?]+|\n|$)")
+
+
+def sections_from_dated_sentences(page: PageText) -> list[Section]:
+    """One section per sentence that states a date, and nothing else left.
+
+    docs.claude.com/pricing has no changelog: the two dates a tariff turns on
+    are written into a paragraph under a heading that names no date at all.
+    Loose enough to be wrong on a page with any other shape, which is why it
+    runs only after every other reading has come back empty.
+    """
+    sections: list[Section] = []
+    for match in _SENTENCE_RE.finditer(page.text):
+        sentence = match.group(0).strip()
+        if len(sentence) < MIN_SECTION_BODY_CHARS:
+            continue
+        parsed = parse_date_fragment(sentence)
+        # A year on its own is a copyright line more often than an event.
+        if parsed is None or parsed.value is None:
+            continue
+        if parsed.precision is DatePrecision.YEAR:
+            continue
+        if not date_stated_alone(sentence, parsed):
+            continue
+        start = match.start() + (len(match.group(0)) - len(match.group(0).lstrip()))
+        heading = _heading_before(page, start)
+        sections.append(
+            Section(
+                title=" - ".join(
+                    part
+                    for part in (heading.title if heading else "", parsed.text)
+                    if part
+                ),
+                text=page.text[start : start + len(sentence)],
+                anchor=heading.anchor if heading else None,
+                event_date=parsed.value,
+                precision=parsed.precision,
+                date_text=parsed.text,
+            )
+        )
+        if len(sections) >= MAX_PROSE_SECTIONS:
+            break
+    return sections
+
+
 # --------------------------------------------------------------------------
 # adapter
 # --------------------------------------------------------------------------
+
+_HINTED = {
+    PARSER_SECTIONS: sections_from_headings,
+    PARSER_TABLE: sections_from_tables,
+    PARSER_MONTH_THEN_DAY: sections_from_date_marks,
+    PARSER_JSON_INDEX: sections_from_json_index,
+}
 
 
 class HtmlPageAdapter(Adapter):
@@ -776,18 +1111,42 @@ class HtmlPageAdapter(Adapter):
         return [item for item in items if _reaches(item, cutoff)]
 
     def backfill(self, depth_days: int | None = None) -> list[CollectedItem]:
-        items = self._parse()
         depth = (
             depth_days if depth_days is not None else self.source.backfill_depth_days
         )
+        items = self._parse()
+        if self.source.backfill_url_template and depth and depth > 0:
+            items = _dedupe(items + self._months_back(depth))
         if not depth or depth <= 0:
             return items
         cutoff = date.today() - timedelta(days=depth)
-        return [item for item in items if _reaches(item, cutoff)]
+        return _newest_first([item for item in items if _reaches(item, cutoff)])
 
-    def _parse(self) -> list[CollectedItem]:
+    def _months_back(self, depth_days: int) -> list[CollectedItem]:
+        """Walk the per-month archive back over the window (FR-1.3).
+
+        github.blog/changelog/ answers with the current month only. A year of
+        it is a year of one-URL-per-month requests, and every miss is skipped
+        rather than raised: a gap in the archive is not a failed source.
+        """
+        template = self.source.backfill_url_template or ""
+        cutoff = date.today() - timedelta(days=depth_days)
+        items: list[CollectedItem] = []
+        month = date.today().replace(day=1)
+        for _ in range(MAX_ARCHIVE_MONTHS):
+            if period_end(month, DatePrecision.MONTH) < cutoff:
+                break
+            try:
+                url = template.format(year=month.year, month=month.month)
+            except (KeyError, IndexError, ValueError):
+                break
+            items.extend(self._parse(url))
+            month = (month - timedelta(days=1)).replace(day=1)
+        return items
+
+    def _parse(self, url: str | None = None) -> list[CollectedItem]:
         try:
-            result = self.fetcher.get(self.source.url)
+            result = self.fetcher.get(url or self.source.url)
         except Exception:  # a broken source is data, not a crash (FR-1.5)
             return []
         if not result.ok or not result.text:
@@ -797,31 +1156,45 @@ class HtmlPageAdapter(Adapter):
             sections = self._sections(page)
         except Exception:
             return []
-        base_url = result.url or self.source.url
+        base_url = result.url or url or self.source.url
         items = [self._to_item(section, base_url, result.ref) for section in sections]
-        # Newest first; sections whose date could not be resolved go last but
-        # are not dropped - they are the ones a human has to look at.
-        items.sort(
-            key=lambda item: (item.event_date is not None, item.event_date or date.min),
-            reverse=True,
-        )
-        return items
+        return _newest_first(items)
 
     def _sections(self, page: PageText) -> list[Section]:
         hint = (self.source.parser_hint or "").strip().lower()
-        order = (
-            [sections_from_tables, sections_from_headings]
-            if hint == PARSER_TABLE
-            else [sections_from_headings, sections_from_tables]
-        )
-        for strategy in order:
+        primary = _HINTED.get(hint)
+        if primary is not None:
+            sections = primary(page)
+            if sections:
+                return sections
+        # A dated heading and a dated table row are recognitions: the page
+        # says outright that this is an event, so the first one that answers
+        # wins, exactly as before.
+        for strategy in (sections_from_headings, sections_from_tables):
+            if strategy is primary:
+                continue
             sections = strategy(page)
             if sections:
                 return sections
-        return []
+        # The readings below are guesses. Taking the first non-empty one would
+        # let a page's four navigation entries beat its hundred real ones, so
+        # the fullest reading wins and a tie keeps the one closer to the DOM.
+        best: list[Section] = []
+        for strategy in (sections_from_date_marks, sections_from_json_index):
+            if strategy is primary:
+                continue
+            sections = strategy(page)
+            if len(sections) > len(best):
+                best = sections
+        if best:
+            return best
+        return sections_from_dated_sentences(page)
 
     def _to_item(self, section: Section, base_url: str, ref: str) -> CollectedItem:
-        url = f"{base_url}#{section.anchor}" if section.anchor else base_url
+        if section.url:
+            url = urljoin(base_url, section.url)
+        else:
+            url = f"{base_url}#{section.anchor}" if section.anchor else base_url
         extra: dict[str, object] = {
             "source_id": self.source.id,
             "date_text": section.date_text,
@@ -839,6 +1212,29 @@ class HtmlPageAdapter(Adapter):
             raw_material_ref=ref,
             extra=extra,
         )
+
+
+def _newest_first(items: list[CollectedItem]) -> list[CollectedItem]:
+    """Sections whose date could not be resolved go last but are not dropped:
+    they are the ones a human has to look at."""
+    items.sort(
+        key=lambda item: (item.event_date is not None, item.event_date or date.min),
+        reverse=True,
+    )
+    return items
+
+
+def _dedupe(items: list[CollectedItem]) -> list[CollectedItem]:
+    """The current month appears on the index page and in its own archive."""
+    seen: set[tuple[date | None, str]] = set()
+    kept: list[CollectedItem] = []
+    for item in items:
+        key = (item.event_date, item.raw_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept
 
 
 def _reaches(item: CollectedItem, cutoff: date) -> bool:
