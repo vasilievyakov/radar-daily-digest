@@ -1090,3 +1090,68 @@ class TestACancellationDoesNotPromiseADeadline:
             statement="Anthropic сохраняет цену $2/$10 как стандартную.",
         )
         assert "рок наступает" not in text
+
+
+class TestALineOnTheTableReachesTheCard:
+    """The lookup worked, the field existed, the surfaces drew it — and the
+    pipeline never called any of it.
+
+    Wiring is the part that silently does not happen: a patch that failed
+    halfway left `build_signal` accepting a trend nobody passed, every test
+    green, and `trend_id` null on every card. Only a run says otherwise.
+    """
+
+    @staticmethod
+    def _line(conn, vendor="anthropic", change_type="deprecation",
+              trajectory="steady"):
+        from radar.cache import digest
+
+        conn.execute(
+            "INSERT INTO trends (trend_id, label, vendor, change_types_json, "
+            "member_ids_json, first_observed, last_observed, cadence_days, "
+            "trajectory, evidence_refs_json, updated_at) VALUES "
+            "(?, 'линия', ?, json('[]'), json('[]'), '2026-01-01', '2026-08-01', "
+            "12.0, ?, json('[]'), '2026-08-18T00:00:00+00:00')",
+            (digest("trend", vendor, change_type)[:20], vendor, trajectory),
+        )
+        conn.commit()
+
+    def test_a_card_in_a_recognised_line_says_so(self, env):
+        conn, config, fetcher, tmp = env
+        self._line(conn)
+        for index in range(3):
+            conn.execute(
+                "INSERT INTO event_statements (statement_id, text, vendor, "
+                "change_type, event_date, source_url, statement_index, evidence, "
+                "ingested_at, ingest_mode, extractor_model, prompt_version, "
+                "raw_material_ref) VALUES (?, 'Anthropic отключает модель', "
+                "'anthropic', 'deprecation', ?, ?, ?, 'q', "
+                "'2026-08-01T00:00:00+00:00', 'backfill', 'm', 'v2', 'r')",
+                (f"pre-{index}", f"2026-0{index + 3}-01",
+                 f"https://example.test/{index}", index),
+            )
+        conn.commit()
+
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+
+        stored = read_signals(conn, result.run_id)
+        assert stored
+        assert any(s.trend_id for s in stored), "ни одна карточка не знает о линии"
+        assert any(
+            str(s.context_label or "") == "trend_member" for s in stored
+        ), "ярлык участника линии не выставлен ни разу"
+
+    def test_the_run_recomputes_the_lines_it_changed(self, env):
+        conn, config, fetcher, tmp = env
+        self._line(conn, vendor="стар", change_type="deprecation")
+        before = conn.execute("SELECT count(*) FROM trends").fetchone()[0]
+
+        DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                 for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+
+        after = conn.execute(
+            "SELECT count(*) FROM trends WHERE vendor = 'стар'"
+        ).fetchone()[0]
+        assert before == 1
+        assert after == 0, "линия, переставшая держаться, осталась в таблице"

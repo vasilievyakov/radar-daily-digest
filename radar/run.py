@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from radar.backfill import persist_statements
+from radar.backfill import persist_statements, refresh_trends
 from radar.cluster import cluster_items
 from radar.collect import collect_all
 from radar.config import ThemeConfig
@@ -60,6 +60,7 @@ from radar.publish import (
     build_signal,
 )
 from radar.retrieval import CorpusRetriever
+from radar.trends import active_trend
 from radar.runlog import Budget, BudgetExceeded, RunLog, new_run_id
 from radar.supervisor import Supervisor
 from radar.scoring import (
@@ -733,7 +734,12 @@ class DailyRun:
                     # and an event could cite itself.
                     exclude_ids={st.statement_id for st in statements},
                 )
-                contexts.append((cluster, facts, delta, retrieval, statements))
+                trend = active_trend(
+                    self.conn, cluster.vendor, cluster.change_type, self.for_date
+                )
+                contexts.append(
+                    (cluster, facts, delta, retrieval, statements, trend)
+                )
                 # Both counts reach the log. Every other system in the room
                 # measures precision only; this line is what makes a miss
                 # visible. A strict conjunctive filter turns a
@@ -786,6 +792,16 @@ class DailyRun:
                 else ""
             )
         )
+
+        # The corpus just changed, so its summary is stale. Until now the lines
+        # were computed by backfill and by a separate command only: the daily
+        # run added events and never told the table, so `first_observed` of the
+        # largest line sat fourteen months from its own corpus.
+        try:
+            accepted, _rejected, _seen = refresh_trends(self.conn, self.config)
+            self.log.note(f"линий тренда после пересчёта: {len(accepted)}")
+        except Exception as exc:  # a derived view must not fail the run
+            self.log.note(f"не удалось пересчитать тренды: {exc}")
 
         result.failed_stage = "score"
         summary = build_run_summary(
@@ -877,7 +893,7 @@ class DailyRun:
         """
         drafts: list[Signal] = []
         source_ids: dict[str, str] = {}
-        for cluster, facts, delta, retrieval, statements in contexts:
+        for cluster, facts, delta, retrieval, statements, trend in contexts:
             # The normalized statement is what the expensive stage produced:
             # one to three sentences in literary Russian, quantifier-checked,
             # every fact behind it verified. The page title and a slab of raw
@@ -917,6 +933,7 @@ class DailyRun:
                 ),
                 run_summary=summary,
                 run_log_url=self.run_log_url,
+                trend=trend,
             )
             drafts.append(signal)
             source_ids[signal.signal_id] = str(
