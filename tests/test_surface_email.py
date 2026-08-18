@@ -975,3 +975,36 @@ def test_surface_never_reorders_signals():
                 calls.add(func.attr)
     assert "sorted" not in calls
     assert "sort" not in calls
+
+
+class TestAClosingLineSaysWhatClosed:
+    """«Закрыто: история закрыта, история велась 4 дня».
+
+    `delta_note` for a resolved storyline is literally the words "история
+    закрыта", so reading it before the headline produced a sentence that never
+    names its subject. Twenty-seven of them ended the digest every morning.
+    """
+
+    def test_the_subject_is_named(self):
+        signal = digest_item(
+            headline="AWS Bedrock отключает Cohere Command R.",
+            delta_status=DeltaStatus.RESOLVED,
+            delta_note="история закрыта",
+            days_tracked=4,
+        )
+
+        line = surface._closing_line([signal])
+
+        assert "Cohere Command R" in line
+        assert "история закрыта" not in line
+        assert ".," not in line
+
+    def test_it_falls_back_to_the_note_when_there_is_no_headline(self):
+        signal = digest_item(
+            headline="",
+            delta_status=DeltaStatus.RESOLVED,
+            delta_note="история закрыта",
+            days_tracked=2,
+        )
+
+        assert surface._closing_line([signal])
