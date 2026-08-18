@@ -133,15 +133,25 @@ class RunLog:
         reason_code: str,
         stage: str,
         note: str | None = None,
+        item_key: str | None = None,
     ) -> None:
-        """Nothing dropped disappears: it stays visible with a reason (FR-3.3)."""
+        """Nothing dropped disappears: it stays visible with a reason (FR-3.3).
+
+        Keyed by the material rather than by its address. One deprecation page
+        hands over ten sections under a single anchor, so the URL identified
+        nine of them as the same row: the funnel reported ten dropped and the
+        page could name one.
+        """
+        key = item_key or url
         with self.conn:
             self.conn.execute(
-                "INSERT INTO filtered_items (run_id, url, title, reason_code, reason_note, stage) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, url, stage) DO UPDATE SET "
+                "INSERT INTO filtered_items "
+                "(run_id, url, title, reason_code, reason_note, stage, item_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id, item_key, stage) DO UPDATE SET "
                 "title = excluded.title, reason_code = excluded.reason_code, "
                 "reason_note = excluded.reason_note",
-                (self.run_id, url, title, reason_code, note, stage),
+                (self.run_id, url, title, reason_code, note, stage, key),
             )
 
     def model_call(

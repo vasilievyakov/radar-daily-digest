@@ -587,6 +587,9 @@ class RelevanceFilter:
                 reason_code=code,
                 stage=STAGE,
                 note=note,
+                # Ten sections of one page share an anchor; the cluster is what
+                # tells them apart.
+                item_key=decision.cluster.cluster_id,
             )
         if self.journal is not None:
             self.journal.record(

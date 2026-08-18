@@ -17,22 +17,35 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
+from radar.backfill import persist_statements
 from radar.cluster import cluster_items
 from radar.collect import collect_all
 from radar.config import ThemeConfig
-from radar.contracts import Enricher
+from radar.contracts import Enricher, EnrichResult
 from radar.db import publish_signals
-from radar.delta import compute_delta, prune_state, resolve_expired, save_state
+from radar.delta import (
+    compute_delta,
+    filter_unseen,
+    prune_state,
+    resolve_expired,
+    save_state,
+)
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
-from radar.models import DatePrecision, Fact, FactKind, Signal, Tier
-from radar.backfill import persist_statements
-from radar.contracts import EnrichResult
 from radar.normalize import subject_identity
+from radar.models import (
+    DatePrecision,
+    Fact,
+    FactKind,
+    Signal,
+    SourceStatus,
+    Tier,
+)
 from radar.publish import (
     MONTHS_GENITIVE,
     build_quiet_day,
@@ -492,8 +505,32 @@ class DailyRun:
             items, outcomes = collect_all(
                 self.config, self.fetcher, self.log, sources=self.sources
             )
+            record["in_count"] = len(items)
+            # A retirement table is dated entirely in the future, so a window
+            # measured against the event date passes every row of it every
+            # day, forever: forty rows arrived as today's news each morning
+            # and a quiet day could never happen. Freshness is first sighting,
+            # which only a stage with history can know.
+            items = filter_unseen(self.conn, items, as_of=self.for_date)
             record["out_count"] = len(items)
         result.collected = len(items)
+
+        # collect_all writes source_runs before the gate, so a table that
+        # answered with seventeen familiar rows would be filed as "ok, 17" next
+        # to an empty digest. The upsert lets the truth land after the gate.
+        fresh = Counter(str(item.extra.get("source_id", "")) for item in items)
+        for outcome in outcomes:
+            if outcome.status is SourceStatus.OK and not fresh.get(outcome.source_id):
+                self.log.source_result(
+                    outcome.source_id,
+                    SourceStatus.QUIET,
+                    items_count=0,
+                    latency_ms=outcome.latency_ms,
+                    error=(
+                        "проверен, новых записей нет; "
+                        f"всего на источнике {outcome.count}"
+                    ),
+                )
         self.journal.checkpoint("collect", item_count=len(items))
 
         result.failed_stage = "cluster"
@@ -776,6 +813,7 @@ class DailyRun:
                     title=scored.signal.headline,
                     reason_code="ниже_порога_публикации",
                     stage="score",
+                    item_key=scored.signal.signal_id,
                     note=f"оценка {scored.breakdown.score}, порог "
                     f"{self.config.scoring.get('digest_threshold')}",
                 )

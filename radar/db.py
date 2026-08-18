@@ -179,7 +179,12 @@ CREATE TABLE IF NOT EXISTS filtered_items (
     reason_code TEXT NOT NULL,
     reason_note TEXT,
     stage       TEXT NOT NULL,
-    PRIMARY KEY (run_id, url, stage)
+    -- The material, not its address. A deprecation table hands over ten
+    -- sections under one anchor, and keying by URL made nine of the ten
+    -- rejections overwrite each other: the funnel said "10 dropped" and the
+    -- page could account for one. FR-3.3 asks that nothing dropped disappear.
+    item_key    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, item_key, stage)
 );
 
 CREATE TABLE IF NOT EXISTS model_calls (
@@ -256,10 +261,40 @@ def migrate_event_key(conn: sqlite3.Connection) -> str | None:
     return None
 
 
+def migrate_filtered_key(conn: sqlite3.Connection) -> None:
+    """Rekey filtered_items from the URL to the material.
+
+    SQLite cannot alter a primary key, so the table is rebuilt. Old rows keep
+    their URL as the key, which is what they were stored under anyway.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(filtered_items)")}
+    if not columns or "item_key" in columns:
+        return
+    conn.executescript(
+        "ALTER TABLE filtered_items RENAME TO filtered_items_old;\n"
+        "CREATE TABLE filtered_items (\n"
+        "    run_id      TEXT NOT NULL,\n"
+        "    url         TEXT NOT NULL,\n"
+        "    title       TEXT NOT NULL,\n"
+        "    reason_code TEXT NOT NULL,\n"
+        "    reason_note TEXT,\n"
+        "    stage       TEXT NOT NULL,\n"
+        "    item_key    TEXT NOT NULL DEFAULT '',\n"
+        "    PRIMARY KEY (run_id, item_key, stage)\n"
+        ");\n"
+        "INSERT OR IGNORE INTO filtered_items "
+        "(run_id, url, title, reason_code, reason_note, stage, item_key) "
+        "SELECT run_id, url, title, reason_code, reason_note, stage, url "
+        "FROM filtered_items_old;\n"
+        "DROP TABLE filtered_items_old;\n"
+    )
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(DDL)
     migrate_event_key(conn)
+    migrate_filtered_key(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

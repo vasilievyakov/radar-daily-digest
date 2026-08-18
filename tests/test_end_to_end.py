@@ -453,3 +453,42 @@ class TestTheLoopCloses:
         # while the published subject does not. What must hold is that the
         # corpus learned something from a run that published something.
         assert stored and published
+
+
+class TestTheFunnelNamesEveryDrop:
+    """FR-3.3: nothing dropped disappears. It was disappearing.
+
+    `filtered_items` was keyed by (run, url, stage), and a deprecation page
+    hands over ten sections under one anchor. Nine of the ten rejections
+    overwrote each other, so a run that dropped ten materials could account
+    for one, and the arithmetic on the run-log page did not close.
+    """
+
+    def test_every_dropped_material_has_its_own_row(self, run_result, conn):
+        run, result = run_result
+        dropped = conn.execute(
+            "SELECT count(*) FROM filtered_items WHERE run_id = ?", (run.run_id,)
+        ).fetchone()[0]
+        distinct_keys = conn.execute(
+            "SELECT count(DISTINCT item_key) FROM filtered_items WHERE run_id = ?",
+            (run.run_id,),
+        ).fetchone()[0]
+
+        assert dropped == distinct_keys
+        # The funnel: what came in, what came out, what is accounted for.
+        assert result.clusters - result.relevant <= dropped + result.enriched
+
+    def test_two_sections_of_one_page_are_two_rows(self, conn, config, tmp_path):
+        from radar.runlog import RunLog
+
+        log = RunLog(conn, "run-funnel", TODAY)
+        one_url = "https://docs.claude.com/en/docs/about-claude/model-deprecations#model-status"
+        log.filtered(url=one_url, title="Model status - claude-opus-5",
+                     reason_code="дубль_вчерашнего", stage="filter", item_key="c1")
+        log.filtered(url=one_url, title="Model status - claude-sonnet-5",
+                     reason_code="дубль_вчерашнего", stage="filter", item_key="c2")
+
+        rows = conn.execute(
+            "SELECT title FROM filtered_items WHERE run_id = 'run-funnel'"
+        ).fetchall()
+        assert len(rows) == 2, "one anchor swallowed the other section"

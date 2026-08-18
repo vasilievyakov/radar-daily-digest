@@ -128,6 +128,7 @@ class _CallLog:
         reason_code: str,
         stage: str,
         note: str | None = None,
+        item_key: str | None = None,
     ) -> None:
         with self._lock:
             self.drops.append(
@@ -136,6 +137,7 @@ class _CallLog:
                     "title": title,
                     "reason_code": reason_code,
                     "stage": stage,
+                    "item_key": item_key or url,
                     "note": note,
                 }
             )
@@ -202,8 +204,8 @@ class _CallLog:
             for drop in self.drops:
                 conn.execute(
                     "INSERT INTO filtered_items (run_id, url, title, reason_code, "
-                    "reason_note, stage) VALUES (?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(run_id, url, stage) DO UPDATE SET "
+                    "reason_note, stage, item_key) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(run_id, item_key, stage) DO UPDATE SET "
                     "reason_code = excluded.reason_code",
                     (
                         run_id,
@@ -212,6 +214,7 @@ class _CallLog:
                         drop["reason_code"],
                         drop["note"],
                         drop["stage"],
+                        drop.get("item_key") or drop["url"],
                     ),
                 )
         tokens_in = tokens_out = 0
