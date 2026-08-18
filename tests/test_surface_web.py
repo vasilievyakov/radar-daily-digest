@@ -1243,7 +1243,17 @@ def test_unparsable_fact_value_is_printed_verbatim():
 
 # -- architecture ------------------------------------------------------
 
-ALLOWED_RADAR_MODULES = {"radar.models", "radar.db", "radar.journal"}
+# A surface may read the contract and the store, and may share code with
+# another surface — `radar.surfaces.feed` writes the same signals as a document
+# for the native client. What it may not touch is the pipeline: collect, enrich,
+# filter, score. The list is the boundary, so widening it is a decision someone
+# has to make on purpose.
+ALLOWED_RADAR_MODULES = {
+    "radar.models",
+    "radar.db",
+    "radar.journal",
+    "radar.surfaces.feed",
+}
 
 
 def test_surface_imports_nothing_from_the_pipeline():
@@ -1382,10 +1392,11 @@ def test_build_site_writes_three_linked_pages(tmp_path):
     seed_store(db_path)
     paths = web.build_site(db_path, tmp_path / "site", today=TODAY)
 
-    assert set(paths) == {"digest", "run_log", "corpus"}
-    for path in paths.values():
+    assert set(paths) == {"digest", "run_log", "corpus", "feed"}
+    for name, path in paths.items():
         assert path.exists()
-        assert_page_contract(path.read_text(encoding="utf-8"))
+        if name != "feed":
+            assert_page_contract(path.read_text(encoding="utf-8"))
 
     digest = paths["digest"].read_text(encoding="utf-8")
     run_log = paths["run_log"].read_text(encoding="utf-8")

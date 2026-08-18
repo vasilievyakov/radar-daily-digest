@@ -335,6 +335,16 @@ struct Lenient<K: CodingKey> {
         return fallback
     }
 
+    func double(_ key: K, default fallback: Double) -> Double {
+        guard let container else { return fallback }
+        if let v = try? container.decodeIfPresent(Double.self, forKey: key) { return v }
+        if let v = try? container.decodeIfPresent(Int.self, forKey: key) { return Double(v) }
+        if let v = try? container.decodeIfPresent(String.self, forKey: key), let d = Double(v) {
+            return d
+        }
+        return fallback
+    }
+
     func bool(_ key: K, default fallback: Bool) -> Bool {
         guard let container else { return fallback }
         if let v = try? container.decodeIfPresent(Bool.self, forKey: key) { return v }
@@ -381,6 +391,23 @@ struct Lenient<K: CodingKey> {
             } else if let v = try? nested.decode(String.self, forKey: k), let i = Int(v) {
                 out[k.stringValue] = i
             }
+        }
+        return out
+    }
+
+    func stringList(_ key: K) -> [String] {
+        guard let container, var unkeyed = try? container.nestedUnkeyedContainer(forKey: key) else {
+            return []
+        }
+        var out: [String] = []
+        while !unkeyed.isAtEnd {
+            let cursor = unkeyed.currentIndex
+            if let v = try? unkeyed.decode(String.self) {
+                out.append(v)
+            } else {
+                _ = try? unkeyed.decode(SkipOne.self)
+            }
+            if unkeyed.currentIndex == cursor { break }
         }
         return out
     }
@@ -524,6 +551,77 @@ public struct RetrievalReport: Decodable, Hashable, Sendable {
     }
 }
 
+// MARK: - Run summary
+
+/// Facts about the run, carried on every signal because a surface may not read
+/// the run tables (SUR-1). The footer naming unreachable sources is built from
+/// this and nothing else.
+public struct RunSummary: Decodable, Hashable, Sendable {
+    public let sourcesChecked: Int
+    public let sourcesFailed: [String]
+    /// Reached, answered, and yielded nothing extractable. A different fault
+    /// from unreachable, and named separately so the footer can say which.
+    public let sourcesEmpty: [String]
+    public let materialsCollected: Int
+    public let materialsFiltered: Int
+    public let lastSuccessDate: CalendarDay?
+    public let costUSD: Double
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case sourcesChecked = "sources_checked"
+        case sourcesFailed = "sources_failed"
+        case sourcesEmpty = "sources_empty"
+        case materialsCollected = "materials_collected"
+        case materialsFiltered = "materials_filtered"
+        case lastSuccessDate = "last_success_date"
+        case costUSD = "cost_usd"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let r = Lenient(decoder, keyedBy: CodingKeys.self)
+        guard r.isObject else { throw r.notAnObject(decoder) }
+        sourcesChecked = r.int(.sourcesChecked, default: 0)
+        sourcesFailed = r.stringList(.sourcesFailed)
+        sourcesEmpty = r.stringList(.sourcesEmpty)
+        materialsCollected = r.int(.materialsCollected, default: 0)
+        materialsFiltered = r.int(.materialsFiltered, default: 0)
+        lastSuccessDate = r.string(.lastSuccessDate).flatMap(CalendarDay.init(iso:))
+        costUSD = r.double(.costUSD, default: 0)
+    }
+}
+
+// MARK: - Upcoming deadline
+
+/// A dated obligation the core already extracted, shown when the day is quiet
+/// (MAC-5). Every field comes from a verified fact, not from a fresh inference.
+public struct UpcomingDeadline: Decodable, Hashable, Sendable, Identifiable {
+    public var id: String { "\(whenRaw ?? "")|\(what)" }
+
+    public let when: CalendarDay?
+    public let whenRaw: String?
+    public let what: String
+    public let vendor: String?
+    public let sourceURL: String?
+    public let datePrecision: DatePrecision
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case when, what, vendor
+        case sourceURL = "source_url"
+        case datePrecision = "date_precision"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let r = Lenient(decoder, keyedBy: CodingKeys.self)
+        guard r.isObject else { throw r.notAnObject(decoder) }
+        whenRaw = r.string(.when)
+        when = whenRaw.flatMap(CalendarDay.init(iso:))
+        what = r.string(.what, default: "")
+        vendor = r.string(.vendor)
+        sourceURL = r.string(.sourceURL)
+        datePrecision = r.value(.datePrecision, as: DatePrecision.self) ?? .day
+    }
+}
+
 // MARK: - Signal
 
 public struct Signal: Decodable, Hashable, Sendable, Identifiable {
@@ -552,11 +650,25 @@ public struct Signal: Decodable, Hashable, Sendable, Identifiable {
 
     public let deltaStatus: DeltaStatus?
     public let deltaNote: String?
+    /// A storyline already told with nothing new to say. The core decides this,
+    /// never the client: judging significance is exactly what SUR-2 forbids.
+    public let inProgress: Bool
     public let daysTracked: Int
     public let contextLabel: ContextLabel?
     public let trendID: String?
     public let precedents: [Precedent]
     public let retrieval: RetrievalReport?
+    /// The sentence above the precedent list, composed by the core. Composing
+    /// it here would mean recounting the corpus, and three surfaces would word
+    /// the same claim three ways.
+    public let contextNote: String?
+
+    /// The date the card leads with, chosen once by the core. Picking it from
+    /// `facts` was how a card about today's news came to say "expired 649 days
+    /// ago": each consumer took a different dated fact.
+    public let dueDate: CalendarDay?
+    public let dueDateRaw: String?
+    public let duePrecision: DatePrecision
 
     /// Never rendered as a number (voice.md 8). Read by the local notification
     /// threshold only (MAC-9); the order stays exactly as the core set it.
@@ -565,8 +677,13 @@ public struct Signal: Decodable, Hashable, Sendable, Identifiable {
     public let rank: Int
     public let tier: Tier
 
+    public let runSummary: RunSummary?
+    /// Populated on a quiet day: what the reader filed away and is now due.
+    public let upcoming: [UpcomingDeadline]
+
     public let stats: [String: Int]
     public let failureReason: String?
+    public let failureStage: String?
     public let runLogURL: String?
 
     /// Present in the payload, unknown to this build. Shown nowhere, available
@@ -575,7 +692,7 @@ public struct Signal: Decodable, Hashable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case headline, summary, vendor, product, facts, precedents, retrieval, score, rank, tier,
-            stats
+            stats, upcoming
         case schemaVersion = "schema_version"
         case signalID = "signal_id"
         case runID = "run_id"
@@ -592,12 +709,24 @@ public struct Signal: Decodable, Hashable, Sendable, Identifiable {
         case contextLabel = "context_label"
         case trendID = "trend_id"
         case scoreRationale = "score_rationale"
+        case inProgress = "in_progress"
+        case contextNote = "context_note"
+        case dueDate = "due_date"
+        case duePrecision = "due_precision"
+        case runSummary = "run_summary"
         case failureReason = "failure_reason"
+        case failureStage = "failure_stage"
         case runLogURL = "run_log_url"
     }
 
     public init(from decoder: any Decoder) throws {
         let r = Lenient(decoder, keyedBy: CodingKeys.self)
+        // Fact and Precedent refused a payload that is not an object; Signal
+        // did not, so a bare number in the signals array decoded into a signal
+        // with every field at its default — a blank card, indistinguishable on
+        // screen from a real one the core wrote badly. Tolerance is for fields,
+        // not for the shape.
+        guard r.isObject else { throw r.notAnObject(decoder) }
         schemaVersion = r.int(.schemaVersion, default: 0)
         signalID = r.string(.signalID, default: "")
         runID = r.string(.runID, default: "")
@@ -620,19 +749,29 @@ public struct Signal: Decodable, Hashable, Sendable, Identifiable {
 
         deltaStatus = r.value(.deltaStatus, as: DeltaStatus.self)
         deltaNote = r.string(.deltaNote)
+        inProgress = r.bool(.inProgress, default: false)
         daysTracked = r.int(.daysTracked, default: 0)
         contextLabel = r.value(.contextLabel, as: ContextLabel.self)
         trendID = r.string(.trendID)
         precedents = r.list(.precedents, of: Precedent.self)
         retrieval = r.value(.retrieval, as: RetrievalReport.self)
+        contextNote = r.string(.contextNote)
+
+        dueDateRaw = r.string(.dueDate)
+        dueDate = dueDateRaw.flatMap(CalendarDay.init(iso:))
+        duePrecision = r.value(.duePrecision, as: DatePrecision.self) ?? .day
 
         score = r.int(.score, default: 0)
         scoreRationale = r.string(.scoreRationale, default: "")
         rank = r.int(.rank, default: 0)
         tier = r.value(.tier, as: Tier.self) ?? .standard
 
+        runSummary = r.value(.runSummary, as: RunSummary.self)
+        upcoming = r.list(.upcoming, of: UpcomingDeadline.self)
+
         stats = r.intMap(.stats)
         failureReason = r.string(.failureReason)
+        failureStage = r.string(.failureStage)
         runLogURL = r.string(.runLogURL)
 
         unknownFields = Lenient<CodingKeys>.unknownFields(

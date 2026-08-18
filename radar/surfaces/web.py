@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from radar.db import connect, corpus_readiness, dump_state, read_signals
+from radar.surfaces.feed import write_feed
 from radar.models import (
     ChangeType,
     ContextLabel,
@@ -229,11 +230,13 @@ QUIET_DAY_LEAD = "Сегодня в вашем стеке ничего не из
 
 @dataclass(frozen=True)
 class PageLinks:
-    """Filenames of the three pages, so they can be renamed as a set."""
+    """Filenames of the published artifacts, so they can be renamed as a set."""
 
     digest: str = "digest.html"
     run_log: str = "run-log.html"
     corpus: str = "corpus.html"
+    # Not a page: the same signals as a document for a native client (MAC-3).
+    feed: str = "signals.json"
 
 
 DEFAULT_LINKS = PageLinks()
@@ -2454,7 +2457,19 @@ def build_site(
     }
     for path, html_text in pages.values():
         path.write_text(html_text, encoding="utf-8")
-    return {name: path for name, (path, _) in pages.items()}
+
+    # The same run as a document. Written last and atomically: a client that
+    # watches the feed for changes should not wake up to a digest whose pages
+    # are still half-written.
+    written = {name: path for name, (path, _) in pages.items()}
+    written["feed"] = write_feed(
+        signals,
+        out / links.feed,
+        for_date=today,
+        run_id=target_run,
+        now=now,
+    )
+    return written
 
 
 def reference_date(
