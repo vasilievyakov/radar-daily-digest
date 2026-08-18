@@ -2126,6 +2126,10 @@ def render_corpus(
 # -- assembly ----------------------------------------------------------
 
 
+class UnknownRun(LookupError):
+    """The run being published is not in the store this database holds."""
+
+
 def build_site(
     db_path: str | Path,
     out_dir: str | Path,
@@ -2137,12 +2141,29 @@ def build_site(
     names: Names | None = None,
     now: datetime | None = None,
 ) -> dict[str, Path]:
-    """Write the three pages. Read-only on the store, by connection mode."""
+    """Write the three pages. Read-only on the store, by connection mode.
+
+    Refuses to publish a run the store does not have. `--out` defaults to the
+    same directory whatever database is open, so a run against a sandbox copy
+    published over the real pages: three times in one hour the site became
+    "nothing changed today, 0 sources checked" from a run_id that exists in no
+    table. An empty page is not obviously wrong to a reader — it is a confident
+    statement that nothing happened.
+    """
     names = names if names is not None else theme_names(config)
     conn = connect(db_path, read_only=True)
     try:
         signals = read_signals(conn, run_id)
         target_run = run_id or (signals[0].run_id if signals else None)
+        if target_run is not None:
+            known = conn.execute(
+                "SELECT 1 FROM runs WHERE run_id = ?", (target_run,)
+            ).fetchone()
+            if known is None:
+                raise UnknownRun(
+                    f"прогона {target_run} нет в хранилище {db_path}: "
+                    "страницы не собраны"
+                )
         run = load_run_log(conn, target_run)
         corpus = load_corpus(conn, config)
     finally:

@@ -1652,3 +1652,42 @@ class TestTheCardDoesNotSayItTwice:
         card = web.render_card(signal, date(2026, 8, 18), lead=True)
 
         assert "Замена" in card
+
+
+class TestOnlyAKnownRunIsPublished:
+    """Three times in one hour the site became "0 sources checked".
+
+    `--out` defaulted to the same directory whatever database was open, so a
+    run against a sandbox copy published over the real pages. The result is not
+    obviously broken to a reader: it is a confident page saying nothing
+    happened today, from a run_id that exists in no table.
+    """
+
+    def test_a_run_absent_from_the_store_is_refused(self, tmp_path):
+        db = tmp_path / "empty.db"
+        conn = init_db(db)
+        conn.close()
+
+        with pytest.raises(web.UnknownRun) as caught:
+            web.build_site(db, tmp_path / "out", today=date(2026, 8, 18),
+                           run_id="20260818T064508-73e8a6")
+
+        assert "20260818T064508-73e8a6" in str(caught.value)
+        assert not (tmp_path / "out" / "digest.html").exists()
+
+    def test_a_run_in_the_store_publishes(self, tmp_path):
+        db = tmp_path / "real.db"
+        conn = init_db(db)
+        signal = make_lead_signal(run_id="run-known")
+        publish_signals(conn, "run-known", [signal])
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) "
+            "VALUES ('run-known', '2026-08-18T06:00:00+00:00', 'ok', '2026-08-18')"
+        )
+        conn.commit()
+        conn.close()
+
+        paths = web.build_site(db, tmp_path / "out", today=date(2026, 8, 18),
+                               run_id="run-known")
+
+        assert paths["digest"].exists()

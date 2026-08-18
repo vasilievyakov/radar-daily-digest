@@ -901,8 +901,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise SkipPages
         from radar.surfaces.web import build_site
 
+        # Beside the database, not beside the process. A run against a
+        # sandbox copy published over the real pages three times in one hour,
+        # each time replacing the digest with "0 sources checked".
+        out_dir = args.out or (Path(args.db).resolve().parent.parent / "out")
         paths = build_site(
-            args.db, args.out, today=run.for_date, run_id=run.run_id,
+            args.db, out_dir, today=run.for_date, run_id=run.run_id,
             config=config.data,
         )
         print(f"Страницы: {paths['digest']}")
@@ -1062,7 +1066,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_cmd.add_argument("--sources", help="ограничить источники, через запятую")
     run_cmd.add_argument(
-        "--out", default="out", help="куда положить страницы после прогона"
+        "--out",
+        default=None,
+        help="куда положить страницы; по умолчанию каталог out рядом с базой",
     )
     run_cmd.add_argument(
         "--no-pages", action="store_true", help="не пересобирать страницы"
