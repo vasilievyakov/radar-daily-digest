@@ -541,7 +541,16 @@ class TestQuietDayIsStillDelivered:
                 "enrich": lambda self, i, s: EnrichResult(source_id="s", url=i.url)
             })(),
         )
-        monkeypatch.setattr("radar.run.collect_all", lambda *a, **k: ([], []))
+        # Sources answered; nothing of theirs was worth publishing. That is a
+        # quiet day, and it is the case PUB-4 is about.
+        from radar.collect import SourceOutcome
+        from radar.models import SourceStatus
+
+        monkeypatch.setattr(
+            "radar.run.collect_all",
+            lambda *a, **k: ([], [SourceOutcome("anthropic_model_deprecations",
+                                                SourceStatus.QUIET)]),
+        )
 
         cli.main([
             "--db", str(tmp_path / "r.db"), "--cache", str(tmp_path / "c"),
@@ -549,3 +558,35 @@ class TestQuietDayIsStillDelivered:
         ])
         assert sent, "тихий день не доставлен"
         assert sent[0][0].signal_type.value == "quiet_day"
+
+    def test_a_run_that_reached_nothing_is_delivered_as_a_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """Not as a quiet day: the channel must not carry a calm sentence
+        about a morning the agent never saw."""
+        from radar import cli
+        from radar.contracts import EnrichResult
+
+        sent: list = []
+
+        def spy(signals):
+            sent.append(signals)
+            return type("R", (), {"ok": True, "message_id": 1, "error": None})()
+
+        monkeypatch.setattr("radar.surfaces.telegram.send_digest", spy)
+        monkeypatch.setattr(
+            cli, "_build_enricher",
+            lambda *a, **k: type("E", (), {
+                "enrich": lambda self, i, s: EnrichResult(source_id="s", url=i.url)
+            })(),
+        )
+        monkeypatch.setattr("radar.run.collect_all", lambda *a, **k: ([], []))
+
+        cli.main([
+            "--db", str(tmp_path / "r.db"), "--cache", str(tmp_path / "c"),
+            "run", "--no-filter", "--deliver", "--log-dir", str(tmp_path / "l"),
+        ])
+
+        assert sent, "молчание не доставлено вовсе"
+        assert sent[0][0].signal_type.value == "run_failure"
+        assert "ничего не изменилось" not in sent[0][0].headline

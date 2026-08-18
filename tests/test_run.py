@@ -1,5 +1,5 @@
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -824,3 +824,102 @@ class TestEverySignalLinksItsRunLog:
                        for_date=TODAY, log_dir=str(tmp / "logs"))
 
         assert run.run_log_url == "https://radar.test/run-log.html"
+
+
+class TestTheLineThatAsksForAction:
+    """«Почему это важно» is the one line written to make somebody act.
+
+    It was also the one line nobody proof-read: fourteen cards of thirty-four
+    said "срок наступает через 1 дней", and the clause after the full stop
+    began in lower case. Two lines above, on the same card, a surface with a
+    plural helper printed "через 241 день" correctly — the helper lived in
+    email.py, where the core could not reach it.
+    """
+
+    @staticmethod
+    def _cluster_and_facts(days_ahead: int):
+        item = CollectedItem(
+            url="https://docs.claude.com/deprecations",
+            title="Model deprecations",
+            raw_text="",
+            raw_material_ref="ref",
+            extra={"source_id": "anthropic_model_deprecations"},
+        )
+        cluster = Cluster(cluster_id="c1", dedup_key="d1", items=[item],
+                          vendor="anthropic", change_type="deprecation")
+        when = date(2026, 8, 18) + timedelta(days=days_ahead)
+        facts = [
+            Fact(kind=FactKind.SUNSET_DATE, value=when.isoformat(),
+                 source_url=item.url, evidence="shutdown", value_date=when,
+                 subject="claude-3-opus", evidence_verified=True),
+            Fact(kind=FactKind.AFFECTED_PRODUCT, value="claude-3-opus",
+                 source_url=item.url, evidence="claude-3-opus",
+                 evidence_verified=True),
+        ]
+        return cluster, facts
+
+    @pytest.mark.parametrize(
+        "days_ahead,expected",
+        [(1, "через 1 день"), (2, "через 2 дня"), (5, "через 5 дней"),
+         (11, "через 11 дней"), (21, "через 21 день"), (241, "через 241 день"),
+         (642, "через 642 дня")],
+    )
+    def test_the_number_of_days_agrees(self, days_ahead, expected):
+        cluster, facts = self._cluster_and_facts(days_ahead)
+        text = run_module._why_it_matters(cluster, facts, date(2026, 8, 18))
+        assert expected in text
+
+    def test_every_clause_starts_with_a_capital(self):
+        cluster, facts = self._cluster_and_facts(5)
+        text = run_module._why_it_matters(cluster, facts, date(2026, 8, 18))
+
+        clauses = [part.strip() for part in text.split(". ") if part.strip()]
+        assert len(clauses) > 1
+        for clause in clauses:
+            assert clause[0].isupper(), f"строчная после точки: {clause!r}"
+
+    def test_an_identifier_keeps_its_case(self):
+        cluster, facts = self._cluster_and_facts(5)
+        text = run_module._why_it_matters(cluster, facts, date(2026, 8, 18))
+        assert "claude-3-opus" in text
+
+
+class TestNotKnowingIsNotQuiet:
+    """«Проверено 0 источников» under «Сегодня ничего не изменилось».
+
+    The two states rendered identically: same headline, same calm tone, the
+    count one line below in smaller type. A run that reached nothing told the
+    reader with complete confidence that nothing had happened — which is the
+    single failure this product exists to prevent, arriving through its own
+    front door.
+    """
+
+    def test_a_run_that_checked_nothing_does_not_claim_a_quiet_day(
+        self, env, monkeypatch
+    ):
+        conn, config, fetcher, tmp = env
+        # Nothing collected and nobody checked: an unreachable network, a
+        # misconfigured source list, a filesystem that lost the config.
+        monkeypatch.setattr(run_module, "collect_all", lambda *a, **k: ([], []))
+        result = DailyRun(
+            conn, config, fetcher, FakeEnricher([sunset_fact()]),
+            for_date=TODAY, log_dir=str(tmp / "logs"),
+        ).execute()
+
+        stored = read_signals(conn, result.run_id)
+        assert stored
+        assert stored[0].signal_type is SignalType.RUN_FAILURE
+        assert "ничего не изменилось" not in stored[0].headline
+        assert stored[0].failure_reason
+
+    def test_a_real_quiet_day_still_reads_as_one(self, env, monkeypatch):
+        conn, config, fetcher, tmp = env
+        # Sources answered, nothing of theirs was significant enough.
+        run = DailyRun(conn, config, fetcher, FakeEnricher([]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        monkeypatch.setattr(run, "_assemble_and_rank", lambda *a, **k: [])
+        result = run.execute()
+
+        stored = read_signals(conn, result.run_id)
+        assert stored[0].signal_type is SignalType.QUIET_DAY
+        assert stored[0].run_summary.sources_checked > 0

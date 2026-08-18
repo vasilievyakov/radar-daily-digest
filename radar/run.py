@@ -37,6 +37,7 @@ from radar.delta import (
 )
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
+from radar.language import days as russian_days, sentence as russian_sentence
 from radar.normalize import subject_identity
 from radar.models import (
     DatePrecision,
@@ -411,7 +412,9 @@ def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
         )
         what = f"{subject}: " if subject else ""
         reasons.append(
-            f"{what}срок наступает через {days} дней" if days else f"{what}срок сегодня"
+            f"{what}срок наступает через {russian_days(days)}"
+            if days
+            else f"{what}срок сегодня"
         )
     if cluster.change_type in {"deprecation", "breaking_change"}:
         reasons.append("работающий код перестанет работать без правки")
@@ -420,8 +423,11 @@ def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
     products = [f.value for f in facts if str(f.kind) == "affected_product"][:3]
     if products:
         reasons.append("затронуто: " + ", ".join(products))
-    joined = ". ".join(reasons)
-    return joined[:1].upper() + joined[1:] if joined else ""
+    # Every clause, not only the first: joining with ". " and capitalising once
+    # produced "Работающий код перестанет работать без правки. затронуто: …" on
+    # the one line of the card written to make somebody get up and fix
+    # something.
+    return ". ".join(russian_sentence(reason) for reason in reasons if reason)
 
 
 class DailyRun:
@@ -698,7 +704,22 @@ class DailyRun:
 
         result.failed_stage = "publish"
         with self.log.stage("publish", in_count=len(signals)) as record:
-            if not signals:
+            if not signals and summary.sources_checked == 0:
+                # Zero sources checked is not a quiet day, it is not knowing.
+                # The two rendered identically — same headline, same calm tone,
+                # with "0 sources checked" one line below in smaller type — so
+                # a run that reached nothing said "nothing changed in your
+                # stack" with complete confidence.
+                signals = [
+                    build_run_failure(
+                        self.run_id, self.for_date, "collect",
+                        "ни один источник не проверен: сказать о сегодняшнем "
+                        "дне нечего",
+                        summary, run_log_url=self.run_log_url,
+                    )
+                ]
+                result.failed_stage = "collect"
+            elif not signals:
                 # PUB-4: silence is delivered as a record, not as nothing.
                 signals = [
                     build_quiet_day(
