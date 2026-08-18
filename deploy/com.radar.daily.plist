@@ -16,6 +16,16 @@
     <key>Label</key>
     <string>com.radar.daily</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <!-- The model backend is a program in ~/.local/bin, and launchd starts
+             with a PATH that does not contain it. Worse, in an interactive
+             shell `claude` resolves to a function defined in .zshrc, so it
+             works by hand and vanishes under the scheduler: the run then filters
+             nothing, enriches from cache alone, and reports success. -->
+        <string>/Users/vasiliev/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>

@@ -37,6 +37,7 @@ from radar.delta import (
 )
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
+from radar.llm import LLMError
 from radar.language import (
     count as russian_count,
     days as russian_days,
@@ -495,6 +496,15 @@ def _why_it_matters(
     return ". ".join(russian_sentence(reason) for reason in reasons if reason)
 
 
+class FilterDidNotRun(RuntimeError):
+    """The significance stage produced no judgement at all.
+
+    Distinct from a stage that judged and kept everything, which is a legitimate
+    if improbable outcome, and from one source failing. This is the tool being
+    absent — and the honest report of it is a failed run, not a full digest.
+    """
+
+
 class DailyRun:
     def __init__(
         self,
@@ -841,6 +851,21 @@ class DailyRun:
         except Exception as exc:  # a derived view must not fail the run
             self.log.note(f"не удалось пересчитать тренды: {exc}")
 
+        # Every model call served from cache means the run reproduced an older
+        # answer rather than reading today's pages. Legitimate on a rerun of the
+        # same day; a silent failure when material is new, because nothing was
+        # actually judged or extracted. Named either way — the number is on the
+        # page and the reader can see which kind of run this was.
+        live_calls = self.conn.execute(
+            "SELECT COUNT(*) FROM model_calls WHERE run_id = ? AND cached = 0",
+            (self.run_id,),
+        ).fetchone()[0]
+        if enriched and not live_calls:
+            self.log.note(
+                "ни одного живого вызова модели: весь прогон воспроизведён "
+                "из кэша ответов"
+            )
+
         result.failed_stage = "score"
         summary = build_run_summary(
             outcomes,
@@ -902,6 +927,17 @@ class DailyRun:
                 # Passed through without the model having judged it: worth
                 # naming, because it is neither a keep nor a drop.
                 self.log.note(f"{decision.url}: пропущен без решения модели")
+            if clusters and len(outcome.unjudged) == len(clusters):
+                # Every material passed unjudged: the stage ran and decided
+                # nothing. Letting material through beats dropping it when one
+                # source breaks — and is the wrong rule when the model is gone,
+                # because the digest then publishes whatever arrived. Under the
+                # scheduler this happened silently: eighty of eighty passed,
+                # forty-four cards were delivered, exit code 0.
+                raise FilterDidNotRun(
+                    f"фильтр не вынес ни одного суждения о {len(clusters)} "
+                    "материалах: работа не выполнена, публиковать нечего"
+                )
             return outcome.clusters
         except BudgetExceeded:
             raise
@@ -909,6 +945,18 @@ class DailyRun:
             # Not an outage: a name that does not resolve, a signature that
             # does not match. Three times tonight such an error arrived as a
             # calm note about the outside world while the stage did nothing.
+            raise
+        except LLMError:
+            # The model itself is missing or unreachable. "Let material through
+            # rather than drop it" is the right rule for a source that broke;
+            # it is the wrong rule for a filter that cannot run at all. Under
+            # the scheduler the CLI was not on PATH — it is a shell function in
+            # an interactive profile — and every one of eighty materials passed
+            # unjudged into a digest that reported success and delivered
+            # forty-four unchecked cards. A run without its model is a failed
+            # run, and it has to say so.
+            raise
+        except FilterDidNotRun:
             raise
         except Exception as exc:
             self.log.note(f"фильтр не отработал, материалы пропущены дальше: {exc}")

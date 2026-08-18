@@ -161,6 +161,13 @@ class ClaudeCLIClient:
         schema_strict: bool = True,
         cwd: str | None = None,
         thinking_tokens: int | None = 0,
+        # The ceiling from `llm.max_output_tokens`. This backend has no flag to
+        # enforce it — the CLI decides its own output length — so it is stored
+        # and reported rather than silently dropped, and `make_backend` no
+        # longer explodes on a keyword the client did not accept. That crash
+        # only happened under the scheduler, because the tests never build this
+        # client through `make_backend` with a real config.
+        max_tokens: int | None = None,
     ) -> None:
         # Resolved per call, not here: a fully cached replay has to run on a
         # machine with no CLI at all.
@@ -175,6 +182,7 @@ class ClaudeCLIClient:
         self.cwd = cwd
         # None leaves the CLI default; 0 turns extended thinking off.
         self.thinking_tokens = thinking_tokens
+        self.max_tokens = max_tokens
         # stage -> digest of the system prompt it last used.
         self._system_seen: dict[str, str] = {}
 

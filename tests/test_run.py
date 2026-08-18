@@ -1196,3 +1196,65 @@ class TestUnknownVendorsAreNamedNotSwallowed:
         run.execute()
 
         assert not any("вне словаря" in note for note in run.log.notes)
+
+
+class TestAStageThatDecidedNothingFailsTheRun:
+    """Восемьдесят из восьмидесяти прошли фильтр, доставлено сорок четыре, код ноль.
+
+    Under the scheduler the model binary was absent — it is a shell function in
+    an interactive profile, not a program on PATH — so every material passed
+    unjudged and the digest published whatever the collector had brought. The
+    rule "let material through rather than drop it" is right when one source
+    breaks and wrong when the tool is gone: the run then reports success for
+    work it did not do. FR-1.4 and NFR-4 by their spirit — a failure has to be
+    visible.
+    """
+
+    class _Unjudging:
+        """A filter whose model is unreachable: keeps everything, judges none."""
+
+        def run(self, clusters):
+            from radar.filter import FilterDecision, FilterOutcome
+
+            outcome = FilterOutcome(threshold=55)
+            for cluster in clusters:
+                decision = FilterDecision(cluster=cluster, relevant=True,
+                                          threshold=55, error="ClaudeCLINotFound")
+                outcome.kept.append(decision)
+                outcome.unjudged.append(decision)
+            return outcome
+
+    def test_the_run_fails_instead_of_publishing_the_unjudged(self, env):
+        conn, config, fetcher, tmp = env
+        run = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                       relevance_filter=self._Unjudging(),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+
+        result = run.execute()
+
+        assert not result.ok
+        assert result.failed_stage == "filter"
+        stored = read_signals(conn, result.run_id)
+        assert stored and stored[0].signal_type is SignalType.RUN_FAILURE
+
+    def test_a_filter_that_judged_and_kept_everything_is_fine(self, env):
+        """Improbable but legitimate: it decided, and decided yes."""
+        conn, config, fetcher, tmp = env
+
+        class Judging:
+            def run(self, clusters):
+                from radar.filter import FilterDecision, FilterOutcome
+
+                outcome = FilterOutcome(threshold=55)
+                for cluster in clusters:
+                    outcome.kept.append(
+                        FilterDecision(cluster=cluster, relevant=True,
+                                       threshold=55, score=90)
+                    )
+                return outcome
+
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          relevance_filter=Judging(), for_date=TODAY,
+                          log_dir=str(tmp / "logs")).execute()
+
+        assert result.ok
