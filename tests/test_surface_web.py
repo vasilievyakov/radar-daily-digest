@@ -1772,3 +1772,47 @@ class TestOnlyAKnownRunIsPublished:
         )
 
         assert paths["digest"].exists()
+
+
+class TestACachedRunSaysWhatItWouldHaveCost:
+    """A run replayed from the answer cache is fast and free.
+
+    Reporting only what it spent turns a cache hit into a claim about the
+    pipeline: "1:19 and $0.16" went into an acceptance report for a run whose
+    forty-two enrichment calls were all hits and whose sixteen cents bought the
+    filter alone. The figure was computed in llm.py and reached no table.
+    """
+
+    def _run_with(self, tmp_path, rows):
+        conn = init_db(tmp_path / "r.db")
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) "
+            "VALUES ('r1', '2026-08-18T06:00:00+00:00', 'ok', '2026-08-18')"
+        )
+        for index, (stage, spent, full, cached) in enumerate(rows):
+            conn.execute(
+                "INSERT INTO model_calls (call_id, run_id, stage, model, tokens_in, "
+                "tokens_out, cost_usd, cached, original_cost_usd, created_at) "
+                "VALUES (?, 'r1', ?, 'haiku', 10, 10, ?, ?, ?, "
+                "'2026-08-18T06:00:00+00:00')",
+                (f"c{index}", stage, spent, int(cached), full),
+            )
+        conn.commit()
+        return conn
+
+    def test_both_numbers_appear_when_the_cache_did_the_work(self, tmp_path):
+        conn = self._run_with(tmp_path, [
+            ("enrich", 0.0, 0.2726, True),
+            ("filter", 0.1603, 0.1603, False),
+        ])
+        block = web._cost_block(web.load_run_log(conn, "r1"))
+
+        assert "0.16" in block
+        assert "0.43" in block
+        assert "Без кэша" in block
+
+    def test_a_cold_run_does_not_repeat_itself(self, tmp_path):
+        conn = self._run_with(tmp_path, [("enrich", 0.2726, 0.2726, False)])
+        block = web._cost_block(web.load_run_log(conn, "r1"))
+
+        assert "Без кэша" not in block

@@ -1204,6 +1204,10 @@ class StageCost:
     tokens_in: int = 0
     tokens_out: int = 0
     usd: float = 0.0
+    # What the same work costs with nothing cached. A run replayed from the
+    # answer cache is fast and free, and saying so without saying the other
+    # number is how "1:19 and $0.16" got reported as a pipeline improvement.
+    full_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1260,6 +1264,11 @@ class RunLogView:
     @property
     def itemized_usd(self) -> float:
         return sum(cost.usd for cost in self.costs)
+
+    @property
+    def itemized_full_usd(self) -> float:
+        """What this run costs when nothing is served from cache."""
+        return sum(cost.full_usd or cost.usd for cost in self.costs)
 
     @property
     def dropped_total(self) -> int:
@@ -1427,10 +1436,12 @@ def load_run_log(
             tokens_in=row["tokens_in"] or 0,
             tokens_out=row["tokens_out"] or 0,
             usd=row["usd"] or 0.0,
+            full_usd=row["full_usd"] or 0.0,
         )
         for row in conn.execute(
             "SELECT stage, COUNT(*) AS calls, SUM(tokens_in) AS tokens_in, "
-            "SUM(tokens_out) AS tokens_out, SUM(cost_usd) AS usd FROM model_calls "
+            "SUM(tokens_out) AS tokens_out, SUM(cost_usd) AS usd, "
+            "SUM(original_cost_usd) AS full_usd FROM model_calls "
             "WHERE run_id = ? GROUP BY stage ORDER BY usd DESC",
             (run_id,),
         )
@@ -1890,6 +1901,12 @@ def _cost_block(run: RunLogView) -> str:
         f"Токены: {fmt_int(tokens_in)} на вход, {fmt_int(tokens_out)} на выход. "
         f"Стоимость прогона: {fmt_money(usd)}."
     )
+    # Both numbers or neither. A run replayed from the answer cache is fast and
+    # free, and reporting only what it spent turns a cache hit into a claim
+    # about the pipeline.
+    full = run.itemized_full_usd if itemized else usd
+    if itemized and full > usd + 1e-9:
+        head += f" Без кэша ответов та же работа стоила бы {fmt_money(full)}."
     parts = [f"<p>{esc(head)}</p>"]
     if itemized and (run.model_calls != calls or abs(run.usd - usd) > 0.005):
         note = (
