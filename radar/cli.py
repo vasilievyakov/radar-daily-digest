@@ -755,6 +755,9 @@ def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
         return
 
     report = deliver(conn, surfaces, run.run_id, run.journal, run.log)
+    # `finish()` already froze log_json, so the delivery rows recorded above
+    # would never reach the run-log page. Re-flush to fold them in.
+    run.log.flush()
     for channel in report.results:
         state = "доставлено" if channel.delivered else f"не доставлено: {channel.error}"
         print(f"  {channel.channel}: {state}")
@@ -820,6 +823,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Фактов отбраковано:      {result.facts_rejected}")
     print(f"Сигналов записано:       {len(result.signals)}")
     tokens_in, tokens_out = call_log.write(conn, run.run_id)
+    # One run, one cost. The run row counted only what passed through the run
+    # log in memory; enrichment wrote through the buffered log, so the page
+    # showed "counter says $0.42, rows say $4.27" and honestly said so.
+    with conn:
+        conn.execute(
+            "UPDATE runs SET cost_usd = (SELECT COALESCE(SUM(cost_usd), 0) FROM "
+            "model_calls WHERE run_id = ?), model_calls = (SELECT COUNT(*) FROM "
+            "model_calls WHERE run_id = ?), tokens_in = (SELECT COALESCE(SUM(tokens_in), 0) "
+            "FROM model_calls WHERE run_id = ?), tokens_out = (SELECT COALESCE(SUM(tokens_out), 0) "
+            "FROM model_calls WHERE run_id = ?) WHERE run_id = ?",
+            (run.run_id,) * 5,
+        )
     for note in call_log.notes:
         run.log.note(note)
     spent = conn.execute(
@@ -833,7 +848,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not result.ok:
         print(f"Прогон не завершился на стадии {result.failed_stage}: {result.error}")
     print(RULE)
-    if args.deliver and result.signals:
+    if args.deliver:
+        # Not gated on having digest items: a quiet day is a record, and PUB-4
+        # says silence reaches the reader as a message. Gating here meant the
+        # channel stayed untouched on exactly the day worth speaking about.
         _deliver_run(conn, run, result)
 
     print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")

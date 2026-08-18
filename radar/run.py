@@ -171,6 +171,8 @@ class DailyRun:
             )
         finally:
             result.cost_usd = self.log.cost_usd
+            # Deliberately last: `finish()` freezes log_json, so anything
+            # recorded after it never reaches the run-log page.
             self.log.finish("ok" if result.ok else "failed")
             self.journal.record(
                 EventKind.RUN_FINISHED if result.ok else EventKind.RUN_FAILED,

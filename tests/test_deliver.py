@@ -455,3 +455,95 @@ class TestTheSchedulerExists:
         plist = plistlib.loads(Path("deploy/com.radar.supervise.plist").read_bytes())
         assert "StartInterval" in plist
         assert "supervise" in " ".join(plist["ProgramArguments"])
+
+
+class TestOneRunHasOneCost:
+    """The page had to say "counter says $0.42, rows say $4.27" because the
+    run row counted only what passed through the run log in memory while
+    enrichment wrote through the buffered log."""
+
+    def test_the_run_row_matches_the_itemised_calls(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        from radar import cli
+        from radar.contracts import EnrichResult
+
+        class Paying:
+            def __init__(self, call_log):
+                self.call_log = call_log
+
+            def enrich(self, item, source):
+                self.call_log.model_call(
+                    stage="enrich", model="m", tokens_in=100, tokens_out=20,
+                    cost_usd=0.05,
+                )
+                return EnrichResult(source_id="s", url=item.url, facts=[])
+
+        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log: Paying(log))
+
+        from radar.adapters.base import CollectedItem
+        from radar.collect import SourceOutcome
+        from radar.models import SourceStatus
+
+        item = CollectedItem(
+            url="https://example.test/a#one", title="Отключение",
+            raw_text="текст",
+            extra={"source_id": "anthropic_model_deprecations", "source_priority": 1},
+        )
+        monkeypatch.setattr(
+            "radar.run.collect_all",
+            lambda *a, **k: (
+                [item],
+                [SourceOutcome("anthropic_model_deprecations", SourceStatus.OK, items=[item])],
+            ),
+        )
+
+        db = tmp_path / "r.db"
+        cli.main([
+            "--db", str(db), "--cache", str(tmp_path / "c"),
+            "run", "--no-filter", "--log-dir", str(tmp_path / "l"),
+        ])
+        conn = sqlite3.connect(db)
+        run_cost, run_calls = conn.execute(
+            "SELECT cost_usd, model_calls FROM runs"
+        ).fetchone()
+        rows_cost, rows_calls = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM model_calls"
+        ).fetchone()
+        conn.close()
+        assert abs(run_cost - rows_cost) < 1e-9, "две разные цифры за один прогон"
+        assert run_calls == rows_calls
+
+
+class TestQuietDayIsStillDelivered:
+    """PUB-4: silence reaches the reader as a message. Gating delivery on
+    having digest items skipped the channel on exactly the day the product
+    exists to speak about."""
+
+    def test_the_channel_is_touched_when_there_is_nothing_to_report(
+        self, tmp_path, monkeypatch
+    ):
+        from radar import cli
+        from radar.contracts import EnrichResult
+
+        sent: list = []
+
+        def spy(signals):
+            sent.append(signals)
+            return type("R", (), {"ok": True, "message_id": 1, "error": None})()
+
+        monkeypatch.setattr("radar.surfaces.telegram.send_digest", spy)
+        monkeypatch.setattr(
+            cli, "_build_enricher",
+            lambda *a, **k: type("E", (), {
+                "enrich": lambda self, i, s: EnrichResult(source_id="s", url=i.url)
+            })(),
+        )
+        monkeypatch.setattr("radar.run.collect_all", lambda *a, **k: ([], []))
+
+        cli.main([
+            "--db", str(tmp_path / "r.db"), "--cache", str(tmp_path / "c"),
+            "run", "--no-filter", "--deliver", "--log-dir", str(tmp_path / "l"),
+        ])
+        assert sent, "тихий день не доставлен"
+        assert sent[0][0].signal_type.value == "quiet_day"
