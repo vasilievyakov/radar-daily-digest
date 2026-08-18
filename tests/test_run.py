@@ -903,6 +903,12 @@ class TestTheLineThatAsksForAction:
         clauses = [part.strip() for part in text.split(". ") if part.strip()]
         assert len(clauses) > 1
         for clause in clauses:
+            first = clause.split(" ", 1)[0].rstrip(":,.")
+            if any(ch.isdigit() for ch in first) and any(ch in "-./" for ch in first):
+                # A model name is not capitalised: in this domain a string
+                # differing by case names a different model, and `o4-mini`
+                # raised to `O4-mini` renames the thing being reported on.
+                continue
             assert clause[0].isupper(), f"строчная после точки: {clause!r}"
 
     def test_an_identifier_keeps_its_case(self):

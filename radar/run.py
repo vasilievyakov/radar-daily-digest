@@ -422,8 +422,16 @@ def _collapse_to_events(
 # date and the pipeline cannot tell an obligation from its cancellation, so the
 # wording is read. When these words are present the date is still shown, as a
 # date, and nothing is promised about it.
+# A row saying the thing still works. "Not sooner than" is a floor under a
+# life, not a deadline against it.
+_KEEPS_IT_ALIVE = re.compile(
+    r"\b(оста[её]тся\s+активн\w+|останется\s+активн\w+|получит\s+статус\s+активн\w+"
+    r"|актив(?:на|ен|ным)\b|не\s+ранее|не\s+раньше|not\s+sooner)\b",
+    re.IGNORECASE,
+)
+
 _CANCELS_THE_DEADLINE = re.compile(
-    r"\b(отмен\w+|не\s+будет|не\s+состо\w+|сохран\w+|остa?ётся|остаются|"
+    r"\b(отмен\w+|не\s+будет|не\s+состо\w+|сохран\w+|оста[её]тся|остаются|"
     r"продлен\w+|перенес\w+|отложен\w+)\b",
     re.IGNORECASE,
 )
@@ -452,15 +460,32 @@ def _why_it_matters(
                 f"{what}дата, о которой идёт речь — "
                 f"{deadline.day} {MONTHS_GENITIVE[deadline.month - 1]}"
             )
-        elif days:
+        elif days > 0:
             reasons.append(f"{what}срок наступает через {russian_days(days)}")
+        elif days < 0:
+            # "через -1 день" reached the page twice. A date behind us is news
+            # too — the deadline passed and the code may already be broken —
+            # but it is a different sentence, not a countdown with a minus.
+            reasons.append(f"{what}срок истёк {russian_days(-days)} назад")
         else:
             reasons.append(f"{what}срок сегодня")
-    if cluster.change_type in {"deprecation", "breaking_change"}:
+    # A lifecycle table has rows that announce nothing: "claude-opus-4-6 |
+    # Active | N/A | Not sooner than February 5, 2027" says the model is alive
+    # and carries a floor under its life. The card printed "your working code
+    # will stop working" over it — the page contradicting its own source. The
+    # clause belongs to statements that actually announce an ending.
+    ends_something = not _KEEPS_IT_ALIVE.search(statement or "")
+    if cluster.change_type in {"deprecation", "breaking_change"} and ends_something:
         reasons.append("работающий код перестанет работать без правки")
     elif cluster.change_type == "security":
         reasons.append("затрагивает безопасность")
-    products = [f.value for f in facts if str(f.kind) == "affected_product"][:3]
+    products: list[str] = []
+    for fact in facts:
+        # "Затронуто: Claude Code, Claude Code, Claude Code" — the same product
+        # extracted from three sections of one release page.
+        if str(fact.kind) == "affected_product" and fact.value not in products:
+            products.append(fact.value)
+    products = products[:3]
     if products:
         reasons.append("затронуто: " + ", ".join(products))
     # Every clause, not only the first: joining with ". " and capitalising once

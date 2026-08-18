@@ -2,7 +2,7 @@ import pytest
 
 from radar.config import ConfigError, ThemeConfig
 from radar.models import ChangeType
-from radar.normalize import Normalizer, subject_identity
+from radar.normalize import Normalizer, subject_identity, model_identifiers
 
 CONFIG_PATH = "config/ai-tools.yaml"
 
@@ -234,3 +234,87 @@ class TestModelNamesWrittenAsProse:
             "GitHub удалит поле User.viewerRelevantRepositories в GraphQL API",
         )
         assert one != two
+
+
+class TestASubjectIsAModelNotADate:
+    """`event_identity` decides what counts as one event; it was reading dates.
+
+    `_hyphenate` turns "February 12" into "february-12" so a prose name like
+    "Claude Sonnet 5" can be recognised — and the identifier pattern then
+    accepted the month as a model. One Google deprecation was keyed
+    `google|deprecation|2024-02-12|february-12`: the event identified by its own
+    date. Fourteen corpus records carried a month as their subject.
+
+    The pattern also demanded a digit in the last segment, so `claude-3-opus`
+    matched as `claude-3` — two different Opus models sharing a subject.
+    """
+
+    def test_a_month_is_never_a_subject(self):
+        found = model_identifiers("multimodalembedding@001 | February 12, 2024 | April 1, 2027")
+        assert found == ["multimodalembedding@001"]
+
+    def test_a_name_is_not_cut_at_its_last_digit(self):
+        assert model_identifiers("claude-3-opus | June 5, 2026") == ["claude-3-opus"]
+
+    def test_two_models_of_one_family_stay_apart(self):
+        assert subject_identity("anthropic", "deprecation", "claude-3-opus") != \
+               subject_identity("anthropic", "deprecation", "claude-3-haiku")
+
+    def test_the_vertex_at_sign_form_is_recognised(self):
+        assert model_identifiers("multimodalembedding@001") == ["multimodalembedding@001"]
+
+    def test_a_date_only_row_yields_no_subject_at_all(self):
+        """Better no subject than the wrong one: with none, identity falls back
+        to the statement and two records stay apart, which costs a duplicate.
+        With a month, unrelated events merge and one of them disappears."""
+        assert model_identifiers("February 12, 2024 | April 1, 2027") == []
+
+
+class TestIdentityIsCheckedWhereItCanFail:
+    """«Назовите тест, который упал бы, если бы event_identity сломался завтра.»
+
+    The one that claimed to was a tautology: it asked the corpus for duplicate
+    `event_key` values while a unique index on that column made the answer
+    empty by construction. It could not fail, and meanwhile the live corpus
+    held fourteen records whose subject was a month.
+
+    These run the function against the shapes the corpus actually contains, so
+    a change to the rule shows up here rather than in production three commits
+    later.
+    """
+
+    ROWS = [
+        # (source row, expected subject) — taken from the live corpus.
+        ("claude-opus-4-5-20251101 | Active | N/A | Not sooner than November 24, 2026",
+         "claude-opus-4-5-20251101"),
+        ("multimodalembedding@001 | February 12, 2024 | April 1, 2027",
+         "multimodalembedding@001"),
+        ("text-embedding-004 | June 24, 2025 | April 1, 2027", "text-embedding-004"),
+        ("veo-3.1-fast-generate-001 | November 17, 2025", "veo-3.1-fast-generate-001"),
+        ("gpt-4.1-nano | 2025-04-14 | 2027-10-14", "gpt-4.1-nano"),
+        ("Anthropic сохраняет цену Claude Sonnet 5", "claude-sonnet-5"),
+    ]
+
+    @pytest.mark.parametrize("row,expected", ROWS)
+    def test_the_subject_is_the_model_the_row_is_about(self, row, expected):
+        assert model_identifiers(row)[:1] == [expected]
+
+    def test_two_readings_of_one_row_agree(self):
+        """The case the guard exists for: the same shutdown, extracted twice in
+        different words, must key the same."""
+        first = subject_identity(
+            "google", "deprecation", "text-embedding-004", None,
+            "Google отключает модель text-embedding-004 1 апреля 2027 года.",
+        )
+        second = subject_identity(
+            "google", "deprecation", None, "text-embedding-004 | April 1, 2027",
+            "Модель text-embedding-004 будет выведена из обслуживания.",
+        )
+        assert first == second
+
+    def test_the_stamped_version_matches_the_rule_in_force(self):
+        """A corpus outlives the function that keyed it. When the rule changes
+        without the stamp changing, the migration has nothing to detect."""
+        from radar.normalize import IDENTITY_VERSION
+
+        assert IDENTITY_VERSION == "identity-v2"

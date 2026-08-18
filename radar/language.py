@@ -39,11 +39,39 @@ def days(n: int) -> str:
     return count(n, "день", "дня", "дней")
 
 
+# A model name as vendors write it: lowercase, with a version glued on. In this
+# domain a string differing by case is a different model, so it is never
+# touched — `o4-mini` capitalised to `O4-mini` names nothing.
+_re = __import__("re")
+_IDENTIFIER = _re.compile(r"^[a-z][\w.@/-]*$")
+
+
+def _looks_like_an_identifier(word: str) -> bool:
+    """Lowercase, carries a digit, and joined by a hyphen, dot or slash.
+
+    Covers o4-mini, gpt-4.1-nano, claude-3-opus, veo-3.1, text-embedding-004
+    and openai/openai-python, and leaves ordinary Russian and English words
+    alone because they have no digit in them.
+    """
+    return bool(
+        _IDENTIFIER.match(word)
+        and any(ch.isdigit() for ch in word)
+        and any(ch in "-./" for ch in word)
+    )
+
+
 def sentence(text: str) -> str:
-    """Capitalise the first letter without touching the rest.
+    """Capitalise the first letter, unless the first word is an identifier.
 
     `str.capitalize()` lowercases everything after it, which turns
-    "затронуто: CLAUDE-3-OPUS" into "Затронуто: claude-3-opus".
+    "затронуто: CLAUDE-3-OPUS" into "Затронуто: claude-3-opus". And raising the
+    first letter unconditionally turned `gpt-4.1-nano` into `Gpt-4.1-nano` at
+    the head of a clause — the page renaming the thing it reports on.
     """
     text = " ".join((text or "").split())
-    return text[:1].upper() + text[1:] if text else ""
+    if not text:
+        return ""
+    first = text.split(" ", 1)[0].rstrip(":,.")
+    if _looks_like_an_identifier(first):
+        return text
+    return text[:1].upper() + text[1:]

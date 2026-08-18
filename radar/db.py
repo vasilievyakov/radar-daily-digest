@@ -92,6 +92,10 @@ CREATE TABLE IF NOT EXISTS event_statements (
     -- records with different origins and one identity, and the context label
     -- counted them as two precedents.
     event_key        TEXT NOT NULL DEFAULT '',
+    -- Which rule produced `event_key`. A corpus outlives the function that
+    -- keyed it, and a key from a replaced definition is worse than no key: the
+    -- unique index keeps enforcing a consistency nobody computes any more.
+    identity_version TEXT NOT NULL DEFAULT '',
     -- Idempotency key for backfill (FR-6.7): canonical URL plus the position
     -- of the event inside the material.
     UNIQUE (source_url, statement_index)
@@ -306,12 +310,65 @@ def migrate_original_cost(conn: sqlite3.Connection) -> None:
         )
 
 
+def migrate_identity_version(conn: sqlite3.Connection) -> int:
+    """Re-key records written under an older definition of event identity.
+
+    Adding a column is not enough here. When the rule changes, the rows keyed
+    by the previous rule stay behind and quietly mean something else — after
+    three edits to the subject extractor, sixty-one records held keys the
+    current function would never produce, one of them identified by a month.
+    Returns how many rows were re-keyed.
+    """
+    from radar.normalize import IDENTITY_VERSION, event_identity
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_statements)")}
+    if not columns:
+        return 0
+    if "identity_version" not in columns:
+        conn.execute(
+            "ALTER TABLE event_statements "
+            "ADD COLUMN identity_version TEXT NOT NULL DEFAULT ''"
+        )
+    stale = conn.execute(
+        "SELECT statement_id, vendor, change_type, event_date, product, evidence, "
+        "text FROM event_statements WHERE identity_version <> ?",
+        (IDENTITY_VERSION,),
+    ).fetchall()
+    if not stale:
+        return 0
+    rekeyed = 0
+    with conn:
+        for row in stale:
+            key = event_identity(
+                row["vendor"], row["change_type"], row["event_date"],
+                row["product"], row["evidence"], row["text"],
+            )
+            try:
+                conn.execute(
+                    "UPDATE event_statements SET event_key = ?, identity_version = ? "
+                    "WHERE statement_id = ?",
+                    (key, IDENTITY_VERSION, row["statement_id"]),
+                )
+            except sqlite3.IntegrityError:
+                # The new rule says this row is the same event as another. The
+                # corpus is append-only, so the row stays; it loses its key and
+                # stops being counted twice.
+                conn.execute(
+                    "UPDATE event_statements SET event_key = '', identity_version = ? "
+                    "WHERE statement_id = ?",
+                    (IDENTITY_VERSION, row["statement_id"]),
+                )
+            rekeyed += 1
+    return rekeyed
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(DDL)
     migrate_event_key(conn)
     migrate_filtered_key(conn)
     migrate_original_cost(conn)
+    migrate_identity_version(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -135,14 +135,40 @@ class Normalizer:
 
 # --------------------------------------------------------------------------
 # event identity
+
+# Bumped whenever the rule below changes what counts as one event. Without it a
+# corpus keeps keys from a definition the code no longer produces: three edits
+# to `model_identifiers` left sixty-one records keyed by a rule that had been
+# replaced — one of them identified by its own date — and the unique index went
+# on protecting a consistency that no longer existed. `prompt_version` and
+# `extractor_model` are already stamped on every row for exactly this reason;
+# identity deserved the same and did not have it.
+IDENTITY_VERSION = "identity-v2"
+
 # --------------------------------------------------------------------------
 
 # A model identifier as vendors print it: a name with a version or a date
 # glued on. Two rows of the same page describing one retirement — one in the
 # status table, one in the deprecation table — agree on this and on nothing
 # else, so it is what identity has to be built from.
+# Months, so a date never becomes the name of a model. `_hyphenate` turns
+# "February 12" into "february-12", which matched the pattern below and became
+# the subject of a Google deprecation: the key read
+# google|deprecation|2024-02-12|february-12 — the event identified by its own
+# date. Fourteen records in the corpus carry a month as their subject.
+_MONTHS = (
+    "january|february|march|april|may|june|july|august|september|october"
+    "|november|december|янв|фев|мар|апр|мая|июн|июл|авг|сен|окт|ноя|дек"
+)
+_NOT_A_MODEL = re.compile(rf"^(?:{_MONTHS})[-.]", re.I)
+
+# A model identifier: a lowercase stem, a digit somewhere, and the tail that
+# follows it. The tail was missing — the pattern demanded a digit in the last
+# segment, so `claude-3-opus` matched as `claude-3` and two records about
+# different Opus models shared a subject.
 _MODEL_IDENT = re.compile(
-    r"\b[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*-(?:\d[\w.]*|[a-z]+-?\d[\w.]*)\b", re.I
+    # `@` counts as a separator too: Vertex writes multimodalembedding@001.
+    r"\b[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*[-@]\d[\w.]*(?:-[a-z0-9][\w.]*)*\b", re.I
 )
 
 
@@ -177,6 +203,8 @@ def model_identifiers(*texts: str | None) -> list[str]:
     for text in texts:
         for match in _MODEL_IDENT.findall(_hyphenate(text)):
             token = match.casefold()
+            if _NOT_A_MODEL.match(token):
+                continue
             if token not in found:
                 found.append(token)
     return found
