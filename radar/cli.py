@@ -140,8 +140,14 @@ class _CallLog:
                 }
             )
 
-    def source_result(self, source_id: str, status: Any, items_count: int = 0,
-                      latency_ms: int | None = None, error: str | None = None) -> None:
+    def source_result(
+        self,
+        source_id: str,
+        status: Any,
+        items_count: int = 0,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> None:
         with self._lock:
             self.sources.append(
                 {
@@ -153,12 +159,21 @@ class _CallLog:
                 }
             )
 
-    def delivered(self, channel: str, status: str, message_id: str | None = None,
-                  error: str | None = None) -> None:
+    def delivered(
+        self,
+        channel: str,
+        status: str,
+        message_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
         with self._lock:
             self.deliveries.append(
-                {"channel": channel, "status": status,
-                 "message_id": message_id, "error": error}
+                {
+                    "channel": channel,
+                    "status": status,
+                    "message_id": message_id,
+                    "error": error,
+                }
             )
 
     @contextmanager
@@ -190,8 +205,14 @@ class _CallLog:
                     "reason_note, stage) VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(run_id, url, stage) DO UPDATE SET "
                     "reason_code = excluded.reason_code",
-                    (run_id, drop["url"], drop["title"], drop["reason_code"],
-                     drop["note"], drop["stage"]),
+                    (
+                        run_id,
+                        drop["url"],
+                        drop["title"],
+                        drop["reason_code"],
+                        drop["note"],
+                        drop["stage"],
+                    ),
                 )
         tokens_in = tokens_out = 0
         with conn:
@@ -558,7 +579,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
     summary = summarize(outcomes)
     print(RULE)
     print(
-        f"Источников: {len(outcomes)}, из них успешно {summary.get('ok', 0)}, "
+        f"Источников: {len(outcomes)}, из них с новым {summary.get('ok', 0)}, "
+        f"проверено без нового {summary.get('quiet', 0)}, "
         f"пусто {summary.get('empty', 0)}, с ошибкой {summary.get('failed', 0)}"
     )
     print(f"Материалов собрано: {summary['items']}, после дедупликации {len(items)}")
@@ -714,13 +736,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
 
     print(RULE)
-    print("Окружение готово. Готовность корпуса проверяется отдельно: status." if ok else "Есть проблемы, см. выше.")
+    print(
+        "Окружение готово. Готовность корпуса проверяется отдельно: status."
+        if ok
+        else "Есть проблемы, см. выше."
+    )
     return 0 if ok else 1
 
 
 # -- argument parsing -------------------------------------------------
-
-
 
 
 def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
@@ -761,7 +785,6 @@ def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
     for channel in report.results:
         state = "доставлено" if channel.delivered else f"не доставлено: {channel.error}"
         print(f"  {channel.channel}: {state}")
-
 
 
 def _reconcile_cost(conn: sqlite3.Connection, run_id: str) -> None:
@@ -868,7 +891,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-
 def cmd_supervise(args: argparse.Namespace) -> int:
     """Diagnose runs and say what to do about them.
 
@@ -911,9 +933,11 @@ def cmd_supervise(args: argparse.Namespace) -> int:
         print()
         print(f"  {run['run_id']}  {run['state']}")
         print(f"    {run['reason']}")
-        print(f"    стадий пройдено: {len(run['completed_stages'])}, "
-              f"сигналов записано: {run['signals_written']}, "
-              f"доставка: {'да' if run['delivered'] else 'нет'}")
+        print(
+            f"    стадий пройдено: {len(run['completed_stages'])}, "
+            f"сигналов записано: {run['signals_written']}, "
+            f"доставка: {'да' if run['delivered'] else 'нет'}"
+        )
         if run["failures"]:
             for failure in run["failures"][:3]:
                 print(f"    отказ: {failure}")
@@ -1004,10 +1028,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = sub.add_parser("run", help="один ежедневный прогон целиком")
     run_cmd.add_argument("--for-date", help="дата прогона в формате ГГГГ-ММ-ДД")
     run_cmd.add_argument("--log-dir", default="logs")
-    run_cmd.add_argument("--deliver", action="store_true",
-                         help="отправить результат в каналы после прогона")
-    run_cmd.add_argument("--no-filter", action="store_true",
-                         help="пропустить стадию релевантности")
+    run_cmd.add_argument(
+        "--deliver",
+        action="store_true",
+        help="отправить результат в каналы после прогона",
+    )
+    run_cmd.add_argument(
+        "--no-filter", action="store_true", help="пропустить стадию релевантности"
+    )
     run_cmd.add_argument("--sources", help="ограничить источники, через запятую")
     run_cmd.set_defaults(func=cmd_run)
 
@@ -1015,8 +1043,9 @@ def build_parser() -> argparse.ArgumentParser:
         "supervise", help="состояние прогонов и что с ними делать"
     )
     supervise.add_argument("--log-dir", default="logs")
-    supervise.add_argument("--json", action="store_true",
-                           help="добавить машиночитаемый отчёт")
+    supervise.add_argument(
+        "--json", action="store_true", help="добавить машиночитаемый отчёт"
+    )
     supervise.set_defaults(func=cmd_supervise)
 
     doctor = sub.add_parser("doctor", help="проверка окружения")
