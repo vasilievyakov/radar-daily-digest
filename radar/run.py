@@ -667,6 +667,7 @@ class DailyRun:
         result.failed_stage = "contextualize"
         with self.log.stage("contextualize", in_count=len(enriched)) as record:
             contexts = []
+            missed_by_type: list[int] = []
             for cluster, facts, statements in enriched:
                 delta = compute_delta(
                     self.conn, cluster, facts, self.run_id, self.for_date
@@ -686,12 +687,11 @@ class DailyRun:
                 # without the relaxed number nobody can tell the difference.
                 report = retrieval.report
                 if report.relaxed_hits > report.strict_hits:
-                    self.log.note(
-                        f"{cluster.title[:60]}: строгий фильтр {report.strict_hits}, "
-                        f"расширенный {report.relaxed_hits} — "
-                        f"{report.relaxed_hits - report.strict_hits} записей корпуса "
-                        f"не попали под точный тип изменения"
-                    )
+                    # Counted, not narrated. Fifteen near-identical lines of
+                    # "strict 12, relaxed 27" were the last thing on the run-log
+                    # page every morning: telemetry addressed to nobody. One
+                    # sentence with the total says the same and can be acted on.
+                    missed_by_type.append(report.relaxed_hits - report.strict_hits)
                     self.journal.record(
                         EventKind.LABEL_DOWNGRADED,
                         actor="contextualize",
@@ -701,6 +701,12 @@ class DailyRun:
                         relaxed_hits=report.relaxed_hits,
                     )
                 save_state(self.conn, cluster, facts, delta, self.run_id, self.for_date)
+            if missed_by_type:
+                self.log.note(
+                    f"у {len(missed_by_type)} сюжетов расширенный поиск нашёл "
+                    f"больше строгого: {sum(missed_by_type)} записей корпуса не "
+                    f"попали под точный тип изменения"
+                )
             resolve_expired(self.conn, self.for_date)
             record["out_count"] = len(contexts)
         self.journal.checkpoint("contextualize", item_count=len(contexts))

@@ -411,8 +411,12 @@ class TestCompletenessIsVisible:
                        for_date=TODAY, log_dir=str(tmp / "logs"))
         run.execute()
         notes = " ".join(run.log.notes)
-        assert "расширенный" in notes
-        assert "строгий фильтр" in notes
+        # One aggregate sentence, not one line per storyline: fifteen copies of
+        # "strict 12, relaxed 27" were the last thing on the page every morning
+        # and nobody could act on any of them. The count still has to reach a
+        # human, which is what this asserts.
+        assert "расширенный поиск нашёл больше строгого" in notes
+        assert "не попали под точный тип изменения" in notes
 
     def test_an_exact_match_produces_no_noise(self, env):
         """Nothing to report when both counts agree."""
