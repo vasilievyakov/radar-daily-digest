@@ -2,7 +2,7 @@ import pytest
 
 from radar.config import ConfigError, ThemeConfig
 from radar.models import ChangeType
-from radar.normalize import Normalizer
+from radar.normalize import Normalizer, subject_identity
 
 CONFIG_PATH = "config/ai-tools.yaml"
 
@@ -194,3 +194,43 @@ class TestVendorFromSource:
         fresh = Normalizer.from_config([{"id": "anthropic"}], [{"id": "release"}])
         fresh.vendor("a fairly long sentence of body text that names nobody at all here")
         assert fresh.report_unknown() == []
+
+
+class TestModelNamesWrittenAsProse:
+    """The extractor fills `product` from the sentence as often as from the API.
+
+    Two cards about one price change carried "Claude Sonnet 5" and
+    "claude-sonnet-5" and were therefore two subjects, so the digest opened
+    with the same announcement twice, worded from two sides.
+    """
+
+    def test_a_spaced_name_is_the_same_subject_as_the_api_name(self):
+        assert subject_identity("anthropic", "pricing", "Claude Sonnet 5") == \
+               subject_identity("anthropic", "pricing", "claude-sonnet-5")
+
+    def test_a_snapshot_stays_distinct_from_its_family(self):
+        family = subject_identity("anthropic", "deprecation", "Claude Sonnet 5")
+        snapshot = subject_identity(
+            "anthropic", "deprecation", "claude-sonnet-5-20250929"
+        )
+        assert family != snapshot
+
+    def test_prose_without_a_version_is_not_mistaken_for_a_model(self):
+        # "Claude" alone names the product line, not a model: it must not
+        # collapse two different announcements into one subject.
+        one = subject_identity("anthropic", "pricing", "Claude", None, "цены выросли")
+        two = subject_identity("anthropic", "pricing", "Claude", None, "лимиты сняты")
+        assert one != two
+
+    def test_two_changes_on_one_page_stay_two_subjects(self):
+        # GitHub's GraphQL changelog names fields, not models. Nothing here
+        # looks like a model identifier, and the fallback must keep them apart.
+        one = subject_identity(
+            "github", "breaking_change", None, None,
+            "GitHub удалил значение enum SECURITY_KEY из ProofOfPresenceRequirement",
+        )
+        two = subject_identity(
+            "github", "breaking_change", None, None,
+            "GitHub удалит поле User.viewerRelevantRepositories в GraphQL API",
+        )
+        assert one != two

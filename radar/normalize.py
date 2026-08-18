@@ -146,6 +146,24 @@ _MODEL_IDENT = re.compile(
 )
 
 
+# The same model written the way a sentence writes it: "Claude Sonnet 5",
+# "Gemini 2.5 Pro". The extractor fills `product` from the prose as often as
+# from the API name, and two cards about one price change carried
+# "Claude Sonnet 5" and "claude-sonnet-5" as different subjects.
+_SPACED_NAME = re.compile(
+    r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(\d[\w.]*)\b"
+)
+
+
+def _hyphenate(text: str | None) -> str:
+    """Turn "Claude Sonnet 5" into "claude-sonnet-5", leave the rest alone."""
+    if not text:
+        return ""
+    return _SPACED_NAME.sub(
+        lambda m: (m.group(1) + "-" + m.group(2)).replace(" ", "-"), text
+    )
+
+
 def model_identifiers(*texts: str | None) -> list[str]:
     """Model names in the order they appear, folded, without repeats.
 
@@ -157,7 +175,7 @@ def model_identifiers(*texts: str | None) -> list[str]:
     """
     found: list[str] = []
     for text in texts:
-        for match in _MODEL_IDENT.findall(text or ""):
+        for match in _MODEL_IDENT.findall(_hyphenate(text)):
             token = match.casefold()
             if token not in found:
                 found.append(token)
