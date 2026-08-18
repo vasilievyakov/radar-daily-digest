@@ -768,3 +768,42 @@ class TestPrecedentsAreCheckedBeforeTheyAreCounted:
         ])
         assert clean.retrieval.total_found == dirty.retrieval.total_found == 3
         assert clean.context_note == dirty.context_note
+
+
+class TestAPatternNeedsAnInterval:
+    """«Третий раз с 17 августа», сказанное семнадцатого августа.
+
+    The records behind such a sentence were all written that morning, usually
+    from one page: it is a claim about repetition containing no time. Measured
+    on the last run, four of twenty-five recurrence sentences rested on
+    precedents sharing a single day.
+    """
+
+    @staticmethod
+    def _precedents(day):
+        return [
+            Precedent(
+                statement_id=f"p{i}", text="Anthropic отключает модель",
+                source_url=f"https://example.test/{i}", event_date=day,
+                vendor="anthropic", change_type=ChangeType.DEPRECATION,
+            )
+            for i in range(3)
+        ]
+
+    def test_todays_records_do_not_make_a_pattern(self):
+        today = date(2026, 8, 18)
+        note = build_context_note(
+            ContextLabel.RECURRING, self._precedents(today), "Anthropic",
+            "объявление об отключении", today, total_found=3,
+            earliest_match=today, change_type=ChangeType.DEPRECATION,
+        )
+        assert note is None
+
+    def test_a_corpus_reaching_back_still_speaks(self):
+        note = build_context_note(
+            ContextLabel.RECURRING, self._precedents(date(2026, 6, 2)),
+            "Anthropic", "объявление об отключении", date(2026, 8, 18),
+            total_found=3, earliest_match=date(2026, 6, 2),
+            change_type=ChangeType.DEPRECATION,
+        )
+        assert note and "2 июня" in note

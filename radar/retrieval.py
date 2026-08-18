@@ -186,19 +186,40 @@ class CorpusRetriever:
         window_days: int,
         exclude_ids: set[str],
     ) -> tuple[int, date | None]:
-        """How many records match, and how far back they go.
+        """How many events match, and how far back they go.
 
         Separate from the listing on purpose. `max_results` is a page size for
         the reader; a count taken from the page can never exceed it, and a
         sentence built on that length reports the pagination constant instead
         of the corpus. The oldest date comes from the same aggregate so the
         count and the date in that sentence describe one and the same set.
+
+        Events, not rows. The corpus stores a statement per extraction, and one
+        announcement is routinely extracted more than once — two Russian
+        rewordings of the same enum removal, from the same page, on the same
+        day, are two rows and one event. Counting rows put "the third time
+        since 17 August" over a pair of paraphrases written that morning: on
+        the last run nine of twenty-five such sentences rested on precedents
+        sharing a single address or a single date.
+
+        The unit is the announcement: vendor, kind, date, and the page it was
+        read from, fragment dropped, because one page section is one
+        announcement. It is deliberately coarser than `event_key` — that key
+        falls back to the wording when no model identifier is found, which is
+        exactly the case where the paraphrases split apart.
         """
         clause, params = self._filter(
             vendor, change_types, as_of, window_days, exclude_ids
         )
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS n, MIN(s.event_date) AS earliest {clause}", params
+            "SELECT COUNT(DISTINCT s.vendor || '|' || s.change_type || '|' || "
+            "COALESCE(s.event_date, '') || '|' || "
+            "substr(s.source_url, 1, "
+            "  CASE WHEN instr(s.source_url, '#') > 0 "
+            "       THEN instr(s.source_url, '#') - 1 "
+            "       ELSE length(s.source_url) END)"
+            ") AS n, MIN(s.event_date) AS earliest " + clause,
+            params,
         ).fetchone()
         if row is None:
             return 0, None

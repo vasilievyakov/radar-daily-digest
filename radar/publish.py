@@ -121,6 +121,14 @@ def build_context_note(
     if len(dated) < 2:
         return None
 
+    # A pattern needs an interval. "The third time since 17 August", said on
+    # 17 August, is a claim about repetition with no time in it: the records
+    # behind it were all written this morning, usually from one page. The
+    # sentence is worth making only when the corpus reaches back past today.
+    earliest_known = min([earliest_match, dated[0]]) if earliest_match else dated[0]
+    if earliest_known >= as_of:
+        return None
+
     # Never below what is on the page: the shown records are themselves proof.
     matches = max(total_found, len(precedents)) if total_found else len(precedents)
     count = matches + 1  # the precedents plus today's event
