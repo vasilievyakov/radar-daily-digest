@@ -248,6 +248,7 @@ sources:
 
   # --- Anthropic ---
   - id: anthropic_model_deprecations
+    label: "Anthropic model deprecations"
     vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/docs/about-claude/model-deprecations
@@ -259,6 +260,7 @@ sources:
     min_expected_items: 10
 
   - id: anthropic_api_release_notes
+    label: "Anthropic API release notes"
     vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/release-notes/api
@@ -271,6 +273,7 @@ sources:
 
   # Дат мало, но это даты вступления тарифов в силу.
   - id: anthropic_pricing
+    label: "Anthropic pricing"
     vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/docs/about-claude/pricing
@@ -284,6 +287,7 @@ sources:
   # Редиректит на GitHub CHANGELOG.md без дат. Тот же материал приходит
   # структурированно через gh_anthropics_claude_code.
   - id: anthropic_claude_code_release_notes
+    label: "Anthropic claude code release notes"
     vendor: anthropic
     type: html_scrape
     url: https://docs.claude.com/en/release-notes/claude-code
@@ -295,6 +299,7 @@ sources:
 
   # --- OpenAI ---
   - id: openai_deprecations
+    label: "OpenAI deprecations"
     vendor: openai
     type: html_scrape
     url: https://platform.openai.com/docs/deprecations
@@ -308,6 +313,7 @@ sources:
   # Двухуровневые даты: заголовок «June, 2025» задаёт год и месяц,
   # отметка «Jun 27» внутри задаёт день. 34 месячных заголовка, 154 отметки.
   - id: openai_changelog
+    label: "OpenAI changelog"
     vendor: openai
     type: html_scrape
     url: https://platform.openai.com/docs/changelog
@@ -322,6 +328,7 @@ sources:
   # Домен уходит в цепочку OAuth-редиректов при браузерном User-Agent.
   # Наш UA не браузерный, менять его на этих источниках нельзя.
   - id: google_gemini_deprecations
+    label: "Google gemini deprecations"
     vendor: google
     type: html_scrape
     url: https://ai.google.dev/gemini-api/docs/deprecations
@@ -333,6 +340,7 @@ sources:
     min_expected_items: 10
 
   - id: google_gemini_changelog
+    label: "Google gemini changelog"
     vendor: google
     type: html_scrape
     url: https://ai.google.dev/gemini-api/docs/changelog
@@ -344,6 +352,7 @@ sources:
     min_expected_items: 20
 
   - id: google_agent_platform_release_notes
+    label: "Google agent platform release notes"
     vendor: google
     type: html_scrape
     url: https://docs.cloud.google.com/gemini-enterprise-agent-platform/release-notes
@@ -356,6 +365,7 @@ sources:
 
   # Страница помечена как более не обновляемая: только для бэкфилла.
   - id: google_vertex_release_notes_archive
+    label: "Google vertex release notes archive"
     vendor: google
     type: html_scrape
     url: https://cloud.google.com/vertex-ai/generative-ai/docs/release-notes
@@ -368,6 +378,7 @@ sources:
     live_collect: false
 
   - id: google_vertex_model_versions
+    label: "Google vertex model versions"
     vendor: google
     type: html_scrape
     url: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
@@ -383,6 +394,7 @@ sources:
   # 56 об отключениях, 57 о лимитах, 23 о ценах. Четыре ячейки одной лентой.
   # История берётся помесячным шаблоном, суточное окно — с корневой страницы.
   - id: github_changelog
+    label: "GitHub changelog"
     vendor: github
     type: html_scrape
     url: https://github.blog/changelog/
@@ -395,6 +407,7 @@ sources:
     min_expected_items: 5
 
   - id: github_graphql_breaking_changes
+    label: "GitHub GraphQL breaking changes"
     vendor: github
     type: html_scrape
     url: https://docs.github.com/en/graphql/overview/breaking-changes
@@ -406,6 +419,7 @@ sources:
     min_expected_items: 10
 
   - id: github_graphql_changelog
+    label: "GitHub GraphQL changelog"
     vendor: github
     type: html_scrape
     url: https://docs.github.com/en/graphql/overview/changelog
@@ -419,6 +433,7 @@ sources:
   # --- LangChain ---
   # Единственный источник с явными датами снятия: «scheduled for removal on».
   - id: langchain_changelog
+    label: "LangChain changelog"
     vendor: langchain
     type: html_scrape
     url: https://changelog.langchain.com/
@@ -430,6 +445,7 @@ sources:
     min_expected_items: 20
 
   - id: langsmith_selfhosted_changelog
+    label: "LangChain langsmith selfhosted changelog"
     vendor: langchain
     type: html_scrape
     url: https://docs.langchain.com/langsmith/self-hosted-changelog
@@ -442,6 +458,7 @@ sources:
 
   # --- n8n ---
   - id: n8n_release_notes
+    label: "n8n release notes"
     vendor: n8n
     type: html_scrape
     url: https://docs.n8n.io/release-notes/
@@ -455,6 +472,7 @@ sources:
   # Ветка 1.x заморожена: 18 разделов breaking changes, ни одного за год.
   # Берётся только ради исторической глубины.
   - id: n8n_release_notes_1x_archive
+    label: "n8n release notes 1x archive"
     vendor: n8n
     type: html_scrape
     url: https://docs.n8n.io/changelog/release-notes-1.x
@@ -470,6 +488,7 @@ sources:
   # Индекс постов лежит во встроенном JSON той же страницы. Единственный
   # способ получить датированную историю цен Cursor.
   - id: cursor_blog
+    label: "Cursor blog"
     vendor: cursor
     type: html_scrape
     url: https://cursor.com/blog
@@ -483,6 +502,7 @@ sources:
   # Проверено дважды: 191 КБ, шесть дат, из десяти адресов записей дату
   # кодирует один. Рендеринг не помогает. Оставлен выключенным.
   - id: cursor_changelog
+    label: "Cursor changelog"
     vendor: cursor
     type: html_scrape
     url: https://cursor.com/changelog
@@ -496,6 +516,7 @@ sources:
   # Пять ревизий спецификации за всё время, две за последний год.
   # Ячейку не закрывает, но это единственный датированный след протокола.
   - id: mcp_spec_versioning
+    label: "Model Context Protocol spec versioning"
     vendor: mcp
     type: html_scrape
     url: https://modelcontextprotocol.io/specification/versioning
@@ -515,6 +536,7 @@ sources:
   # concepts/model-retirements отдаёт 200 и содержит только политику,
   # таблица переехала сюда. По коду ответа их не различить.
   - id: azure_model_retirement_schedule
+    label: "Microsoft AI azure model retirement schedule"
     vendor: microsoft_ai
     type: html_scrape
     url: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/model-retirement-schedule
@@ -526,6 +548,7 @@ sources:
     min_expected_items: 20
 
   - id: together_deprecations
+    label: "Together AI deprecations"
     vendor: together
     type: html_scrape
     url: https://docs.together.ai/docs/deprecations
@@ -537,6 +560,7 @@ sources:
     min_expected_items: 10
 
   - id: together_changelog
+    label: "Together AI changelog"
     vendor: together
     type: html_scrape
     url: https://docs.together.ai/docs/changelog
@@ -550,6 +574,7 @@ sources:
   # Таблица требует формата дат M/D/YYYY: на ISO-шаблоне страница выглядит
   # мёртвой, хотя несёт 43 строки с датами объявления и вывода.
   - id: mistral_models
+    label: "Mistral models"
     vendor: mistral
     type: html_scrape
     url: https://docs.mistral.ai/models
@@ -561,6 +586,7 @@ sources:
     min_expected_items: 10
 
   - id: aws_bedrock_model_lifecycle
+    label: "AWS Bedrock model lifecycle"
     vendor: aws
     type: html_scrape
     url: https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html
@@ -572,6 +598,7 @@ sources:
     min_expected_items: 10
 
   - id: google_model_versions
+    label: "Google model versions"
     vendor: google
     type: html_scrape
     url: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions
@@ -583,6 +610,7 @@ sources:
     min_expected_items: 10
 
   - id: fireworks_changelog
+    label: "Fireworks AI changelog"
     vendor: fireworks
     type: html_scrape
     url: https://docs.fireworks.ai/updates/changelog
@@ -596,6 +624,7 @@ sources:
   # В сыром HTML 58 ISO-дат, в DOM остаётся 10-11: бэкфилл невозможен,
   # ежедневный сбор работает.
   - id: cohere_deprecations
+    label: "Cohere deprecations"
     vendor: cohere
     type: html_scrape
     url: https://docs.cohere.com/docs/deprecations
@@ -608,6 +637,7 @@ sources:
   # ISO-дата лежит только внутри script Next.js, в DOM видно «Apr 18» без
   # года. Включится, когда парсер научится читать встроенный JSON.
   - id: groq_deprecations
+    label: "Groq deprecations"
     vendor: groq
     type: html_scrape
     url: https://console.groq.com/docs/deprecations
@@ -620,6 +650,7 @@ sources:
 
   # Единственный в срезе с явными разделами Breaking Changes в релизах.
   - id: gh_vllm
+    label: "vLLM"
     vendor: vllm
     type: github_releases
     url: https://github.com/vllm-project/vllm
@@ -636,6 +667,7 @@ sources:
 
   # 319 дат, 39 заголовков breaking changes, 112 упоминаний устаревания.
   - id: llamaindex_changelog
+    label: "LlamaIndex changelog"
     vendor: llamaindex
     type: html_scrape
     url: https://developers.llamaindex.ai/python/framework/changelog/
@@ -647,6 +679,7 @@ sources:
     min_expected_items: 20
 
   - id: crewai_changelog
+    label: "CrewAI changelog"
     vendor: crewai
     type: html_scrape
     url: https://docs.crewai.com/en/changelog
@@ -659,6 +692,7 @@ sources:
 
   # Единственный вендор среза с потоком датированных объявлений об отключениях.
   - id: pinecone_release_notes
+    label: "Pinecone release notes"
     vendor: pinecone
     type: html_scrape
     url: https://docs.pinecone.io/release-notes/2026
@@ -670,6 +704,7 @@ sources:
     min_expected_items: 10
 
   - id: pinecone_release_notes_2025
+    label: "Pinecone release notes 2025"
     vendor: pinecone
     type: html_scrape
     url: https://docs.pinecone.io/release-notes/2025
@@ -684,6 +719,7 @@ sources:
   # 240 дат с 2022 года, записи размечены по компонентам и по типу
   # (Feature, Deprecation) — готовая разметка под vendor и change_type.
   - id: temporal_changelog
+    label: "Temporal changelog"
     vendor: temporal
     type: html_scrape
     url: https://temporal.io/changelog
@@ -697,6 +733,7 @@ sources:
   # Эталон структуры: Migration Log из записей «версия — дата», у каждой
   # раздел breaking changes. Последняя запись от 2025-03-01.
   - id: chroma_migration_log
+    label: "Chroma migration log"
     vendor: chroma
     type: html_scrape
     url: https://docs.trychroma.com/docs/overview/migration
@@ -709,6 +746,7 @@ sources:
     live_collect: false
 
   - id: pydantic_ai_changelog
+    label: "Pydantic AI changelog"
     vendor: pydantic
     type: html_scrape
     url: https://pydantic.dev/docs/ai/project/changelog/
@@ -721,6 +759,7 @@ sources:
 
   # 100 релизов за год, 59 с разделами breaking changes, тела по 2900 знаков.
   - id: gh_microsoft_agent_framework
+    label: "Microsoft AI agent framework"
     vendor: microsoft_ai
     type: github_releases
     url: https://github.com/microsoft/agent-framework
@@ -732,6 +771,7 @@ sources:
 
   # 93 из 100 релизов несут явный breaking-раздел: это пункт их шаблона.
   - id: gh_weaviate
+    label: "Weaviate"
     vendor: weaviate
     type: github_releases
     url: https://github.com/weaviate/weaviate
@@ -742,6 +782,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_qdrant
+    label: "Qdrant"
     vendor: qdrant
     type: github_releases
     url: https://github.com/qdrant/qdrant
@@ -752,6 +793,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_llamaindex
+    label: "LlamaIndex"
     vendor: llamaindex
     type: github_releases
     url: https://github.com/run-llama/llama_index
@@ -767,6 +809,7 @@ sources:
   # обращением к API, а не предположением.
 
   - id: gh_langgenius_dify
+    label: "dify langgenius dify"
     type: github_releases
     url: https://github.com/langgenius/dify
     vendor: dify
@@ -777,6 +820,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_open_webui_open_webui
+    label: "open-webui"
     type: github_releases
     url: https://github.com/open-webui/open-webui
     vendor: open_webui
@@ -787,6 +831,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_graphify_labs_graphify
+    label: "graphify labs graphify"
     type: github_releases
     url: https://github.com/Graphify-Labs/graphify
     vendor: graphify
@@ -797,6 +842,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_lobehub_lobehub
+    label: "lobehub"
     type: github_releases
     url: https://github.com/lobehub/lobehub
     vendor: lobehub
@@ -807,6 +853,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_netdata_netdata
+    label: "netdata"
     type: github_releases
     url: https://github.com/netdata/netdata
     vendor: netdata
@@ -817,6 +864,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_headroomlabs_ai_headroom
+    label: "headroom headroomlabs AI headroom"
     type: github_releases
     url: https://github.com/headroomlabs-ai/headroom
     vendor: headroom
@@ -827,6 +875,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_upstash_context7
+    label: "context7 upstash context7"
     type: github_releases
     url: https://github.com/upstash/context7
     vendor: context7
@@ -837,6 +886,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_aaif_goose_goose
+    label: "goose aaif goose"
     type: github_releases
     url: https://github.com/aaif-goose/goose
     vendor: goose
@@ -847,6 +897,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_diegosouzapw_omniroute
+    label: "OmniRoute diegosouzapw omniroute"
     type: github_releases
     url: https://github.com/diegosouzapw/OmniRoute
     vendor: omniroute
@@ -857,6 +908,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_browser_use_browser_use
+    label: "browser-use"
     type: github_releases
     url: https://github.com/browser-use/browser-use
     vendor: browser_use
@@ -867,6 +919,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_google_gemini_gemini_cli
+    label: "Google gemini CLI"
     type: github_releases
     url: https://github.com/google-gemini/gemini-cli
     vendor: google
@@ -877,6 +930,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_thedotmack_claude_mem
+    label: "claude-mem thedotmack claude mem"
     type: github_releases
     url: https://github.com/thedotmack/claude-mem
     vendor: claude_mem
@@ -887,6 +941,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_daytonaio_daytona
+    label: "daytona daytonaio daytona"
     type: github_releases
     url: https://github.com/daytonaio/daytona
     vendor: daytona
@@ -897,6 +952,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_ruvnet_ruflo
+    label: "ruflo ruvnet ruflo"
     type: github_releases
     url: https://github.com/ruvnet/ruflo
     vendor: ruflo
@@ -907,6 +963,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_code_yeongyu_oh_my_openagent
+    label: "oh-my-openagent code yeongyu oh my openagent"
     type: github_releases
     url: https://github.com/code-yeongyu/oh-my-openagent
     vendor: oh_my_openagent
@@ -917,6 +974,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_d4vinci_scrapling
+    label: "Scrapling d4vinci scrapling"
     type: github_releases
     url: https://github.com/D4Vinci/Scrapling
     vendor: scrapling
@@ -927,6 +985,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_infiniflow_ragflow
+    label: "ragflow infiniflow ragflow"
     type: github_releases
     url: https://github.com/infiniflow/ragflow
     vendor: ragflow
@@ -937,6 +996,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_farion1231_cc_switch
+    label: "cc-switch farion1231 cc switch"
     type: github_releases
     url: https://github.com/farion1231/cc-switch
     vendor: cc_switch
@@ -947,6 +1007,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_koala73_worldmonitor
+    label: "worldmonitor koala73 worldmonitor"
     type: github_releases
     url: https://github.com/koala73/worldmonitor
     vendor: worldmonitor
@@ -957,6 +1018,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_firecrawl_firecrawl
+    label: "firecrawl"
     type: github_releases
     url: https://github.com/firecrawl/firecrawl
     vendor: firecrawl
@@ -967,6 +1029,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_mintplex_labs_anything_llm
+    label: "anything-llm mintplex labs anything LLM"
     type: github_releases
     url: https://github.com/Mintplex-Labs/anything-llm
     vendor: anything_llm
@@ -977,6 +1040,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_nousresearch_hermes_agent
+    label: "hermes-agent nousresearch hermes agent"
     type: github_releases
     url: https://github.com/NousResearch/hermes-agent
     vendor: hermes_agent
@@ -987,6 +1051,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_affaan_m_ecc
+    label: "ECC affaan m ecc"
     type: github_releases
     url: https://github.com/affaan-m/ECC
     vendor: ecc
@@ -997,6 +1062,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_mempalace_mempalace
+    label: "mempalace"
     type: github_releases
     url: https://github.com/MemPalace/mempalace
     vendor: mempalace
@@ -1007,6 +1073,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_dietrichgebert_ponytail
+    label: "ponytail dietrichgebert ponytail"
     type: github_releases
     url: https://github.com/DietrichGebert/ponytail
     vendor: ponytail
@@ -1017,6 +1084,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_panniantong_agent_reach
+    label: "Agent-Reach panniantong agent reach"
     type: github_releases
     url: https://github.com/Panniantong/Agent-Reach
     vendor: agent_reach
@@ -1029,6 +1097,7 @@ sources:
   # Релизов 2: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_thedaviddias_front_end_checklist
+    label: "Front-End-Checklist thedaviddias front end checklist"
     type: github_releases
     url: https://github.com/thedaviddias/Front-End-Checklist
     vendor: front_end_checklist
@@ -1041,6 +1110,7 @@ sources:
   # Релизов 1: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_deepseek_ai_deepseek_harness
+    label: "deepseek-harness AI deepseek harness"
     type: github_releases
     url: https://github.com/deepseek-ai/deepseek-harness
     vendor: deepseek_harness
@@ -1053,6 +1123,7 @@ sources:
   # Релизов 1: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_bytedance_deer_flow
+    label: "deer-flow bytedance deer flow"
     type: github_releases
     url: https://github.com/bytedance/deer-flow
     vendor: deer_flow
@@ -1065,6 +1136,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_snailclimb_javaguide
+    label: "JavaGuide snailclimb javaguide"
     type: github_releases
     url: https://github.com/Snailclimb/JavaGuide
     vendor: javaguide
@@ -1077,6 +1149,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_punkpeye_awesome_mcp_servers
+    label: "awesome-mcp-servers punkpeye awesome MCP servers"
     type: github_releases
     url: https://github.com/punkpeye/awesome-mcp-servers
     vendor: awesome_mcp_servers
@@ -1089,6 +1162,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_composiohq_awesome_claude_skills
+    label: "awesome-claude-skills composiohq awesome claude skills"
     type: github_releases
     url: https://github.com/ComposioHQ/awesome-claude-skills
     vendor: awesome_claude_skills
@@ -1101,6 +1175,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_sansan0_trendradar
+    label: "TrendRadar sansan0 trendradar"
     type: github_releases
     url: https://github.com/sansan0/TrendRadar
     vendor: trendradar
@@ -1113,6 +1188,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_dair_ai_prompt_engineering_guide
+    label: "Prompt-Engineering-Guide dair AI prompt engineering guide"
     type: github_releases
     url: https://github.com/dair-ai/Prompt-Engineering-Guide
     vendor: prompt_engineering_guide
@@ -1125,6 +1201,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_microsoft_ai_agents_for_beginners
+    label: "ai-agents-for-beginners microsoft AI agents for beginners"
     type: github_releases
     url: https://github.com/microsoft/ai-agents-for-beginners
     vendor: ai_agents_for_beginners
@@ -1140,6 +1217,7 @@ sources:
   # с ценами и сроками. Найдена через link rel=alternate на странице docs;
   # все угаданные адреса вида anthropic.com/rss.xml отдают 404.
   - id: anthropic_release_notes_feed
+    label: "Anthropic release notes feed"
     vendor: anthropic
     type: rss
     url: https://platform.claude.com/docs/en/release-notes/feed.xml
@@ -1151,6 +1229,7 @@ sources:
   # Закрывает вендора, который через HTML не парсится: 50 записей за
   # полгода, полный текст в content:encoded.
   - id: cursor_changelog_feed
+    label: "Cursor changelog feed"
     vendor: cursor
     type: rss
     url: https://cursor.com/changelog/rss.xml
@@ -1160,6 +1239,7 @@ sources:
     min_expected_items: 10
 
   - id: github_changelog_feed
+    label: "GitHub changelog feed"
     vendor: github
     type: rss
     url: https://github.blog/changelog/feed/
@@ -1169,6 +1249,7 @@ sources:
     min_expected_items: 5
 
   - id: mcp_blog_feed
+    label: "Model Context Protocol blog feed"
     vendor: mcp
     type: rss
     url: https://blog.modelcontextprotocol.io/index.xml
@@ -1178,6 +1259,7 @@ sources:
     min_expected_items: 5
 
   - id: n8n_blog_feed
+    label: "n8n blog feed"
     vendor: n8n
     type: rss
     url: https://n8n.io/blog/rss/
@@ -1189,6 +1271,7 @@ sources:
   # 1132 записи с 2015 года, но тело — сниппет на 150 знаков.
   # Обогащение всё равно ходит в первоисточник, так что этого достаточно.
   - id: openai_news_feed
+    label: "OpenAI news feed"
     vendor: openai
     type: rss
     url: https://openai.com/news/rss.xml
@@ -1198,6 +1281,7 @@ sources:
     min_expected_items: 5
 
   - id: simonwillison_llms
+    label: "Simonwillison llms"
     type: rss
     url: https://simonwillison.net/tags/llms.atom
     priority: 4
@@ -1209,6 +1293,7 @@ sources:
   # основанием для публикации факта, нужен первоисточник приоритета 1-3.
   # Читается через веб-превью t.me/s/, авторизация не нужна.
   - id: tg_tsingular
+    label: "Tsingular"
     type: telegram_channel
     url: https://t.me/s/tsingular
     priority: 5
@@ -1217,6 +1302,7 @@ sources:
     min_expected_items: 3
 
   - id: tg_data_secrets
+    label: "Data secrets"
     type: telegram_channel
     url: https://t.me/s/data_secrets
     priority: 5
@@ -1226,6 +1312,7 @@ sources:
 
   # Единственный найденный канал, закрывающий change_type: security.
   - id: tg_pwnai
+    label: "Pwnai"
     type: telegram_channel
     url: https://t.me/s/pwnai
     priority: 5
@@ -1235,6 +1322,7 @@ sources:
 
   # --- Приоритет 3: GitHub Releases, полная история через пагинацию ---
   - id: gh_anthropics_claude_code
+    label: "Anthropic anthropics claude code"
     vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/claude-code
@@ -1245,6 +1333,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_openai_python
+    label: "OpenAI Python"
     vendor: openai
     type: github_releases
     url: https://github.com/openai/openai-python
@@ -1255,6 +1344,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_anthropic_sdk_python
+    label: "Anthropic SDK Python"
     vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/anthropic-sdk-python
@@ -1266,6 +1356,7 @@ sources:
 
   # Релизится тегами пакетов, а не GitHub Releases: 2 за полгода, 7 за год.
   - id: gh_modelcontextprotocol_servers
+    label: "Model Context Protocol modelcontextprotocol servers"
     vendor: mcp
     type: github_releases
     url: https://github.com/modelcontextprotocol/servers
@@ -1276,6 +1367,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_n8n
+    label: "n8n"
     vendor: n8n
     type: github_releases
     url: https://github.com/n8n-io/n8n
@@ -1288,6 +1380,7 @@ sources:
   # Монорепо: почти каждый релиз это версия отдельного пакета-интеграции.
   # Объём есть, плотность полезного на запись низкая.
   - id: gh_langchain
+    label: "LangChain"
     vendor: langchain
     type: github_releases
     url: https://github.com/langchain-ai/langchain

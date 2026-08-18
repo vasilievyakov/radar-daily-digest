@@ -491,7 +491,7 @@ def read_theme_names(path: str | Path) -> Names:
     return Names(labels=labels, words=words)
 
 
-def human_name(value: str, names: Names = NO_NAMES) -> str:
+def human_name(value: str, names: Names | None = NO_NAMES) -> str:
     """A slug as a person would write it (voice 3: «Cursor changelog»).
 
     A whole identifier the config names is printed with that name. Otherwise
@@ -501,6 +501,11 @@ def human_name(value: str, names: Names = NO_NAMES) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
+    if names is None:
+        # Called without a name table: fall through to the spelling rules
+        # rather than raising. A reader seeing a tidied slug is a defect; a
+        # page that fails to render is worse.
+        names = Names(labels={}, words={})
     named = names.labels.get(raw.lower())
     if named:
         return named
@@ -1414,7 +1419,9 @@ def load_corpus(
 # -- digest page -------------------------------------------------------
 
 
-def _digest_footer(signals: list[Signal], links: PageLinks) -> str:
+def _digest_footer(
+    signals: list[Signal], links: PageLinks, names: Names | None = None
+) -> str:
     """Unanswered sources are a working situation, reported calmly (voice 5).
 
     The names travel inside the signal (`run_summary`), so the page never
@@ -1424,13 +1431,14 @@ def _digest_footer(signals: list[Signal], links: PageLinks) -> str:
     summary = next((s.run_summary for s in signals if s.run_summary), None)
     if summary is not None:
         if summary.sources_failed:
-            names = ", ".join(esc(name) for name in summary.sources_failed)
+            listed = ", ".join(esc(human_name(n, names)) for n in summary.sources_failed)
             word = spelled_count_phrase(
                 len(summary.sources_failed), SOURCE_FORMS, NUMERALS_MASCULINE
             )
             verb = "не ответил" if len(summary.sources_failed) == 1 else "не ответили"
-            lines.append(f"{word.capitalize()} {verb}: {names}.")
-        for name in summary.sources_empty:
+            lines.append(f"{word.capitalize()} {verb}: {listed}.")
+        for raw in summary.sources_empty:
+            name = human_name(raw, names)
             # HTTP 200 with nothing in it is a different fault, named apart.
             lines.append(f"{esc(name)} ответил, но ничего не отдал.")
     resolved = [s for s in signals if s.delta_status is DeltaStatus.RESOLVED]
@@ -1450,6 +1458,7 @@ def render_digest(
     *,
     today: date,
     links: PageLinks = DEFAULT_LINKS,
+    names: Names | None = None,
 ) -> str:
     """One page for the run, whatever the run turned out to be.
 

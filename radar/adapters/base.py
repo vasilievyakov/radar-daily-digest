@@ -47,6 +47,9 @@ class SourceConfig:
     # docs.mistral.ai is Mistral, and guessing it from body text is how a Zed
     # release ends up filed under GitHub because it links to a pull request.
     vendor: str | None = None
+    # Human name for the run log and the digest footer. Without it a slug is
+    # all any surface can print, however carefully it capitalises.
+    label: str | None = None
     # Some archives are frozen: worth backfilling, pointless to poll daily.
     live_collect: bool = True
     # Pages that only expose history through a per-month URL.

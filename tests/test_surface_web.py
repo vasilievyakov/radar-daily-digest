@@ -745,8 +745,8 @@ def test_empty_run_speaks_about_the_day_and_says_it_once():
 
 def test_footer_reports_unanswered_sources_calmly():
     html = web.render_digest([make_lead_signal()], today=TODAY)
-    assert "Один источник не ответил: mcp-servers." in html
-    assert "cursor-changelog ответил, но ничего не отдал." in html
+    assert "Один источник не ответил: Mcp servers." in html
+    assert "Cursor changelog ответил, но ничего не отдал." in html
     assert "Лог прогона" in html
 
 
@@ -1329,7 +1329,7 @@ def test_build_site_leaves_the_store_untouched(tmp_path):
 
 def test_one_source_failure_reads_as_russian():
     html = web.render_digest([make_lead_signal()], today=TODAY)
-    assert "Один источник не ответил: mcp-servers." in html
+    assert "Один источник не ответил: Mcp servers." in html
 
 
 def test_two_source_failures_read_as_russian():
@@ -1339,7 +1339,7 @@ def test_two_source_failures_read_as_russian():
         )
     )
     html = web.render_digest([signal], today=TODAY)
-    assert "Два источника не ответили: mcp-servers, cursor-changelog." in html
+    assert "Два источника не ответили: Mcp servers, Cursor changelog." in html
 
 
 def test_a_deadline_is_listed_once_even_with_two_records():
@@ -1428,10 +1428,14 @@ def test_digest_reads_signals_and_nothing_else():
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "render_digest"
     )
-    names = {arg.arg for arg in render.args.args} | {
+    params = {arg.arg for arg in render.args.args} | {
         arg.arg for arg in render.args.kwonlyargs
     }
-    assert names == {"signals", "today", "links"}
+    # `names` is presentation data, not a second source of truth: the page
+    # still reads only published signals. Without it the footer printed
+    # gh_google_gemini_gemini_cli to the reader while the neighbouring page
+    # said "Google Gemini CLI".
+    assert params == {"signals", "today", "links", "names"}
     footer = next(
         node
         for node in ast.walk(tree)

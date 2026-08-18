@@ -114,7 +114,9 @@ class TestHappyPath:
         result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
                           for_date=TODAY, log_dir=str(tmp / "logs")).execute()
         summary = read_signals(conn, result.run_id)[0].run_summary
-        assert summary.sources_failed == ["cursor_changelog"]
+        # The footer exists to name a source; asserting the slug froze the
+        # defect in place under a docstring about names.
+        assert summary.sources_failed == ["Cursor changelog"]
         assert summary.sources_empty == ["mcp_servers"]
 
     def test_rejected_facts_are_counted(self, env):

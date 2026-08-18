@@ -37,7 +37,12 @@ from radar.publish import (
 )
 from radar.retrieval import CorpusRetriever
 from radar.runlog import Budget, BudgetExceeded, RunLog, new_run_id
-from radar.scoring import assign_tier, rank_signals
+from radar.scoring import (
+    assign_tier,
+    change_type_labels,
+    rank_signals,
+    vendor_labels,
+)
 
 
 @dataclass(slots=True)
@@ -76,6 +81,12 @@ class RunResult:
             "failed_stage": self.failed_stage,
             "error": self.error,
         }
+
+
+def _readable(slug: str) -> str:
+    """Last-resort name for a source without a label in the config."""
+    words = slug.replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else slug
 
 
 def _headline_for(cluster: Any, lead: Any) -> str:
@@ -118,7 +129,8 @@ def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
     products = [f.value for f in facts if str(f.kind) == "affected_product"][:3]
     if products:
         reasons.append("затронуто: " + ", ".join(products))
-    return ". ".join(reasons)
+    joined = ". ".join(reasons)
+    return joined[:1].upper() + joined[1:] if joined else ""
 
 
 class DailyRun:
@@ -185,7 +197,13 @@ class DailyRun:
 
     def _pipeline(self, result: RunResult) -> None:
         priority_of = {s.id: s.priority for s in self.config.sources}
-        name_of = {s.id: s.id for s in self.config.sources}
+        # Real names, from the config. This used to map every slug to itself,
+        # so the footer of the digest read "gh_google_gemini_gemini_cli
+        # ответил, но ничего не отдал" while the neighbouring page said
+        # "Google Gemini CLI" — the resolver existed and nobody called it.
+        name_of = {s.id: (s.label or _readable(s.id)) for s in self.config.sources}
+        vendor_names = vendor_labels(self.config.data)
+        type_names = change_type_labels(self.config.data)
 
         result.failed_stage = "collect"
         with self.log.stage("collect") as record:
@@ -322,7 +340,9 @@ class DailyRun:
             name_of=name_of,
         )
         with self.log.stage("score", in_count=len(contexts)) as record:
-            signals = self._assemble_and_rank(contexts, summary)
+            signals = self._assemble_and_rank(
+                contexts, summary, vendor_names, type_names
+            )
             record["out_count"] = len(signals)
         self.journal.checkpoint("score", item_count=len(signals))
 
@@ -366,7 +386,15 @@ class DailyRun:
             self.log.note(f"фильтр не отработал, материалы пропущены дальше: {exc}")
             return clusters
 
-    def _assemble_and_rank(self, contexts: list[tuple], summary: Any) -> list[Signal]:
+    def _assemble_and_rank(
+        self,
+        contexts: list[tuple],
+        summary: Any,
+        vendor_names: dict[str, str] | None = None,
+        type_names: dict[str, str] | None = None,
+    ) -> list[Signal]:
+        vendor_names = vendor_names or {}
+        type_names = type_names or {}
         """Build signals first, then score and rank them.
 
         Scoring takes a whole Signal rather than loose fields, and that is the
@@ -401,8 +429,13 @@ class DailyRun:
                 summary=body or cluster.primary.raw_text[:2000],
                 why_it_matters=_why_it_matters(cluster, facts, self.for_date),
                 product=lead.product if lead else None,
-                vendor_label=cluster.vendor or "",
-                change_type_label=cluster.change_type or "",
+                # Slugs used to travel into parameters named `label`, which
+                # is how the context sentence read "anthropic: deprecation"
+                # instead of "Anthropic: объявление об отключении".
+                vendor_label=vendor_names.get(cluster.vendor or "", cluster.vendor or ""),
+                change_type_label=type_names.get(
+                    cluster.change_type or "", cluster.change_type or ""
+                ),
                 run_summary=summary,
             )
             drafts.append(signal)
