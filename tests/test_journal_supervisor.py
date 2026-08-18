@@ -273,3 +273,47 @@ class TestJournalWithRunLog:
             ]
             == "ok"
         )
+
+
+class TestAStallIsWrittenDown:
+    """The supervisor could always see a hung run. Nothing recorded it.
+
+    Eight runs sat at status `running` into a second day. Anything reading
+    "the latest run" — the audit script included — picks up a zombie and finds
+    a perfectly consistent set of zeroes. A green report about a run that never
+    happened is worse than a red one about a run that failed.
+    """
+
+    def test_a_hung_run_gets_its_verdict_in_the_store(self, tmp_path):
+        conn = init_db(tmp_path / "r.db")
+        journal = Journal(conn, log_dir=tmp_path / "logs", run_id="sup")
+        long_ago = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) VALUES "
+            "('hung', ?, 'running', '2026-08-17')", (long_ago,)
+        )
+        conn.commit()
+
+        closed = Supervisor(conn, journal).close_stalled()
+
+        assert closed == ["hung"]
+        status = conn.execute(
+            "SELECT status FROM runs WHERE run_id = 'hung'"
+        ).fetchone()[0]
+        assert status == "stalled"
+
+    def test_a_run_still_going_is_left_alone(self, tmp_path):
+        conn = init_db(tmp_path / "r.db")
+        journal = Journal(conn, log_dir=tmp_path / "logs", run_id="sup")
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) VALUES "
+            "('live', ?, 'running', '2026-08-18')",
+            (datetime.now(UTC).isoformat(),),
+        )
+        conn.commit()
+
+        assert Supervisor(conn, journal).close_stalled() == []
+        status = conn.execute(
+            "SELECT status FROM runs WHERE run_id = 'live'"
+        ).fetchone()[0]
+        assert status == "running"

@@ -56,6 +56,7 @@ from radar.publish import (
 )
 from radar.retrieval import CorpusRetriever
 from radar.runlog import Budget, BudgetExceeded, RunLog, new_run_id
+from radar.supervisor import Supervisor
 from radar.scoring import (
     assign_tier,
     change_type_labels,
@@ -470,6 +471,15 @@ class DailyRun:
         self.sources = sources
 
     def execute(self) -> RunResult:
+        # Yesterday's hung runs get their verdict written before today's
+        # starts. Nothing had ever recorded a stall, so eight runs sat at
+        # "running" into a second day and anything reading "the latest run"
+        # picked up a zombie.
+        try:
+            Supervisor(self.conn, self.journal).close_stalled()
+        except Exception as exc:  # never let housekeeping fail a run
+            self.log.note(f"не удалось закрыть зависшие прогоны: {exc}")
+
         result = RunResult(run_id=self.run_id, for_date=self.for_date)
         self.journal.record(EventKind.RUN_STARTED, actor="pipeline", target=self.run_id)
         try:

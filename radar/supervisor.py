@@ -185,6 +185,39 @@ class Supervisor:
         d.recommended = Action.NOTHING
         d.reason = "прогон идёт"
 
+    def close_stalled(self, now: datetime | None = None) -> list[str]:
+        """Write the diagnosis down, not just report it.
+
+        `diagnose` has always been able to see a hung run; nothing ever
+        recorded the verdict, so eight runs sat at status `running` into a
+        second day. Anything reading "the latest run" picks up a zombie and
+        finds a perfectly consistent set of zeroes — a green report about a run
+        that never happened is worse than a red one about a run that failed.
+        """
+        now = now or datetime.now(UTC)
+        closed: list[str] = []
+        rows = self.conn.execute(
+            "SELECT run_id FROM runs WHERE status = 'running'"
+        ).fetchall()
+        for row in rows:
+            diagnosis = self.diagnose(row["run_id"], now)
+            if diagnosis is None or diagnosis.state is not RunState.STALLED:
+                continue
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE runs SET status = 'stalled' WHERE run_id = ?",
+                    (row["run_id"],),
+                )
+            self.journal.record(
+                EventKind.RUN_FAILED,
+                actor="supervisor",
+                target=row["run_id"],
+                outcome=Outcome.FAILED,
+                reason=diagnosis.reason,
+            )
+            closed.append(row["run_id"])
+        return closed
+
     def scan(self, now: datetime | None = None, limit: int = 20) -> list[RunDiagnosis]:
         """Every run that is not cleanly finished, newest first."""
         now = now or datetime.now(UTC)
