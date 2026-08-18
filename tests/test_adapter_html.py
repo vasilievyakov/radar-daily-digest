@@ -89,6 +89,25 @@ its upcoming retirement.</p>
 </body></html>
 """
 
+# cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions and its
+# two siblings at AWS and Anthropic. Every row is a retirement still to come,
+# and the table stands unchanged for months at a time.
+RETIREMENT_TABLE_PAGE = """
+<html><body><main>
+<h2><div id="model-retirements">Model retirements</div></h2>
+<table>
+  <thead><tr>
+    <th>Model version</th><th>Release date</th><th>Discontinuation date</th>
+  </tr></thead>
+  <tbody>
+    <tr><td>gemini-2.5-pro</td><td>N/A</td><td>June 17, 2027</td></tr>
+    <tr><td>gemini-2.5-flash</td><td>N/A</td><td>September 25, 2027</td></tr>
+    <tr><td>gemini-2.0-flash-001</td><td>N/A</td><td>March 5, 2028</td></tr>
+  </tbody>
+</table>
+</main></body></html>
+"""
+
 # platform.openai.com/docs/deprecations
 OPENAI_PAGE = """
 <html><body>
@@ -1260,6 +1279,60 @@ class TestSinceAndBackfill:
         assert len(adapter.backfill(depth_days=365 * 50)) == 3
 
 
+class TestTheWindowIsAboutEventsNotAboutNovelty:
+    """Where this adapter's responsibility ends.
+
+    `collect(since)` narrows by event date and can do nothing else: it is
+    handed a URL and a window, and it has no memory of what any previous run
+    saw. On a table of retirements still to come the window therefore narrows
+    nothing at all — every row is dated ahead of any cutoff, on every day the
+    digest is ever run. Three configured sources are exactly that shape and
+    together hand over forty rows each morning.
+
+    The tests below pin that as a stated property rather than leave it as a
+    surprise, and they pin the reason it must not be "fixed" here: a table row
+    dated ahead is the normal case, not the stale one. Live freshness is
+    decided one stage on, by `radar.delta.filter_unseen`, which knows when a
+    record was first seen.
+    """
+
+    def test_a_table_of_future_retirements_clears_every_window(self):
+        adapter = make_adapter(RETIREMENT_TABLE_PAGE, hint="dated_table")
+        for since in (
+            datetime(2020, 1, 1),
+            datetime(2026, 8, 18),
+            datetime(2027, 1, 1),
+        ):
+            assert len(adapter.collect(since)) == 3
+
+    def test_two_mornings_in_a_row_are_indistinguishable_here(self):
+        adapter = make_adapter(RETIREMENT_TABLE_PAGE, hint="dated_table")
+        monday = adapter.collect(datetime(2026, 8, 18))
+        tuesday = adapter.collect(datetime(2026, 8, 19))
+        assert [i.raw_text for i in monday] == [i.raw_text for i in tuesday]
+
+    def test_a_row_is_never_dropped_for_being_dated_ahead(self):
+        """The reason the window is not the place to fix this.
+
+        A retirement announced this morning for 2028 is the single most
+        valuable thing the digest carries. Any rule that discards future dates
+        to quieten the tables would discard that too, silently.
+        """
+        adapter = make_adapter(RETIREMENT_TABLE_PAGE, hint="dated_table")
+        assert len(adapter.collect(datetime(2026, 8, 18))) == 3
+
+    def test_backfill_keeps_the_whole_table(self):
+        """Depth is the backfill's whole point and stays untouched."""
+        adapter = make_adapter(
+            RETIREMENT_TABLE_PAGE,
+            hint="dated_table",
+            backfill_supported=True,
+            backfill_depth_days=720,
+        )
+        assert len(adapter.backfill()) == 3
+        assert len(adapter.backfill(depth_days=720)) == 3
+
+
 # --------------------------------------------------------------------------
 # failure modes
 # --------------------------------------------------------------------------
@@ -1322,7 +1395,9 @@ class TestSectionProvenance:
 
         assert items, "the table produced no materials"
         for item in items:
-            assert item.extra.get("page_section") == "https://ai.google.dev/deprecations"
+            assert (
+                item.extra.get("page_section") == "https://ai.google.dev/deprecations"
+            )
 
     def test_a_section_pointing_at_another_document_is_not_marked(self):
         html = """

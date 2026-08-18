@@ -801,6 +801,10 @@ def _reconcile_cost(conn: sqlite3.Connection, run_id: str) -> None:
         )
 
 
+class SkipPages(Exception):
+    """--no-pages, raised so one except block handles both outcomes."""
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """One daily run, end to end, writing signals and nothing else.
 
@@ -886,7 +890,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     # back to "counter says $0.18, rows say $0.71".
     _reconcile_cost(conn, run.run_id)
 
-    print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")
+    # Built here rather than left to a printed hint. The scheduler runs this
+    # command at 08:00 and nothing else; a hint in the terminal it does not
+    # read meant the pages stayed on yesterday's run forever.
+    try:
+        if args.no_pages:
+            raise SkipPages
+        from radar.surfaces.web import build_site
+
+        paths = build_site(
+            args.db, args.out, today=run.for_date, run_id=run.run_id,
+            config=config.data,
+        )
+        print(f"Страницы: {paths['digest']}")
+    except SkipPages:
+        print(f"Страницы: .venv/bin/python -m radar.surfaces.web --run-id {run.run_id}")
+    except Exception as exc:  # a page that failed to build is not a failed run
+        print(f"Страницы собрать не удалось: {type(exc).__name__}: {exc}")
+
     conn.close()
     return 0 if result.ok else 1
 
@@ -1037,6 +1058,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-filter", action="store_true", help="пропустить стадию релевантности"
     )
     run_cmd.add_argument("--sources", help="ограничить источники, через запятую")
+    run_cmd.add_argument(
+        "--out", default="out", help="куда положить страницы после прогона"
+    )
+    run_cmd.add_argument(
+        "--no-pages", action="store_true", help="не пересобирать страницы"
+    )
     run_cmd.set_defaults(func=cmd_run)
 
     supervise = sub.add_parser(

@@ -539,7 +539,10 @@ sources:
     label: "Microsoft AI azure model retirement schedule"
     vendor: microsoft_ai
     type: html_scrape
-    url: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/model-retirement-schedule
+    # Moved: the old .../ai-foundry/openai/concepts/model-retirement-schedule
+    # answers 404, and the fetcher had archived that 404 forever, so the
+    # source read as fast and empty rather than broken.
+    url: https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirements
     priority: 1
     enabled: true
     parser_hint: dated_table

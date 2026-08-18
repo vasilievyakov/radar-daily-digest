@@ -23,6 +23,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field, replace
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -661,9 +662,41 @@ def parse_dt(value: str | datetime | None) -> datetime | None:
         return None
 
 
-def fmt_time(value: str | datetime | None) -> str:
+# The store writes UTC. A wall-clock time with no zone on it is read as local
+# by everyone who looks, and on a machine two hours off UTC that made the run
+# log say a run started before the day it belongs to.
+DISPLAY_TZ = ZoneInfo("UTC")
+
+
+def fmt_time(value: str | datetime | None, tz: ZoneInfo | None = None) -> str:
     moment = parse_dt(value)
-    return f"{moment:%H:%M:%S}" if moment else "—"
+    if not moment:
+        return "—"
+    zone = tz or DISPLAY_TZ
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    local = moment.astimezone(zone)
+    return f"{local:%H:%M:%S} {_zone_label(local, zone)}"
+
+
+def _zone_label(moment: datetime, zone: ZoneInfo) -> str:
+    """The abbreviation the zone itself reports, "UTC" when it has none."""
+    return moment.tzname() or str(zone)
+
+
+def display_zone(config: dict[str, Any] | None) -> ZoneInfo:
+    """Reader's zone from the config, falling back to UTC rather than guessing.
+
+    An unknown zone name is not a reason to fail a page: the time is still
+    true, it is only shown in UTC and says so.
+    """
+    name = str(((config or {}).get("delivery") or {}).get("timezone") or "").strip()
+    if not name:
+        return DISPLAY_TZ
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return DISPLAY_TZ
 
 
 def parse_date_value(value: str | None) -> tuple[date | None, DatePrecision]:
@@ -1590,7 +1623,11 @@ def _nothing_body() -> str:
 # -- run log page ------------------------------------------------------
 
 
-def _stage_table(stages: list[StageRow], reasons: dict[str, int]) -> str:
+def _stage_table(
+    stages: list[StageRow],
+    reasons: dict[str, int],
+    tz: ZoneInfo | None = None,
+) -> str:
     """FR-8.1 plus the arithmetic FR-8.3 implies.
 
     A reader subtracts 44 minus 19 in three seconds. The page does the
@@ -1607,7 +1644,7 @@ def _stage_table(stages: list[StageRow], reasons: dict[str, int]) -> str:
         rows.append(
             "<tr>"
             f"<td>{esc(STAGE_LABELS.get(stage.name, stage.name))}</td>"
-            f'<td class="num">{esc(fmt_time(stage.started_at))}</td>'
+            f'<td class="num">{esc(fmt_time(stage.started_at, tz))}</td>'
             f'<td class="num">{esc(fmt_duration(stage.duration_ms))}</td>'
             f'<td class="num">{esc(fmt_int(stage.in_count))}</td>'
             f'<td class="num">{esc(fmt_int(stage.out_count))}</td>'
@@ -1858,6 +1895,7 @@ def render_run_log(
     links: PageLinks = DEFAULT_LINKS,
     names: Names = NO_NAMES,
     now: datetime | None = None,
+    tz: ZoneInfo | None = None,
 ) -> str:
     """FR-9.2: the log is read by a person without technical training.
 
@@ -1882,8 +1920,8 @@ def render_run_log(
     )
     status = RUN_STATUS_LABELS.get(status_key, status_key)
     when = fmt_date(run.for_date, today) if run.for_date else ""
-    started = fmt_time(run.started_at)
-    finished = fmt_time(run.finished_at)
+    started = fmt_time(run.started_at, tz)
+    finished = fmt_time(run.finished_at, tz)
     if run.finished_at:
         timing = f"Начало {started}, окончание {finished}."
     elif status_key == "stalled":
@@ -1904,7 +1942,7 @@ def render_run_log(
     parts = [
         head,
         "<h3>Стадии</h3>",
-        _stage_table(run.stages, reasons),
+        _stage_table(run.stages, reasons, tz),
         f'<p class="legend">{esc(funnel_sentence(run))}</p>',
         "<h3>Источники</h3>",
         f"<p>{esc(sources_sentence(run))}</p>",
@@ -2100,7 +2138,10 @@ def build_site(
         ),
         "run_log": (
             out / links.run_log,
-            render_run_log(run, today=today, links=links, names=names, now=now),
+            render_run_log(
+                run, today=today, links=links, names=names, now=now,
+                tz=display_zone(config),
+            ),
         ),
         "corpus": (
             out / links.corpus,

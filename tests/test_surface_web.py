@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+from zoneinfo import ZoneInfo
 
 from radar.db import init_db, publish_signals
 from radar.models import (
@@ -1590,3 +1591,29 @@ def test_cli_refuses_an_empty_store_instead_of_guessing_the_date(tmp_path):
     assert web.reference_date(db_path) is None
     with pytest.raises(SystemExit):
         web.main(["--db", str(db_path), "--out", str(tmp_path / "site")])
+
+
+class TestTimesSayWhichClockTheyAreOn:
+    """The store writes UTC and the page printed a bare wall clock.
+
+    Everyone reads a bare time as local. On a machine two hours off UTC the
+    run log said a run started at 02:51 while the person watching it start had
+    05:51 on the wall — and a run that begins just after midnight UTC reads as
+    belonging to the day before.
+    """
+
+    def test_a_time_carries_its_zone(self):
+        assert web.fmt_time("2026-08-18T02:51:56+00:00") == "02:51:56 UTC"
+
+    def test_the_readers_zone_comes_from_the_config(self):
+        zone = web.display_zone({"delivery": {"timezone": "Europe/Moscow"}})
+        assert web.fmt_time("2026-08-18T02:51:56+00:00", zone) == "05:51:56 MSK"
+
+    def test_an_unknown_zone_falls_back_to_utc_rather_than_failing(self):
+        assert web.display_zone({"delivery": {"timezone": "Nowhere/Nothing"}}) == ZoneInfo("UTC")
+        assert web.display_zone(None) == ZoneInfo("UTC")
+
+    def test_a_naive_timestamp_is_read_as_utc_not_as_local(self):
+        # sqlite hands back strings; one written without an offset must not be
+        # silently reinterpreted in whatever zone the machine happens to be in.
+        assert web.fmt_time("2026-08-18T02:51:56") == "02:51:56 UTC"

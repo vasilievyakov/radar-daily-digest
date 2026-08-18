@@ -173,8 +173,11 @@ class TestRetries:
         result = make_fetcher(handler).get("https://example.test/gone")
         assert len(handler.calls) == 1
         assert result.status_code == 404
-        assert result.error is None
         assert result.ok is False
+        # Carries a reason now. Without one a moved page reached the collector
+        # as an answer with nothing in it, and the run log filed it next to the
+        # repositories that simply had no release today.
+        assert result.error == "HTTP 404"
 
     def test_a_network_error_becomes_a_result(self, make_fetcher):
         handler = responder(httpx.ConnectError("name resolution failed"))
@@ -259,3 +262,34 @@ class TestPoliteDelay:
         fetcher.get("https://example.test/a")
         fetcher.get("https://example.test/a")
         assert clock.slept == []
+
+
+class TestAMissingPageIsNotArchived:
+    """A 404 is stable, and that is exactly what makes it dangerous to keep.
+
+    Azure moved its model retirement schedule. The old address answered 404,
+    the fetcher stored it like any non-5xx answer, and from then on the source
+    reported a one-millisecond response carrying nothing — which on the run-log
+    page is indistinguishable from a source that is quiet today. The page
+    behind that URL had been alive again for weeks under a new address.
+    """
+
+    def test_a_404_is_not_written_to_the_cache(self, tmp_path):
+        # First attempt 404, every attempt after it 200: the last step repeats.
+        handler = responder((404, "gone"), (200, "<html>снова здесь</html>"))
+        fetcher = Fetcher(
+            cache_root=tmp_path / "cache",
+            polite_delay=0.0,
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        first = fetcher.get("https://example.test/moved")
+        assert not first.ok
+        assert first.status_code == 404
+
+        # The page comes back at the same address: a stored 404 would hide it.
+        second = fetcher.get("https://example.test/moved")
+
+        assert second.ok, "the 404 was served from disk"
+        assert "снова здесь" in second.text
+        assert not second.from_cache

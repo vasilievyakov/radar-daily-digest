@@ -8,6 +8,16 @@ and every claim here is a join on `cluster_id` staying stable.
 
 The visible promise is "third day running". That is checkable by anyone in the
 audience, so it has to be true rather than plausible.
+
+The same question is asked one stage earlier and about a smaller thing. Before
+a material can be a story it has to be new, and "new" for a daily feed means
+"the system had not seen this record before" — not "the event it describes is
+dated recently". The two coincide for a changelog and come apart completely
+for a table of future retirements, where every row is dated ahead of today and
+therefore clears any window, every morning, forever. `filter_unseen` below is
+where that distinction is drawn, and it lives here because this module is the
+one that already remembers previous runs. An adapter cannot answer it: it is
+handed a URL and a window and has no history to compare against.
 """
 
 from __future__ import annotations
@@ -18,11 +28,128 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from radar.adapters.base import CollectedItem
 from radar.cluster import Cluster
 from radar.models import DeltaStatus, Fact
 
 # Operational layer horizon (PRD 5.8). Older clusters are the corpus's job.
 STATE_HORIZON_DAYS = 30
+
+
+# --------------------------------------------------------------------------
+# First sighting: is this record new to us at all?
+# --------------------------------------------------------------------------
+
+
+def material_id(item: CollectedItem) -> str:
+    """Identity of a material, stable across runs.
+
+    Deliberately the very key the collector already dedupes by, rather than a
+    second opinion about identity: canonical URL plus the head of the text.
+    Two notions of "the same material" in one pipeline drift apart, and the
+    day they do, the ledger below starts hiding real news or re-announcing old
+    rows, with nothing in the log to say which.
+
+    Content participates for the same reason it does in the collector: a page
+    whose headings carry no anchors gives every section one address. It also
+    makes the right thing happen when a table row is edited — a retirement
+    date moved from November to September is a different record, and that is
+    news, not a repeat.
+    """
+    from radar.collect import dedupe_key
+
+    return dedupe_key(item)
+
+
+def _first_seen_before(stamp: str, as_of: date) -> bool:
+    """Was this row written down by an earlier day's run?
+
+    An unreadable timestamp counts as earlier. The row exists, so the material
+    was seen; the date is consulted only to let the same day's rerun repeat
+    itself, and a stamp we cannot read is no evidence that the day is today.
+    """
+    try:
+        return date.fromisoformat(stamp.strip()[:10]) < as_of
+    except (AttributeError, ValueError):
+        return True
+
+
+def filter_unseen(
+    conn: sqlite3.Connection,
+    items: list[CollectedItem],
+    as_of: date | None = None,
+    now: datetime | None = None,
+) -> list[CollectedItem]:
+    """Keep the materials this run is the first to meet; record all of them.
+
+    Freshness in the live run is first sighting, not event date. A changelog
+    entry and a row of a retirement table are then treated alike: each is news
+    on the day it appears and silent afterwards, and a quiet day becomes
+    reachable on the full config instead of being arithmetically impossible.
+
+    Two properties this has to keep:
+
+    * Idempotent within the day (PUB-5). A material first written down today
+      stays new for every rerun today, so a repeated run publishes the same
+      digest instead of an empty one. Only a stamp from an earlier day closes
+      a record.
+    * Silent in backfill. Backfill never calls this — `radar.backfill` builds
+      the corpus straight from `collect_all(mode="backfill")` — so the whole
+      depth of a table still reaches the corpus untouched.
+
+    `cluster_id` is deliberately left NULL: `raw_items` points at `clusters`,
+    which `prune_state` deletes from after thirty days, and a filled-in
+    reference would turn pruning into a foreign-key error.
+    """
+    as_of = as_of or datetime.now(UTC).date()
+    now = now or datetime.now(UTC)
+    if now.date() != as_of:
+        # A run stamped for a day other than the wall clock: `--for-date`,
+        # a catch-up after an outage, the demo playing two mornings in one
+        # afternoon. The ledger answers "which run-day met this first", so it
+        # has to record the run's day; keeping the clock's would make both of
+        # those mornings the same day and the second one empty.
+        now = datetime.combine(as_of, now.timetz())
+
+    kept: list[CollectedItem] = []
+    rows: list[tuple[Any, ...]] = []
+    in_batch: set[str] = set()
+    for item in items:
+        key = material_id(item)
+        if key in in_batch:  # the collector merges these already; belt and braces
+            continue
+        in_batch.add(key)
+        known = conn.execute(
+            "SELECT collected_at FROM raw_items WHERE id = ?", (key,)
+        ).fetchone()
+        if known is not None and _first_seen_before(known[0], as_of):
+            continue
+        kept.append(item)
+        rows.append(
+            (
+                key,
+                str(item.extra.get("source_id", "")),
+                item.url,
+                item.title,
+                item.published_at.isoformat() if item.published_at else None,
+                now.isoformat(),
+                item.raw_material_ref,
+                json.dumps(item.extra.get("seen_in", []), ensure_ascii=False),
+            )
+        )
+
+    if rows:
+        with conn:
+            conn.executemany(
+                "INSERT INTO raw_items (id, source_id, url, title, published_at, "
+                "collected_at, raw_ref, seen_in_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                # First sighting is the fact being stored, so a rerun must not
+                # move the timestamp forward: that would make today's records
+                # new again tomorrow.
+                "ON CONFLICT(id) DO NOTHING",
+                rows,
+            )
+    return kept
 
 
 @dataclass(slots=True)
@@ -205,6 +332,12 @@ def prune_state(conn: sqlite3.Connection, as_of: date | None = None) -> int:
 
     Safe because the operational layer is derived: FR-5.19 makes it
     rebuildable from the corpus, which is append-only.
+
+    `raw_items` is not swept with them, and must not be. It is not a cache of
+    recent stories but the record of what the system has ever laid eyes on;
+    forgetting a row after thirty days means announcing the same retirement
+    table again in the thirty-first morning. It costs about a hundred rows a
+    day.
     """
     as_of = as_of or datetime.now(UTC).date()
     cutoff = (as_of - timedelta(days=STATE_HORIZON_DAYS)).isoformat()

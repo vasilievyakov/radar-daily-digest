@@ -108,6 +108,23 @@ class Fetcher:
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             else:
+                if 400 <= response.status_code < 500:
+                    # Not retried, and — this is the change — not archived
+                    # either. A cached 404 is worse than a cached 500 because
+                    # it is stable and therefore invisible: Azure moved its
+                    # retirement schedule, the 404 went into the cache, and
+                    # the source then reported a one-millisecond answer with
+                    # no records, which on the page looks exactly like a
+                    # source that is simply quiet today.
+                    return FetchResult(
+                        url=canonical_url(url),
+                        status_code=response.status_code,
+                        text=response.text,
+                        headers=dict(response.headers),
+                        ref=key,
+                        from_cache=False,
+                        error=f"HTTP {response.status_code}",
+                    )
                 if response.status_code >= 500:
                     # Never archived: a cached 500 would replay a one-off
                     # outage from disk on every later run, and no amount of
