@@ -22,7 +22,7 @@ import sqlite3
 from datetime import UTC, date, datetime
 from typing import Any
 
-from radar.assertions import resolve_context_label
+from radar.assertions import resolve_context_label, validate_precedents
 from radar.cache import digest
 from radar.cluster import Cluster
 from radar.collect import SourceOutcome
@@ -335,6 +335,26 @@ def build_signal(
     unbuildable on data already collected.
     """
     precedents = retrieval.precedents if retrieval else []
+    # The fifteenth guard found written and never called. Precedents reach the
+    # card and the count in "the twentieth time since February", so one from
+    # another vendor, another change type, or the same record twice is a false
+    # number on the page — and the query that fetched them is not the only
+    # thing that can be wrong about them. Applied here rather than at the call
+    # site because here it cannot be skipped.
+    dropped: list[tuple[str, str]] = []
+    if precedents:
+        precedents, dropped = validate_precedents(
+            precedents, cluster.vendor, cluster.change_type
+        )
+    report = retrieval.report if retrieval else None
+    if report is not None and dropped:
+        report = report.model_copy(
+            update={
+                "shown": len(precedents),
+                "total_found": max(0, report.total_found - len(dropped)),
+                "strict_hits": max(0, report.strict_hits - len(dropped)),
+            }
+        )
     due = choose_due_date(facts, for_date)
     # The count decides the label, never the model (FR-5.9, FR-6.17). Passed
     # in rather than read from a retriever so this function stays pure.
@@ -369,7 +389,7 @@ def build_signal(
         # them: the daily run never consulted the trends table.
         trend_id=str(trend["trend_id"]) if trend else None,
         precedents=precedents,
-        retrieval=retrieval.report if retrieval else None,
+        retrieval=report,
         context_note=build_context_note(
             label,
             precedents,
@@ -378,8 +398,8 @@ def build_signal(
             for_date,
             # The count and the date come from the corpus query, not from the
             # capped list above it.
-            total_found=retrieval.report.total_found if retrieval else None,
-            earliest_match=retrieval.report.earliest_event_date if retrieval else None,
+            total_found=report.total_found if report else None,
+            earliest_match=report.earliest_event_date if report else None,
             change_type=ChangeType(cluster.change_type) if cluster.change_type else None,
         ),
         due_date=due[0],

@@ -19,6 +19,7 @@ from radar.models import (
     SourceStatus,
     Tier,
     DatePrecision,
+    RetrievalReport,
 )
 from radar.publish import (
     build_context_note,
@@ -704,3 +705,66 @@ class TestOneDatePerCard:
             headline="заголовок", summary="текст",
         )
         assert signal.due_date == date(2026, 9, 1)
+
+
+class TestPrecedentsAreCheckedBeforeTheyAreCounted:
+    """The fifteenth guard found written and never called.
+
+    Precedents reach the card and the number in "the twentieth time since
+    February". One from another vendor, another change type, or the same record
+    twice is a false number on a page whose whole claim is that its numbers can
+    be checked. The query is not the only thing that can be wrong about them —
+    and the check belongs where it cannot be skipped.
+    """
+
+    @staticmethod
+    def _hit(statement_id, vendor="anthropic", change_type="deprecation"):
+        from radar.retrieval import RetrievalHit
+
+        return RetrievalHit(
+            statement_id=statement_id, text="Anthropic отключает модель",
+            source_url="https://example.test/x", vendor=vendor,
+            change_type=change_type, event_date=date(2026, 3, 1),
+            date_precision="day", evidence="q",
+        )
+
+    def _signal(self, precedents):
+        from radar.cluster import Cluster
+        from radar.adapters.base import CollectedItem
+        from radar.retrieval import RetrievalResult
+
+        item = CollectedItem(url="https://example.test/x", title="t", raw_text="")
+        cluster = Cluster(cluster_id="c1", dedup_key="d1", items=[item],
+                          vendor="anthropic", change_type="deprecation")
+        report = RetrievalReport(
+            strict_hits=len(precedents), relaxed_hits=len(precedents),
+            total_found=len(precedents), shown=len(precedents),
+        )
+        retrieval = RetrievalResult(hits=precedents, report=report)
+        return build_signal(
+            "run-1", date(2026, 8, 18), cluster, [], None, retrieval,
+            score=0, rationale="", tier=Tier.STANDARD, rank=1,
+            headline="заголовок", summary="текст",
+        )
+
+    def test_a_precedent_from_another_vendor_is_dropped(self):
+        signal = self._signal([
+            self._hit("a"), self._hit("b"),
+            self._hit("c", vendor="google"),
+        ])
+        assert [p.statement_id for p in signal.precedents] == ["a", "b"]
+
+    def test_the_same_record_twice_is_counted_once(self):
+        signal = self._signal([
+            self._hit("a"), self._hit("a"), self._hit("b"),
+        ])
+        assert [p.statement_id for p in signal.precedents] == ["a", "b"]
+
+    def test_the_printed_number_drops_with_them(self):
+        clean = self._signal([self._hit(x) for x in "abc"])
+        dirty = self._signal([
+            self._hit("a"), self._hit("b"), self._hit("c"),
+            self._hit("d", change_type="release"),
+        ])
+        assert clean.retrieval.total_found == dirty.retrieval.total_found == 3
+        assert clean.context_note == dirty.context_note
