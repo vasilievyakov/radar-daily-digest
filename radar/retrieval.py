@@ -131,6 +131,67 @@ class CorpusRetriever:
                 types.update(group)
         return sorted(types)
 
+    def _filter(
+        self,
+        vendor: str,
+        change_types: list[str],
+        as_of: date,
+        window_days: int,
+        exclude_ids: set[str],
+    ) -> tuple[str, list[Any]]:
+        """The strict filter as one FROM/WHERE clause, shared by both queries.
+
+        Counting and listing must not be able to disagree, so neither builds
+        its own predicate: the page of records the reader sees and the number
+        printed above it are drawn from the same clause with the same
+        parameters.
+        """
+        earliest = (as_of - timedelta(days=window_days)).isoformat()
+        placeholders = ",".join("?" * len(change_types))
+        params: list[Any] = [vendor, *change_types, earliest, as_of.isoformat()]
+
+        sql = (
+            "FROM event_statements s "
+            f"WHERE s.vendor = ? AND s.change_type IN ({placeholders}) "
+            "AND s.event_date IS NOT NULL AND s.event_date >= ? AND s.event_date <= ? "
+            # Superseded records stay in the corpus (FR-5.18) but must not be
+            # cited as if they were still current.
+            "AND s.statement_id NOT IN (SELECT supersedes FROM event_statements "
+            "WHERE supersedes IS NOT NULL)"
+        )
+        if exclude_ids:
+            ids = sorted(exclude_ids)
+            sql += f" AND s.statement_id NOT IN ({','.join('?' * len(ids))})"
+            params.extend(ids)
+        return sql, params
+
+    def _count(
+        self,
+        vendor: str,
+        change_types: list[str],
+        as_of: date,
+        window_days: int,
+        exclude_ids: set[str],
+    ) -> tuple[int, date | None]:
+        """How many records match, and how far back they go.
+
+        Separate from the listing on purpose. `max_results` is a page size for
+        the reader; a count taken from the page can never exceed it, and a
+        sentence built on that length reports the pagination constant instead
+        of the corpus. The oldest date comes from the same aggregate so the
+        count and the date in that sentence describe one and the same set.
+        """
+        clause, params = self._filter(
+            vendor, change_types, as_of, window_days, exclude_ids
+        )
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS n, MIN(s.event_date) AS earliest {clause}", params
+        ).fetchone()
+        if row is None:
+            return 0, None
+        raw = row["earliest"]
+        return int(row["n"]), date.fromisoformat(raw) if raw else None
+
     def _query(
         self,
         vendor: str,
@@ -140,22 +201,13 @@ class CorpusRetriever:
         text: str | None,
         exclude_ids: set[str],
     ) -> list[RetrievalHit]:
-        earliest = (as_of - timedelta(days=window_days)).isoformat()
-        placeholders = ",".join("?" * len(change_types))
-        params: list[Any] = [vendor, *change_types, earliest, as_of.isoformat()]
-
-        sql = (
-            "SELECT s.* FROM event_statements s "
-            f"WHERE s.vendor = ? AND s.change_type IN ({placeholders}) "
-            "AND s.event_date IS NOT NULL AND s.event_date >= ? AND s.event_date <= ? "
-            # Superseded records stay in the corpus (FR-5.18) but must not be
-            # cited as if they were still current.
-            "AND s.statement_id NOT IN (SELECT supersedes FROM event_statements "
-            "WHERE supersedes IS NOT NULL) "
-            "ORDER BY s.event_date DESC"
+        clause, params = self._filter(
+            vendor, change_types, as_of, window_days, exclude_ids
         )
-        rows = self.conn.execute(sql, params).fetchall()
-        hits = [_row_to_hit(r) for r in rows if r["statement_id"] not in exclude_ids]
+        rows = self.conn.execute(
+            f"SELECT s.* {clause} ORDER BY s.event_date DESC", params
+        ).fetchall()
+        hits = [_row_to_hit(r) for r in rows]
 
         if text:
             matched = self._semantic_order(text, {h.statement_id for h in hits})
@@ -209,17 +261,29 @@ class CorpusRetriever:
             return result
 
         exclude_ids = exclude_ids or set()
-        strict: list[RetrievalHit] = []
+        # The window is chosen on the count, not on the page: a cap of 12 must
+        # not make a window with 100 matches look the same as one with 12.
+        strict_total = 0
+        strict_earliest: date | None = None
         window_used: int | None = None
         for window in self.windows:
-            strict = self._query(
-                vendor, [change_type], as_of, window, text, exclude_ids
+            strict_total, strict_earliest = self._count(
+                vendor, [change_type], as_of, window, exclude_ids
             )
             window_used = window
-            if len(strict) >= self.min_evidence:
+            if strict_total >= self.min_evidence:
                 break
 
+        strict: list[RetrievalHit] = (
+            self._query(vendor, [change_type], as_of, window_used, text, exclude_ids)
+            if window_used is not None
+            else []
+        )
+
         widest = max(self.windows) if self.windows else 365
+        relaxed_total, _ = self._count(
+            vendor, self.neighbours_of(change_type), as_of, widest, exclude_ids
+        )
         relaxed = self._query(
             vendor, self.neighbours_of(change_type), as_of, widest, text, exclude_ids
         )
@@ -229,10 +293,13 @@ class CorpusRetriever:
         result.relaxed_only = [h for h in relaxed if h.statement_id not in strict_ids]
         result.window_used = window_used
         result.report = RetrievalReport(
-            strict_hits=len(strict),
-            relaxed_hits=len(relaxed),
-            total_found=len(strict),
+            strict_hits=strict_total,
+            relaxed_hits=relaxed_total,
+            # Counted by the corpus, capped only for display. `shown` is the
+            # page size; anything published as a number must come from here.
+            total_found=strict_total,
             shown=len(result.hits),
+            earliest_event_date=strict_earliest,
             windows_days=[window_used] if window_used else list(self.windows),
         )
         return result

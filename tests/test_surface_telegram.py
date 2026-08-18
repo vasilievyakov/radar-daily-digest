@@ -26,6 +26,7 @@ from radar.models import (
     Fact,
     FactKind,
     Precedent,
+    RunSummary,
     Signal,
     SignalType,
     Tier,
@@ -512,6 +513,27 @@ class TestQuietDay:
         text = telegram.render_quiet_day(quiet_signal(precedents=[]), TODAY)
         assert "Ближайшее" not in text
         assert "Проверено 14 источников" in text
+
+    def test_the_proof_line_survives_a_signal_the_core_actually_writes(self):
+        """`stats` is a free-form extension nothing in the core fills.
+
+        A live quiet_day arrives with `stats == {}` and a populated
+        `run_summary`, and reading only `stats` left the message with no
+        numbers under it — which is what an agent gone silent looks like.
+        """
+        signal = quiet_signal(
+            stats={},
+            precedents=[],
+            run_summary=RunSummary(
+                sources_checked=5,
+                sources_empty=["worldmonitor"],
+                materials_collected=0,
+                materials_filtered=0,
+            ),
+        )
+        text = telegram.render_quiet_day(signal, TODAY)
+        assert "Проверено 5 источников." in text
+        assert "worldmonitor ответил, но ничего не отдал." in text
 
     def test_past_deadlines_do_not_reach_the_upcoming_block(self):
         stale = Precedent(

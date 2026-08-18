@@ -37,6 +37,7 @@ from radar.models import (
     DeltaStatus,
     Fact,
     Precedent,
+    RunSummary,
     Signal,
     SignalType,
     Tier,
@@ -70,12 +71,32 @@ FALLBACK_SUBJECT = "Изменения в вашем стеке"
 RUN_LOG_LABEL = "Лог прогона"
 
 MONTHS_GEN = (
-    "января", "февраля", "марта", "апреля", "мая", "июня",
-    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
 )
 MONTHS_NOM = (
-    "январь", "февраль", "март", "апрель", "май", "июнь",
-    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
 )
 
 FACT_LABELS = {
@@ -409,9 +430,7 @@ def _fact_view(fact: Fact, today: date) -> _FactView:
 
 
 def _precedent_view(precedent: Precedent, today: date) -> _PrecedentView:
-    date_text = _date_phrase(
-        precedent.event_date, today, precedent.date_precision
-    )
+    date_text = _date_phrase(precedent.event_date, today, precedent.date_precision)
     if not date_text:
         date_text = "дата в источнике не указана"
     meta = precedent.vendor
@@ -506,14 +525,25 @@ def _upcoming_views(signal: Signal, today: date) -> list[_UpcomingView]:
     return views
 
 
-def _quiet_stats_line(stats: Mapping[str, int]) -> str:
+def _quiet_stats_line(stats: Mapping[str, int], summary: RunSummary | None) -> str:
+    """The numbers that separate a quiet day from an agent gone silent.
+
+    `Signal.stats` is a free-form extension dict that nothing in the core ever
+    fills, so on live data this line was always empty and the letter said only
+    that nothing happened, with nothing to show it had looked. `RunSummary` is
+    the field the pipeline does populate.
+    """
     parts: list[str] = []
     sources = _stat(stats, SOURCE_KEYS)
+    if sources is None and summary is not None:
+        sources = summary.sources_checked
     if sources is not None:
         checked = _count(sources, "источник", "источника", "источников")
         parts.append(f"Проверено {checked}")
     rejected = _stat(stats, REJECTED_KEYS)
-    if rejected is not None:
+    if rejected is None and summary is not None:
+        rejected = summary.materials_filtered
+    if rejected:
         dropped = _count(rejected, "материал", "материала", "материалов")
         parts.append(f"{dropped} отклонено")
     return _sentence(", ".join(parts)) if parts else ""
@@ -527,7 +557,7 @@ def _quiet_view(signal: Signal | None, today: date) -> _BlockView:
         intro=intro,
         detail="",
         upcoming=_upcoming_views(signal, today),
-        stats_line=_quiet_stats_line(signal.stats),
+        stats_line=_quiet_stats_line(signal.stats, signal.run_summary),
         signal_id=signal.signal_id,
     )
 
@@ -542,6 +572,10 @@ def _failure_view(signal: Signal, today: date) -> _BlockView:
     reason = " ".join((signal.failure_reason or "").split())
     intro = _sentence(f"{prefix}: {reason}" if reason else prefix)
     collected = _stat(signal.stats, COLLECTED_KEYS)
+    if collected is None and signal.run_summary is not None:
+        # Same dead field as the quiet-day line: `stats` is never filled by
+        # the core, `run_summary` is.
+        collected = signal.run_summary.materials_collected or None
     detail = " ".join(signal.summary.split())
     if collected is not None:
         gathered = _count(collected, "материал", "материала", "материалов")
@@ -599,9 +633,7 @@ def _sources_line(signals: Sequence[Signal]) -> str:
     return " ".join(parts)
 
 
-def _subject(
-    failure: _BlockView | None, cards: Sequence[Signal], quiet: bool
-) -> str:
+def _subject(failure: _BlockView | None, cards: Sequence[Signal], quiet: bool) -> str:
     """Same rule as the lock-screen line: the main fact, nothing about us."""
     if failure is not None:
         return FAILURE_SUBJECT
@@ -716,9 +748,7 @@ def _block_text(block: _BlockView) -> list[str]:
 
 
 def render_text(view: _LetterView) -> str:
-    sections: list[list[str]] = [
-        [view.header, "=" * min(len(view.header), TEXT_WIDTH)]
-    ]
+    sections: list[list[str]] = [[view.header, "=" * min(len(view.header), TEXT_WIDTH)]]
     if view.failure is not None:
         sections.append(_block_text(view.failure))
     if view.quiet is not None:
@@ -867,9 +897,7 @@ def _card_html(card: _CardView) -> str:
             if precedent.url:
                 parts.append(
                     f'<p style="margin:4px 0 0 0;padding:0;'
-                    f'background-color:{C_CARD};">'
-                    + _anchor(precedent.url)
-                    + "</p>"
+                    f'background-color:{C_CARD};">' + _anchor(precedent.url) + "</p>"
                 )
     if card.delta:
         parts.append(_para(card.delta, size=14, top=16, color=C_MUTED))
@@ -969,9 +997,7 @@ def render_html(view: _LetterView) -> str:
     )
 
 
-def build_email(
-    signals: Sequence[Signal], today: date | None = None
-) -> EmailDigest:
+def build_email(signals: Sequence[Signal], today: date | None = None) -> EmailDigest:
     view = build_view(signals, today)
     ids = tuple(card.signal_id for card in view.cards)
     for block in (view.failure, view.quiet):
@@ -995,9 +1021,7 @@ def load_smtp_config(env: Mapping[str, str] | None = None) -> SmtpConfig:
     env = os.environ if env is None else env
     missing = [name for name in REQUIRED_ENV if not (env.get(name) or "").strip()]
     if missing:
-        raise EmailConfigError(
-            "Не заданы переменные окружения: " + ", ".join(missing)
-        )
+        raise EmailConfigError("Не заданы переменные окружения: " + ", ".join(missing))
     raw_port = (env.get("SMTP_PORT") or "587").strip()
     try:
         port = int(raw_port)
@@ -1034,9 +1058,7 @@ def build_message(
     message["Auto-Submitted"] = "auto-generated"
     # base64 keeps Cyrillic intact on relays that never announced 8BITMIME.
     message.set_content(digest.text, subtype="plain", charset="utf-8", cte="base64")
-    message.add_alternative(
-        digest.html, subtype="html", charset="utf-8", cte="base64"
-    )
+    message.add_alternative(digest.html, subtype="html", charset="utf-8", cte="base64")
     return message
 
 

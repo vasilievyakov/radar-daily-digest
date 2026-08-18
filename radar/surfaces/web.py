@@ -171,6 +171,9 @@ SOURCE_STATUS_LABELS = {
     "ok": "ответил",
     "failed": "не ответил",
     "empty": "ответил, ничего не отдал",
+    # Checked, answered, nothing of it inside the window. A working source on
+    # a quiet morning, and the page must not file it next to the broken ones.
+    "quiet": "проверен, нового нет",
     "skipped": "пропущен",
 }
 
@@ -937,8 +940,15 @@ def checked_sentence(summary: RunSummary | None) -> str:
         return ""
     parts = [f"Проверено {count_phrase(summary.sources_checked, SOURCE_FORMS)}"]
     rejected = summary.materials_filtered
-    verb = "отклонён" if plural(rejected, MATERIAL_FORMS) == "материал" else "отклонено"
-    parts.append(f"{count_phrase(rejected, MATERIAL_FORMS)} {verb}")
+    if rejected:
+        # A quiet day rejects nothing, and "0 материалов отклонено" reads as a
+        # counter that failed rather than as a day with nothing to reject.
+        verb = (
+            "отклонён"
+            if plural(rejected, MATERIAL_FORMS) == "материал"
+            else "отклонено"
+        )
+        parts.append(f"{count_phrase(rejected, MATERIAL_FORMS)} {verb}")
     return ", ".join(parts) + "."
 
 
@@ -1175,6 +1185,11 @@ class RunLogView:
         return [s for s in self.empty_sources if s.items_count == 0]
 
     @property
+    def quiet_sources(self) -> list[SourceRow]:
+        """Checked, answered, nothing new. Not a fault and not counted as one."""
+        return [s for s in self.sources if s.status == "quiet"]
+
+    @property
     def latest_moment(self) -> datetime | None:
         """The newest moment the store recorded, and the page's «now».
 
@@ -1284,7 +1299,8 @@ def load_run_log(
         )
         for row in conn.execute(
             "SELECT * FROM source_runs WHERE run_id = ? ORDER BY CASE status "
-            "WHEN 'failed' THEN 0 WHEN 'empty' THEN 1 ELSE 2 END, source_id",
+            "WHEN 'failed' THEN 0 WHEN 'empty' THEN 1 WHEN 'quiet' THEN 3 "
+            "ELSE 2 END, source_id",
             (run_id,),
         )
     ]
@@ -1431,7 +1447,9 @@ def _digest_footer(
     summary = next((s.run_summary for s in signals if s.run_summary), None)
     if summary is not None:
         if summary.sources_failed:
-            listed = ", ".join(esc(human_name(n, names)) for n in summary.sources_failed)
+            listed = ", ".join(
+                esc(human_name(n, names)) for n in summary.sources_failed
+            )
             word = spelled_count_phrase(
                 len(summary.sources_failed), SOURCE_FORMS, NUMERALS_MASCULINE
             )
@@ -1634,7 +1652,7 @@ def funnel_sentence(run: RunLogView) -> str:
 def sources_sentence(run: RunLogView) -> str:
     """Seven rows under a run that set out to check fourteen reads as loss."""
     answered = len(run.sources)
-    counts = {"ok": 0, "empty": 0, "failed": 0}
+    counts = {"ok": 0, "quiet": 0, "empty": 0, "failed": 0}
     for source in run.sources:
         counts[source.status] = counts.get(source.status, 0) + 1
     configured = run.sources_configured
@@ -1647,10 +1665,16 @@ def sources_sentence(run: RunLogView) -> str:
         head = f"Опрошено {count_phrase(answered, SOURCE_FORMS)}"
     parts = []
     if counts.get("ok"):
+        # «Ответили» would cover the quiet ones too, and the whole point of
+        # the row below is that they answered as well.
         parts.append(
             f"{fmt_int(counts['ok'])} "
-            + ("ответил" if counts["ok"] == 1 else "ответили")
+            + ("сообщил новое" if counts["ok"] == 1 else "сообщили новое")
         )
+    if counts.get("quiet"):
+        quiet = counts["quiet"]
+        verb = "проверен, нового нет" if quiet == 1 else "проверены, нового нет"
+        parts.append(f"{fmt_int(quiet)} {verb}")
     if counts.get("failed"):
         verb = "не ответил" if counts["failed"] == 1 else "не ответили"
         parts.append(f"{fmt_int(counts['failed'])} {verb}")

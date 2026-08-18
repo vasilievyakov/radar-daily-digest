@@ -17,6 +17,7 @@ forbids, and three surfaces would word one claim three ways.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import UTC, date, datetime
 from typing import Any
@@ -59,6 +60,16 @@ MONTHS_GENITIVE = [
 # Beyond this a deadline is too far away to be worth the quiet-day block.
 UPCOMING_HORIZON_DAYS = 120
 MAX_UPCOMING = 3
+# Rows read before deduplication. The corpus holds one obligation several
+# times over, so reading `MAX_UPCOMING` rows would return one event three
+# times and never reach the second.
+UPCOMING_SCAN_LIMIT = 200
+
+# `gemini-2.5-flash-image`, `claude-mythos-preview`, `top_p`: starts with a
+# letter and carries an internal dot, hyphen or underscore. Ordinary Russian
+# prose has none of those, so a sentence without a technical name yields an
+# empty set and is treated as unidentifiable rather than as a new event.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[._\-][A-Za-z0-9]+)+")
 
 
 def _day_month(value: date) -> str:
@@ -80,11 +91,20 @@ def build_context_note(
     vendor_label: str,
     change_type_label: str,
     as_of: date,
+    *,
+    total_found: int | None = None,
+    earliest_match: date | None = None,
 ) -> str | None:
-    """One sentence, every number of which the precedent list can back.
+    """One sentence, every number of which the corpus can back.
 
     FR-6.18 bans quantifiers without a number: "вендор всё чаще" is forbidden,
     "третий раз с мая" is allowed and must come with the records.
+
+    `precedents` is a page, not the evidence base: retrieval caps it at
+    `max_results`. Counting it printed "13-й раз" for every event with twelve
+    or more precedents — a number produced by the pagination constant, not by
+    the corpus. `total_found` and `earliest_match` come from the retrieval
+    COUNT(*) over the strict filter and are what the sentence quotes.
     """
     if label is None or label is ContextLabel.NOT_FOUND_IN_CORPUS:
         return None
@@ -92,8 +112,10 @@ def build_context_note(
     if len(dated) < 2:
         return None
 
-    count = len(precedents) + 1  # the precedents plus today's event
-    earliest = dated[0]
+    # Never below what is on the page: the shown records are themselves proof.
+    matches = max(total_found, len(precedents)) if total_found else len(precedents)
+    count = matches + 1  # the precedents plus today's event
+    earliest = min(earliest_match, dated[0]) if earliest_match else dated[0]
     since = (
         f"с {_day_month(earliest)}"
         if earliest.year == as_of.year
@@ -107,32 +129,86 @@ def build_context_note(
     return f"{vendor_label}: {change_type_label.lower()}, {head} {since}."
 
 
+def upcoming_identifiers(text: str) -> set[str]:
+    """Technical names inside a statement: `gemini-2.5-flash-image` and kin.
+
+    The subject of a deprecation is the identifier a reader greps their code
+    for, and it is the only part of the sentence that survives four different
+    wordings of the same announcement. A token qualifies when it starts with a
+    letter and carries an internal dot or hyphen, which keeps model and package
+    names and leaves ordinary Russian prose out.
+    """
+    return {match.group(0).lower() for match in _IDENTIFIER_RE.finditer(text)}
+
+
+def _same_event(left: tuple[str, set[str]], right: tuple[str, set[str]]) -> bool:
+    """Two statements about one obligation, on the same date and vendor.
+
+    Identifiers decide it. Two named models sharing a shutdown date are two
+    deadlines and both belong in the block; the same model named twice is one.
+    A sentence that names no identifier ("стабильная модель Gemini 2.5 Flash
+    для работы с изображениями") cannot be told apart from its neighbours, so
+    it folds into the group rather than standing beside it as a third copy.
+    """
+    left_vendor, left_ids = left
+    right_vendor, right_ids = right
+    if left_vendor != right_vendor:
+        return False
+    if not left_ids or not right_ids:
+        return True
+    return bool(left_ids & right_ids)
+
+
 def collect_upcoming(
     conn: sqlite3.Connection, as_of: date, limit: int = MAX_UPCOMING
 ) -> list[UpcomingDeadline]:
-    """Dated obligations already in the corpus, nearest first."""
+    """Dated obligations already in the corpus, nearest first.
+
+    One obligation appears in the corpus many times over: several sources, and
+    several extraction passes over one source, each wording it their own way.
+    Keying by product was not enough — the same shutdown arrives as product
+    `Gemini API`, product `Gemini Robotics API` and product `NULL`, so the
+    quiet-day block filled all three of its slots with one event. Deduplication
+    therefore happens on what the sentences agree about: date, vendor and the
+    identifier they name.
+    """
     rows = conn.execute(
         "SELECT vendor, product, text, event_date, date_precision, source_url "
         "FROM event_statements "
         "WHERE change_type IN ('deprecation', 'breaking_change') "
         "AND event_date IS NOT NULL AND event_date > ? AND event_date <= ? "
+        # Wide enough that duplicates cannot crowd out the second real
+        # deadline: the horizon already bounds this, the cap is a guard.
         "ORDER BY event_date ASC LIMIT ?",
         (
             as_of.isoformat(),
             date.fromordinal(as_of.toordinal() + UPCOMING_HORIZON_DAYS).isoformat(),
-            limit * 3,
+            UPCOMING_SCAN_LIMIT,
         ),
     ).fetchall()
 
-    seen: set[tuple[str, str]] = set()
-    out: list[UpcomingDeadline] = []
+    groups: list[tuple[date, str, set[str], Any]] = []
     for row in rows:
         when = date.fromisoformat(row["event_date"])
-        subject = row["product"] or row["vendor"]
-        key = (when.isoformat(), subject or "")
-        if key in seen:
-            continue
-        seen.add(key)
+        text = (row["text"] or "").strip()
+        vendor = row["vendor"] or ""
+        ids = upcoming_identifiers(text)
+        for index, (seen_when, seen_vendor, seen_ids, best) in enumerate(groups):
+            if seen_when != when or not _same_event(
+                (vendor, ids), (seen_vendor, seen_ids)
+            ):
+                continue
+            seen_ids |= ids
+            # The wording kept is the shortest that names the identifier: the
+            # reader wants the model and the date, not the fourth paraphrase.
+            if _better_wording(row, best):
+                groups[index] = (seen_when, seen_vendor, seen_ids, row)
+            break
+        else:
+            groups.append((when, vendor, ids, row))
+
+    out: list[UpcomingDeadline] = []
+    for when, _vendor, _ids, row in groups[:limit]:
         out.append(
             UpcomingDeadline(
                 when=when,
@@ -144,9 +220,20 @@ def collect_upcoming(
                 date_precision=DatePrecision(row["date_precision"] or "day"),
             )
         )
-        if len(out) >= limit:
-            break
     return out
+
+
+def _better_wording(candidate: Any, current: Any) -> bool:
+    """Deterministic pick among duplicates, so reruns say the same thing."""
+    candidate_text = (candidate["text"] or "").strip()
+    current_text = (current["text"] or "").strip()
+    candidate_named = bool(upcoming_identifiers(candidate_text))
+    current_named = bool(upcoming_identifiers(current_text))
+    if candidate_named != current_named:
+        return candidate_named
+    if len(candidate_text) != len(current_text):
+        return len(candidate_text) < len(current_text)
+    return candidate_text < current_text
 
 
 def build_run_summary(
@@ -215,11 +302,7 @@ def build_signal(
     precedents = retrieval.precedents if retrieval else []
     # The count decides the label, never the model (FR-5.9, FR-6.17). Passed
     # in rather than read from a retriever so this function stays pure.
-    label = (
-        resolve_context_label(None, precedents)
-        if retrieval is not None
-        else None
-    )
+    label = resolve_context_label(None, precedents) if retrieval is not None else None
 
     return Signal(
         signal_id=make_signal_id(run_id, cluster.cluster_id),
@@ -248,6 +331,10 @@ def build_signal(
             vendor_label or (cluster.vendor or ""),
             change_type_label or (cluster.change_type or ""),
             for_date,
+            # The count and the date come from the corpus query, not from the
+            # capped list above it.
+            total_found=retrieval.report.total_found if retrieval else None,
+            earliest_match=retrieval.report.earliest_event_date if retrieval else None,
         ),
         score=score,
         score_rationale=rationale,

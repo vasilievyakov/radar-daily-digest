@@ -94,6 +94,10 @@ class SourceStatus(StrEnum):
     # HTTP 200 carrying zero extractable items. Client-rendered pages fail this
     # way, and FR-1.4 would otherwise record them as successful.
     EMPTY = "empty"
+    # Checked, answered with its usual contents, nothing of it inside the
+    # window. A repository that shipped no release today is not a fault, and
+    # the product exists to tell that day apart from a broken one.
+    QUIET = "quiet"
 
 
 class Fact(BaseModel):
@@ -197,8 +201,16 @@ class RetrievalReport(BaseModel):
 
     strict_hits: int = 0
     relaxed_hits: int = 0
+    # Everything the strict filter matched, counted by the corpus. `shown` is
+    # how many of them fit the page. A published number must come from
+    # `total_found`; taking it from the list length reports `max_results`.
     total_found: int = 0
     shown: int = 0
+    # The oldest strict match, from the same aggregate as `total_found`. The
+    # page is capped and ordered by relevance, so its own oldest record is
+    # younger than the corpus's whenever the cap bites — pairing the true
+    # count with the visible date would claim a span nothing backs.
+    earliest_event_date: date | None = None
     windows_days: list[int] = Field(default_factory=list)
 
 
@@ -213,6 +225,9 @@ class RunSummary(BaseModel):
     sources_checked: int = 0
     sources_failed: list[str] = Field(default_factory=list)
     # HTTP 200 with nothing extractable: a different fault, named separately.
+    # Faults only. A source checked with nothing new in the window carries
+    # SourceStatus.QUIET and appears in neither list: naming it here would
+    # make a digest accuse seventy working sources on an ordinary morning.
     sources_empty: list[str] = Field(default_factory=list)
     materials_collected: int = 0
     materials_filtered: int = 0

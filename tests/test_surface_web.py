@@ -681,6 +681,17 @@ def test_quiet_day_page():
     assert "sig-quiet" in html
 
 
+def test_a_day_that_rejected_nothing_does_not_report_a_zero():
+    """On a real quiet day `materials_filtered` is 0, and «0 материалов
+    отклонено» reads as a counter that broke rather than as a calm day."""
+    signal = make_quiet_signal(
+        run_summary=RunSummary(sources_checked=5, materials_filtered=0)
+    )
+    html = web.render_digest([signal], today=TODAY)
+    assert "Проверено 5 источников." in html
+    assert "0 материалов" not in html
+
+
 def test_quiet_day_without_deadlines_drops_the_whole_block():
     signal = make_quiet_signal(facts=[], precedents=[], upcoming=[])
     html = web.render_digest([signal], today=TODAY)
@@ -950,7 +961,7 @@ def test_the_sources_sentence_counts_the_two_faults_apart():
     )
 
     assert web.sources_sentence(run) == (
-        "Опрошено 4 источника: 1 ответил, 2 ответили меньше ожидаемого, "
+        "Опрошено 4 источника: 1 сообщил новое, 2 ответили меньше ожидаемого, "
         "1 ответил без записей."
     )
 
@@ -1370,7 +1381,9 @@ def test_fact_block_shows_the_relative_date_not_the_raw_value():
     """voice 4 has no exception for the evidence block."""
     html = web.render_digest([make_lead_signal()], today=TODAY)
     assert "Дата отключения:" in html
-    assert '<span class="value">15 октября, через 59 дней — claude-3-opus</span>' in html
+    assert (
+        '<span class="value">15 октября, через 59 дней — claude-3-opus</span>' in html
+    )
     assert "2026-10-15" not in html
 
 
@@ -1405,7 +1418,9 @@ def test_without_a_context_note_only_the_disclosure_label_is_shown():
     signal = make_lead_signal(context_note=None)
     html = web.render_digest([signal], today=TODAY)
     assert "Показать три записи" in html
-    assert "Событие" not in html.split('<details class="ctx">')[1].split("</summary>")[0]
+    assert (
+        "Событие" not in html.split('<details class="ctx">')[1].split("</summary>")[0]
+    )
 
 
 def test_failure_page_names_the_stage_and_the_last_good_day():
@@ -1503,15 +1518,15 @@ def test_funnel_closes_when_every_drop_has_a_reason():
 
 def test_stage_table_shows_the_drop_and_the_recorded_reasons():
     html = web.render_run_log(make_run_view(), today=TODAY)
-    assert "<th class=\"num\">Отсеяно</th>" in html
-    assert "<th class=\"num\">Причин записано</th>" in html
+    assert '<th class="num">Отсеяно</th>' in html
+    assert '<th class="num">Причин записано</th>' in html
 
 
 def test_sources_line_names_configured_and_answered():
     run = make_run_view(sources_configured=14)
     html = web.render_run_log(run, today=TODAY)
     assert "В прогоне участвовало 14 источников, результат записан по 3" in html
-    assert "1 ответил, 1 не ответил, 1 ответил без записей." in html
+    assert "1 сообщил новое, 1 не ответил, 1 ответил без записей." in html
 
 
 def test_sources_line_without_a_configured_count():

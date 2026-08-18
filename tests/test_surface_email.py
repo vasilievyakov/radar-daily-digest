@@ -435,9 +435,10 @@ def test_relative_dates_accompany_every_date():
     assert phrase(date(2026, 8, 18), TODAY) == "завтра"
     assert phrase(date(2026, 8, 16), TODAY) == "вчера"
     assert phrase(date(2026, 8, 18), TODAY) == "завтра"
-    assert phrase(
-        date(2026, 10, 15), TODAY, DatePrecision.INFERRED
-    ) == "15 октября, через 59 дней (год не указан в источнике)"
+    assert (
+        phrase(date(2026, 10, 15), TODAY, DatePrecision.INFERRED)
+        == "15 октября, через 59 дней (год не указан в источнике)"
+    )
 
 
 def test_reference_date_is_a_parameter():
@@ -499,6 +500,35 @@ def test_quiet_day_without_deadlines_drops_the_heading():
     assert "Ближайшее" not in digest.text
     assert "Ближайшее" not in digest.html
     assert "Сегодня в вашем стеке ничего не изменилось." in digest.text
+
+
+def test_quiet_day_counts_come_from_the_field_the_core_fills():
+    """`stats` is free-form extension and the pipeline never writes it.
+
+    A live quiet_day arrives with an empty dict and a populated `run_summary`.
+    Read from `stats` alone, the letter said that nothing happened and offered
+    nothing to show it had looked — the shape of an agent gone silent.
+    """
+    digest = build_email(
+        [
+            quiet_day(
+                facts=[],
+                stats={},
+                run_summary=RunSummary(
+                    sources_checked=5,
+                    sources_empty=["worldmonitor"],
+                    materials_filtered=0,
+                ),
+            )
+        ],
+        today=TODAY,
+    )
+
+    for rendered in (flat(digest.text), digest.html):
+        assert "Проверено 5 источников." in rendered
+    # Nothing was rejected, and "0 материалов отклонено" reads as a broken
+    # counter rather than as a calm day.
+    assert "0 материалов" not in digest.text
 
 
 def test_run_failure_reports_itself():
@@ -643,10 +673,7 @@ def test_upcoming_shows_the_line_the_core_wrote_for_the_reader():
     )
     digest = build_email([signal], today=TODAY)
 
-    assert (
-        "15 октября, через 59 дней — отключается claude-3-opus"
-        in flat(digest.text)
-    )
+    assert "15 октября, через 59 дней — отключается claude-3-opus" in flat(digest.text)
     for rendered in (flat(digest.text), digest.html):
         assert "отключается claude-3-opus" in rendered
         assert "новые лимиты Tier 1 в OpenAI API" in rendered
@@ -842,8 +869,9 @@ def test_missing_environment_returns_a_result_and_names_the_variables():
 
 def test_login_is_skipped_when_no_credentials_are_set():
     env = dict(ENV, SMTP_USER="", SMTP_PASSWORD="")
-    result = send_digest(build_email([quiet_day()], today=TODAY), env=env,
-                         smtp_factory=FakeSMTP)
+    result = send_digest(
+        build_email([quiet_day()], today=TODAY), env=env, smtp_factory=FakeSMTP
+    )
 
     assert result.delivered is True
     assert FakeSMTP.instances[0].login_args is None

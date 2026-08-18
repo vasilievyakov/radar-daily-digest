@@ -356,13 +356,33 @@ def _named(stats: dict[str, int], prefix: str) -> list[str]:
     return [key[len(prefix) :] for key in stats if key.startswith(prefix)]
 
 
+def _counter(signal: Signal, keys: tuple[str, ...], fallback: int | None) -> int:
+    """`stats` if it says anything, otherwise the contract.
+
+    `Signal.stats` is documented as free-form extension and nothing in the core
+    fills it: every live signal arrives with an empty dict. Read alone it made
+    the whole footer of this surface vanish on real data while the tests, which
+    hand-write `stats`, stayed green. `run_summary` is the field the pipeline
+    actually populates, so it is what the surface falls back to.
+    """
+    for key in keys:
+        if key in signal.stats:
+            return int(signal.stats[key])
+    return int(fallback or 0)
+
+
 def _sources_footer(signal: Signal | None, run_log: str | None) -> str | None:
     """Unavailable sources, calm tone: a refusal is a working situation."""
     if signal is None:
         return None
     stats = signal.stats
-    failed_names = _named(stats, "source_failed:")
-    empty_names = _named(stats, "source_empty:")
+    summary = signal.run_summary
+    failed_names = _named(stats, "source_failed:") or list(
+        summary.sources_failed if summary else []
+    )
+    empty_names = _named(stats, "source_empty:") or list(
+        summary.sources_empty if summary else []
+    )
     failed = int(stats.get("sources_failed", len(failed_names)))
     empty = int(stats.get("sources_empty", len(empty_names)))
 
@@ -745,14 +765,35 @@ def render_digest(signals: Sequence[Signal], today: date | None = None) -> str:
 
 
 def render_quiet_day(signal: Signal | None, today: date | None = None) -> str:
-    """Absence of signals is a message of its own (SUR-4, PUB-4)."""
+    """Absence of signals is a message of its own (SUR-4, PUB-4).
+
+    The proof line carries the whole difference between "сегодня тихо" and an
+    agent that stopped running: a message with no numbers under it is
+    indistinguishable from silence with a headline attached.
+    """
     if today is None:
         today = signal.for_date if signal else date.today()
 
     run_log = _run_log_link(signal)
-    stats = signal.stats if signal else {}
-    checked = int(stats.get("sources_checked", stats.get("sources_total", 0)))
-    rejected = int(stats.get("items_rejected", stats.get("rejected", 0)))
+    summary = signal.run_summary if signal else None
+    checked = (
+        _counter(
+            signal,
+            ("sources_checked", "sources_total"),
+            summary.sources_checked if summary else 0,
+        )
+        if signal
+        else 0
+    )
+    rejected = (
+        _counter(
+            signal,
+            ("items_rejected", "rejected"),
+            summary.materials_filtered if summary else 0,
+        )
+        if signal
+        else 0
+    )
 
     proof_parts: list[str] = []
     if checked:
@@ -789,14 +830,22 @@ def render_run_failure(signal: Signal, today: date | None = None) -> str:
     opening = f"{opening}: {_esc(reason)}." if reason else f"{opening}."
 
     sentences: list[str] = []
-    collected = int(
-        signal.stats.get("items_collected", signal.stats.get("collected", 0))
+    summary = signal.run_summary
+    collected = _counter(
+        signal,
+        ("items_collected", "collected"),
+        summary.materials_collected if summary else 0,
     )
     if collected:
         sentences.append(
             f"Собрано {_amount(collected, _MATERIALS)}, обработать не удалось."
         )
-    days_ago = int(signal.stats.get("last_success_days_ago", 0))
+    last_success = summary.last_success_date if summary else None
+    days_ago = _counter(
+        signal,
+        ("last_success_days_ago",),
+        (signal.for_date - last_success).days if last_success else 0,
+    )
     if days_ago > 0:
         last = signal.for_date - timedelta(days=days_ago)
         sentences.append(
