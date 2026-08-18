@@ -3,9 +3,9 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from radar.db import init_db, publish_signals
-from radar.deliver import deliver
+from radar.deliver import deliver, wanted
 from radar.journal import EventKind, Journal
-from radar.models import Signal, SignalType, Tier
+from radar.models import ChangeType, Signal, SignalType, Tier
 from radar.runlog import RunLog
 from radar.supervisor import Action, RunState, Supervisor
 
@@ -590,3 +590,61 @@ class TestQuietDayIsStillDelivered:
         assert sent, "молчание не доставлено вовсе"
         assert sent[0][0].signal_type.value == "run_failure"
         assert "ничего не изменилось" not in sent[0][0].headline
+
+
+class TestTheReaderDecidesWhatWakesThem:
+    """The only dial the product offers, and the one a grown-up asks for first.
+
+    Everything the core judged significant is published either way (PUB-1);
+    this decides what is worth interrupting a morning for. A product that walks
+    into the network by itself and publishes by itself has to let the person it
+    publishes to say "not this".
+    """
+
+    @staticmethod
+    def _signal(signal_id, change_type, tier=Tier.STANDARD, kind=SignalType.DIGEST_ITEM):
+        return Signal(
+            signal_id=signal_id, run_id="run-1", signal_type=kind,
+            created_at=datetime(2026, 8, 18, tzinfo=UTC), for_date=date(2026, 8, 18),
+            headline=f"событие {signal_id}", change_type=change_type, tier=tier,
+        )
+
+    def test_only_the_named_types_go_out(self):
+        signals = [
+            self._signal("a", ChangeType.DEPRECATION),
+            self._signal("b", ChangeType.RELEASE),
+            self._signal("c", ChangeType.PRICING),
+        ]
+        keep, held = wanted(signals, {"wake_me_for": ["deprecation", "pricing"]})
+
+        assert [s.signal_id for s in keep] == ["a", "c"]
+        assert [s.signal_id for s in held] == ["b"]
+
+    def test_a_tier_floor_holds_the_rest_back(self):
+        signals = [
+            self._signal("a", ChangeType.DEPRECATION, Tier.LEAD),
+            self._signal("b", ChangeType.DEPRECATION, Tier.STANDARD),
+        ]
+        keep, held = wanted(signals, {"min_tier": "lead"})
+
+        assert [s.signal_id for s in keep] == ["a"]
+
+    def test_a_quiet_day_is_never_held_back(self):
+        """Silencing the agent's statements about itself is how a dead agent
+        looks healthy."""
+        signals = [
+            self._signal("q", None, kind=SignalType.QUIET_DAY),
+            self._signal("f", None, kind=SignalType.RUN_FAILURE),
+            self._signal("a", ChangeType.RELEASE),
+        ]
+        keep, held = wanted(signals, {"wake_me_for": ["deprecation"], "min_tier": "lead"})
+
+        assert {s.signal_id for s in keep} == {"q", "f"}
+        assert [s.signal_id for s in held] == ["a"]
+
+    def test_an_empty_dial_sends_everything(self):
+        signals = [self._signal("a", ChangeType.RELEASE)]
+        keep, held = wanted(signals, {})
+
+        assert keep == signals
+        assert held == []

@@ -1467,6 +1467,13 @@ delivery:
   timezone: "Europe/Moscow"
   max_items_telegram: 5
   quiet_day_message: true
+  # The reader's dial. Everything the core judged significant is published
+  # either way; this is what is worth interrupting a morning for. Empty means
+  # everything. A quiet day and a failed run always arrive: those are
+  # statements about the agent itself, and silencing them is how a dead agent
+  # looks healthy.
+  wake_me_for: []          # например: [deprecation, breaking_change, pricing]
+  min_tier: ""             # "", standard или lead
 
 # Backend selection. The local Claude Code CLI is the working backend; the
 # OpenRouter client takes over automatically once OPENROUTER_API_KEY exists.

@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 from radar.db import read_signals
 from radar.journal import EventKind, Journal, Outcome
-from radar.models import Signal
+from radar.models import Signal, SignalType
 from radar.runlog import RunLog
 
 
@@ -43,6 +43,8 @@ class ChannelResult:
 class DeliveryReport:
     run_id: str
     signals: int = 0
+    # Published but not sent: the reader asked not to be woken for these.
+    held: int = 0
     results: list[ChannelResult] = field(default_factory=list)
 
     @property
@@ -79,12 +81,49 @@ def _outcome_of(result: Any, channel: str) -> ChannelResult:
     )
 
 
+
+# The reader's own dial, and the only one the product offers. Everything the
+# core judged significant is in the store either way (SUR-1, PUB-1); this
+# decides what is worth interrupting somebody's morning for. A product that
+# walks into the network by itself and publishes by itself needs this to be
+# settable by the person it publishes to.
+def wanted(
+    signals: list[Signal], settings: dict[str, Any] | None
+) -> tuple[list[Signal], list[Signal]]:
+    """Split into what this reader asked to be woken for, and the rest.
+
+    Anything that is not an ordinary digest item — a quiet day, a failed run —
+    always passes: those are statements about the agent itself, and silencing
+    them is how a dead agent looks healthy.
+    """
+    settings = settings or {}
+    only_types = {str(t) for t in (settings.get("wake_me_for") or [])}
+    min_tier = str(settings.get("min_tier") or "").strip()
+    order = {"background": 0, "standard": 1, "lead": 2}
+    floor = order.get(min_tier, 0)
+
+    if not only_types and not floor:
+        return signals, []
+
+    keep: list[Signal] = []
+    held: list[Signal] = []
+    for signal in signals:
+        if signal.signal_type is not SignalType.DIGEST_ITEM:
+            keep.append(signal)
+            continue
+        by_type = not only_types or str(signal.change_type or "") in only_types
+        by_tier = order.get(str(signal.tier), 0) >= floor
+        (keep if by_type and by_tier else held).append(signal)
+    return keep, held
+
+
 def deliver(
     conn: sqlite3.Connection,
     surfaces: dict[str, Surface],
     run_id: str | None = None,
     journal: Journal | None = None,
     run_log: RunLog | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> DeliveryReport:
     """Send one run to every configured channel.
 
@@ -94,7 +133,15 @@ def deliver(
     """
     signals = read_signals(conn, run_id)
     resolved_run = run_id or (signals[0].run_id if signals else "")
-    report = DeliveryReport(run_id=resolved_run, signals=len(signals))
+    signals, held = wanted(signals, settings)
+    report = DeliveryReport(
+        run_id=resolved_run, signals=len(signals), held=len(held)
+    )
+    if held and run_log is not None:
+        run_log.note(
+            f"{len(held)} сигналов не отправлены по настройке читателя: "
+            "они опубликованы, но будить ими не просили"
+        )
 
     if not signals:
         # Nothing to send is not the same as a quiet day: a quiet day is a

@@ -750,7 +750,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # -- argument parsing -------------------------------------------------
 
 
-def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
+def _deliver_run(
+    conn: sqlite3.Connection,
+    run: Any,
+    result: Any,
+    settings: dict[str, Any] | None = None,
+) -> None:
     """Hand the run to the channels and record the outcome.
 
     Without this call the delivery layer existed and nothing invoked it, so
@@ -781,7 +786,10 @@ def _deliver_run(conn: sqlite3.Connection, run: Any, result: Any) -> None:
         print("Ни один канал не собран, доставка пропущена.")
         return
 
-    report = deliver(conn, surfaces, run.run_id, run.journal, run.log)
+    report = deliver(
+        conn, surfaces, run.run_id, run.journal, run.log,
+        settings=settings,
+    )
     # `finish()` already froze log_json, so the delivery rows recorded above
     # would never reach the run-log page. Re-flush to fold them in.
     run.log.flush()
@@ -885,7 +893,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Not gated on having digest items: a quiet day is a record, and PUB-4
         # says silence reaches the reader as a message. Gating here meant the
         # channel stayed untouched on exactly the day worth speaking about.
-        _deliver_run(conn, run, result)
+        _deliver_run(conn, run, result, settings=config.delivery)
 
     # One run, one cost — and reconciled last, after every writer is done.
     # An earlier attempt ran before delivery, and delivery's flush() rewrote
