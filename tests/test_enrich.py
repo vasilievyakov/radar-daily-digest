@@ -418,6 +418,270 @@ class TestThreeEventsFromOneMaterial:
 
 
 # --------------------------------------------------------------------------
+# one lead, one type
+# --------------------------------------------------------------------------
+
+
+LIFECYCLE_ROW = "text-embedding-005 | November 18, 2024 | April 1, 2027 |"
+
+
+def lifecycle_release() -> dict:
+    """The release half of a lifecycle table row."""
+    return event(
+        statement="Google выпустила модель text-embedding-005 для Vertex AI.",
+        change_type="release",
+        event_date="2024-11-18",
+        event_date_text="November 18, 2024",
+        product="text-embedding-005",
+        evidence="text-embedding-005 | November 18, 2024",
+        facts=[
+            {
+                "kind": "version",
+                "value": "text-embedding-005",
+                "subject": "",
+                "evidence": "text-embedding-005",
+            }
+        ],
+    )
+
+
+def lifecycle_shutdown() -> dict:
+    """The discontinuation half of the same row."""
+    return event(
+        statement="Модель text-embedding-005 будет выведена из обслуживания 1 апреля 2027 года.",
+        change_type="deprecation",
+        event_date="2027-04-01",
+        event_date_text="April 1, 2027",
+        product="text-embedding-005",
+        evidence="April 1, 2027",
+        facts=[
+            {
+                "kind": "sunset_date",
+                "value": "2027-04-01",
+                "subject": "text-embedding-005",
+                "evidence": "April 1, 2027",
+            }
+        ],
+    )
+
+
+class TestTheLeadStatementCarriesTheType:
+    """The label on a card describes the sentence printed under it.
+
+    A row of a lifecycle table states when a model shipped and when it goes
+    away. The type used to be picked by scanning the whole material for the
+    first critical event while the headline was taken from the first event,
+    and six cards went out reading "Google выпустила модель ..." under
+    "объявление об отключении".
+    """
+
+    def test_the_shutdown_half_of_a_lifecycle_row_leads(self, config):
+        backend = FakeBackend({"events": [lifecycle_release(), lifecycle_shutdown()]})
+        result = enricher(config, backend).enrich(
+            make_item(text=LIFECYCLE_ROW), make_source(vendor="google")
+        )
+
+        assert result.change_type is ChangeType.DEPRECATION
+        assert result.statements[0].change_type is ChangeType.DEPRECATION
+        assert "выведена из обслуживания" in result.statements[0].text
+        # The release is published too, second: the material really does say
+        # both things.
+        assert [s.change_type for s in result.statements] == [
+            ChangeType.DEPRECATION,
+            ChangeType.RELEASE,
+        ]
+
+    @pytest.mark.parametrize(
+        "events",
+        [
+            pytest.param(
+                [lifecycle_release(), lifecycle_shutdown()], id="release-first"
+            ),
+            pytest.param(
+                [lifecycle_shutdown(), lifecycle_release()], id="shutdown-first"
+            ),
+            pytest.param([lifecycle_release()], id="release-only"),
+            pytest.param([lifecycle_shutdown()], id="shutdown-only"),
+            pytest.param([event(), lifecycle_release()], id="no-critical-event"),
+        ],
+    )
+    def test_the_type_is_always_the_lead_statement_type(self, config, events):
+        backend = FakeBackend({"events": events})
+        result = enricher(config, backend).enrich(
+            make_item(text=LIFECYCLE_ROW + "\n" + SOURCE_TEXT),
+            make_source(vendor="google"),
+        )
+
+        assert result.statements
+        assert result.change_type is result.statements[0].change_type
+
+    def test_a_material_without_a_critical_event_keeps_the_model_order(self, config):
+        backend = FakeBackend({"events": [lifecycle_release(), event()]})
+        result = enricher(config, backend).enrich(
+            make_item(text=LIFECYCLE_ROW + "\n" + SOURCE_TEXT),
+            make_source(vendor="google"),
+        )
+
+        assert [s.change_type for s in result.statements] == [
+            ChangeType.RELEASE,
+            ChangeType.LIMITS,
+        ]
+        assert result.change_type is ChangeType.RELEASE
+
+    def test_reordering_does_not_renumber_the_corpus_key(self, config):
+        backend = FakeBackend({"events": [lifecycle_release(), lifecycle_shutdown()]})
+        result = enricher(config, backend).enrich(
+            make_item(text=LIFECYCLE_ROW), make_source(vendor="google")
+        )
+
+        # The lead was the model's second event and keeps that number: the
+        # position inside the material is half of the corpus key, and moving
+        # a sentence up the card must not rewrite a row's identity.
+        assert [statement_index_of(s.statement_id) for s in result.statements] == [1, 0]
+
+    def test_facts_travel_with_the_statement_they_belong_to(self, config):
+        backend = FakeBackend({"events": [lifecycle_release(), lifecycle_shutdown()]})
+        result = enricher(config, backend).enrich(
+            make_item(text=LIFECYCLE_ROW), make_source(vendor="google")
+        )
+
+        # The card's first fact belongs to the card's first sentence.
+        assert [f.kind for f in result.facts] == [
+            FactKind.SUNSET_DATE,
+            FactKind.VERSION,
+        ]
+
+    def test_a_material_the_theme_calls_routine_never_reorders(self, config):
+        """`critical_change_types` is the only thing that moves a statement."""
+        data = json.loads(json.dumps(THEME_DATA))
+        data["critical_change_types"] = []
+        backend = FakeBackend({"events": [lifecycle_release(), lifecycle_shutdown()]})
+        result = enricher(ThemeConfig(data), backend).enrich(
+            make_item(text=LIFECYCLE_ROW), make_source(vendor="google")
+        )
+
+        assert result.change_type is ChangeType.RELEASE
+        assert [s.change_type for s in result.statements] == [
+            ChangeType.RELEASE,
+            ChangeType.DEPRECATION,
+        ]
+
+
+class TestOtherIsOverruledByAVerifiedShutdownDate:
+    """`other` is the absence of a decision, so evidence outranks it.
+
+    A vendor's status table hands over rows the extractor cannot classify. It
+    answered `other` and attached a retirement date that verifies against the
+    page; three stages then read `other` and treated the row as routine —
+    26 points of score, no repeat sentence, and a precedent query against the
+    vendor's bugfix changelog instead of its lifecycle history.
+    """
+
+    STATUS_ROW = "claude-opus-4-7 | Active | N/A | Not sooner than April 16, 2027"
+
+    def status_event(self, **overrides) -> dict:
+        body = event(
+            statement="Anthropic установила дату прекращения поддержки модели claude-opus-4-7 не раньше 16 апреля 2027 года.",
+            change_type="other",
+            event_date="2027-04-16",
+            event_date_text="",
+            product="claude-opus-4-7",
+            evidence="Not sooner than April 16, 2027",
+            facts=[
+                {
+                    "kind": "sunset_date",
+                    "value": "2027-04-16",
+                    "subject": "claude-opus-4-7",
+                    "evidence": "Not sooner than April 16, 2027",
+                }
+            ],
+        )
+        body.update(overrides)
+        return body
+
+    def test_other_plus_a_verified_sunset_date_is_a_deprecation(self, config):
+        backend = FakeBackend({"events": [self.status_event()]})
+        result = enricher(config, backend).enrich(
+            make_item(text=self.STATUS_ROW), make_source()
+        )
+
+        assert result.statements[0].change_type is ChangeType.DEPRECATION
+        assert result.change_type is ChangeType.DEPRECATION
+
+    def test_other_without_a_date_stays_other(self, config):
+        backend = FakeBackend(
+            {
+                "events": [
+                    self.status_event(
+                        facts=[
+                            {
+                                "kind": "affected_product",
+                                "value": "claude-opus-4-7",
+                                "subject": "",
+                                "evidence": "claude-opus-4-7 | Active",
+                            }
+                        ]
+                    )
+                ]
+            }
+        )
+        result = enricher(config, backend).enrich(
+            make_item(text=self.STATUS_ROW), make_source()
+        )
+
+        assert result.statements[0].change_type is ChangeType.OTHER
+
+    def test_a_date_that_failed_verification_cannot_promote_the_type(self, config):
+        """The rule rests on the verifier, never on the model's word."""
+        backend = FakeBackend(
+            {
+                "events": [
+                    self.status_event(
+                        facts=[
+                            {
+                                "kind": "sunset_date",
+                                "value": "2027-04-16",
+                                "subject": "claude-opus-4-7",
+                                "evidence": "will be shut down in April 2027",
+                            }
+                        ]
+                    )
+                ]
+            }
+        )
+        result = enricher(config, backend).enrich(
+            make_item(text=self.STATUS_ROW), make_source()
+        )
+
+        assert result.facts == []
+        assert result.statements[0].change_type is ChangeType.OTHER
+
+    def test_a_statement_the_model_did_type_is_left_alone(self, config):
+        """A breaking change that names a removal date is still breaking."""
+        backend = FakeBackend(
+            {"events": [self.status_event(change_type="breaking_change")]}
+        )
+        result = enricher(config, backend).enrich(
+            make_item(text=self.STATUS_ROW), make_source()
+        )
+
+        assert result.statements[0].change_type is ChangeType.BREAKING_CHANGE
+
+    def test_a_theme_that_does_not_track_deprecations_keeps_other(self):
+        data = json.loads(json.dumps(THEME_DATA))
+        data["corpus"]["change_types"] = [
+            {"id": str(c)} for c in ChangeType if c is not ChangeType.DEPRECATION
+        ]
+        data["critical_change_types"] = ["breaking_change"]
+        backend = FakeBackend({"events": [self.status_event()]})
+        result = enricher(ThemeConfig(data), backend).enrich(
+            make_item(text=self.STATUS_ROW), make_source()
+        )
+
+        assert result.statements[0].change_type is ChangeType.OTHER
+
+
+# --------------------------------------------------------------------------
 # the guards
 # --------------------------------------------------------------------------
 
@@ -1025,9 +1289,7 @@ class TestPrompt:
         assert len(result.statements) == 1
         assert result.statements[0].raw_material_ref == "ref-full"
 
-    def test_a_section_of_a_page_is_not_completed_by_refetching_that_page(
-        self, config
-    ):
+    def test_a_section_of_a_page_is_not_completed_by_refetching_that_page(self, config):
         """The teaser rule must not turn one table row into the whole table.
 
         A deprecation table is cut into one material per row. Every row is

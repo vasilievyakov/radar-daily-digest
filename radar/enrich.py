@@ -442,6 +442,12 @@ class LlmEnricher:
             self.normalizer.change_type(str(c))
             for c in (config.section("critical_change_types") or [])
         }
+        # What the theme is willing to call a change at all. Read once so the
+        # evidence-driven correction below can never hand a downstream stage a
+        # type the config does not define.
+        self.known_types = {
+            self.normalizer.change_type(str(c)) for c in config.change_type_ids
+        } or set(ChangeType)
         self.models = config.models
         self.cache_prefix = cache_prefix_for(config)
 
@@ -524,6 +530,9 @@ class LlmEnricher:
         statements, facts, rejected = self._publish(
             events, item, source, text, raw_ref, extractor_model
         )
+        # `_publish` already put the lead at position zero, which is where
+        # every stage below reads it from. The type is taken from the same
+        # place, so the label and the sentence under it cannot disagree.
         result.statements = statements
         result.facts = facts
         result.rejected_facts = rejected
@@ -639,8 +648,7 @@ class LlmEnricher:
         raw_ref: str,
         extractor_model: str,
     ) -> tuple[list[EventStatement], list[Fact], list[RejectedFact]]:
-        statements: list[EventStatement] = []
-        kept_facts: list[Fact] = []
+        published: list[tuple[EventStatement, list[Fact]]] = []
         rejected: list[RejectedFact] = []
         ingested_at = self._now or datetime.now(UTC)
 
@@ -677,9 +685,16 @@ class LlmEnricher:
             )
             if statement is None:
                 continue
-            statements.append(statement)
-            kept_facts += facts
-        return statements, kept_facts, rejected
+            published.append((statement, facts))
+
+        # The lead moves to the head with its facts still attached, so the
+        # card's first fact belongs to the card's first sentence.
+        published = _lead_first_pairs(published, self.critical_types)
+        return (
+            [statement for statement, _ in published],
+            [fact for _, facts in published for fact in facts],
+            rejected,
+        )
 
     def _facts_of(
         self, event: ExtractedEvent, item: CollectedItem, text: str
@@ -810,7 +825,7 @@ class LlmEnricher:
             text=body,
             vendor=vendor,
             product=event.product.strip() or None,
-            change_type=self.normalizer.change_type(event.change_type),
+            change_type=self._change_type_of(event, facts),
             event_date=event_date,
             date_precision=precision,
             version=version or None,
@@ -822,6 +837,41 @@ class LlmEnricher:
             prompt_version=EXTRACTION_PROMPT_VERSION,
             raw_material_ref=raw_ref,
         )
+
+    def _change_type_of(
+        self, event: ExtractedEvent, facts: Sequence[Fact]
+    ) -> ChangeType:
+        """The model's type, corrected where the verified evidence outranks it.
+
+        `other` is the bucket a classifier reaches for when nothing else fits,
+        and it is the one type that carries no claim: every other value says
+        what happened, `other` says only that the model did not decide. So it
+        is the one value a verified fact may overrule. A statement whose
+        sunset date survived quote verification is an announced shutdown
+        whatever the label on it says, and the label is what three other
+        stages read: 30 points of weight in scoring, membership of
+        `ROUTINE_TYPES` in the repeat note, and the strict cell of the corpus
+        query. Seven rows of one vendor's status table came back as `other`
+        with a verified retirement date attached; all three stages treated
+        them as routine, and the precedent query answered them out of that
+        vendor's bugfix changelog instead of its retirement history.
+
+        Deliberately narrow. A typed statement is never re-typed, because a
+        breaking change that also names a removal date is still a breaking
+        change, and a price change with an effective date is still a price
+        change. And nothing is invented: the rule fires only on a date the
+        verifier already matched against the archived page.
+        """
+        declared = self.normalizer.change_type(event.change_type)
+        if declared is not ChangeType.OTHER:
+            return declared
+        if ChangeType.DEPRECATION not in self.known_types:
+            # A theme that does not track deprecations has nothing to promote
+            # the statement to.
+            return declared
+        if any(fact.kind is FactKind.SUNSET_DATE for fact in facts):
+            return ChangeType.DEPRECATION
+        return declared
 
     def _vendor_of(
         self, event: ExtractedEvent, source: SourceConfig, item: CollectedItem
@@ -1084,13 +1134,65 @@ def _without_quantifier_sentences(text: str) -> str:
     return cleaned if cleaned and not find_unsupported_quantifiers(cleaned) else ""
 
 
+def _lead_index(statements: Sequence[EventStatement], critical: set[ChangeType]) -> int:
+    """Which of a material's events the card will speak with.
+
+    The first critical one, else the first one. The rule itself is old; what
+    is new is that only one thing reads it.
+    """
+    for index, statement in enumerate(statements):
+        if statement.change_type in critical:
+            return index
+    return 0
+
+
+def _lead_first_pairs(
+    pairs: Sequence[tuple[EventStatement, list[Fact]]], critical: set[ChangeType]
+) -> list[tuple[EventStatement, list[Fact]]]:
+    index = _lead_index([statement for statement, _ in pairs], critical)
+    if index <= 0:
+        return list(pairs)
+    return [pairs[index], *pairs[:index], *pairs[index + 1 :]]
+
+
+def lead_first(
+    statements: Sequence[EventStatement], critical: set[ChangeType]
+) -> list[EventStatement]:
+    """Put the statement the card will speak with at the head of the list.
+
+    Everything downstream reads the lead off position zero: the headline, the
+    body, the product. The type used to be chosen separately, by a scan for
+    the first critical statement anywhere in the material, and the two picks
+    were free to disagree. One row of a lifecycle table states a release date
+    and a retirement date, the model correctly returns two events, and the
+    card went out with the release sentence under the deprecation label —
+    six of them in one digest, each also querying the corpus for precedents
+    of a change it was not reporting.
+
+    Moving the critical statement to the front instead of copying its type
+    onto someone else's sentence keeps the old intent — a shutdown buried in
+    a release note is still reported as a shutdown — and makes the
+    disagreement impossible to express: there is one lead, and the headline
+    and the type both come from it.
+
+    The order of the rest is left alone, and `statement_id` already encodes
+    the position in the model's raw answer, so provenance does not move with
+    the list.
+    """
+    index = _lead_index(statements, critical)
+    if index <= 0:
+        return list(statements)
+    return [statements[index], *statements[:index], *statements[index + 1 :]]
+
+
 def _headline_change_type(
     statements: Sequence[EventStatement], critical: set[ChangeType]
 ) -> ChangeType | None:
-    """One type for a material that may carry several, critical first."""
-    if not statements:
-        return None
-    for statement in statements:
-        if statement.change_type in critical:
-            return statement.change_type
-    return statements[0].change_type
+    """The type of the lead statement, and of nothing else.
+
+    `critical` is still taken so a caller that has not ordered its list yet
+    gets the same answer as one that has; the type is read off the lead so it
+    can never describe a sentence the reader is not shown.
+    """
+    ordered = lead_first(statements, critical)
+    return ordered[0].change_type if ordered else None

@@ -51,7 +51,7 @@ CONFIG: dict = {
             {"id": "limits", "label": "Изменение лимитов"},
             {"id": "security", "label": "Безопасность"},
             {"id": "other", "label": "Прочее"},
-        ]
+        ],
     },
     "sources": [
         {
@@ -282,7 +282,9 @@ class TestFactors:
         scores = [
             score_signal(
                 make_signal(
-                    change_type=ChangeType.RELEASE, vendor="anthropic", delta_status=status
+                    change_type=ChangeType.RELEASE,
+                    vendor="anthropic",
+                    delta_status=status,
                 ),
                 CONFIG,
                 as_of=RUN_DATE,
@@ -303,11 +305,16 @@ class TestFactors:
             CONFIG,
             as_of=RUN_DATE,
         )
-        assert first.by_key(FACTOR_AUTHORITY).points > third.by_key(FACTOR_AUTHORITY).points
+        assert (
+            first.by_key(FACTOR_AUTHORITY).points
+            > third.by_key(FACTOR_AUTHORITY).points
+        )
 
     def test_unknown_source_leaves_the_authority_factor_out(self):
         breakdown = score_signal(
-            make_signal(change_type=ChangeType.RELEASE, primary_url="https://blog.test/post"),
+            make_signal(
+                change_type=ChangeType.RELEASE, primary_url="https://blog.test/post"
+            ),
             CONFIG,
             as_of=RUN_DATE,
         )
@@ -318,7 +325,8 @@ class TestFactors:
 
     def test_source_id_resolves_authority_without_a_url(self):
         assert (
-            resolve_source_priority(CONFIG, source_id="anthropic_model_deprecations") == 1
+            resolve_source_priority(CONFIG, source_id="anthropic_model_deprecations")
+            == 1
         )
         assert resolve_source_priority(CONFIG, source_id="nope") is None
         assert resolve_source_priority(CONFIG, url=None) is None
@@ -428,7 +436,9 @@ class TestReferenceDate:
         again = score_signal(signal, CONFIG, as_of=date(2026, 8, 17))
         assert replayed.score == again.score
         assert replayed.days_until_due == 12
-        assert score_signal(signal, CONFIG, as_of=date(2026, 8, 18)).score > replayed.score
+        assert (
+            score_signal(signal, CONFIG, as_of=date(2026, 8, 18)).score > replayed.score
+        )
 
     def test_earliest_of_several_dates_wins(self):
         signal = make_signal(
@@ -472,7 +482,8 @@ class TestConfigDrivesOrder:
         outside = make_signal("b", change_type=ChangeType.RELEASE, vendor="langchain")
         config = with_weights(stack_overlap=0)
         scores = {
-            s.signal_id: s.score for s in apply_ranking([inside, outside], config, as_of=RUN_DATE)
+            s.signal_id: s.score
+            for s in apply_ranking([inside, outside], config, as_of=RUN_DATE)
         }
         assert scores["a"] == scores["b"]
 
@@ -512,7 +523,9 @@ class TestRanking:
         ]
         ranked = apply_ranking(signals, CONFIG, as_of=RUN_DATE)
         assert [s.rank for s in ranked] == [1, 2, 3, 4]
-        assert [s.score for s in ranked] == sorted((s.score for s in ranked), reverse=True)
+        assert [s.score for s in ranked] == sorted(
+            (s.score for s in ranked), reverse=True
+        )
 
     def test_equal_scores_break_on_source_priority_then_id(self):
         config = copy.deepcopy(CONFIG)
@@ -535,7 +548,8 @@ class TestRanking:
         ]
         forward = [s.signal_id for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)]
         backward = [
-            s.signal_id for s in apply_ranking(list(reversed(signals)), CONFIG, as_of=RUN_DATE)
+            s.signal_id
+            for s in apply_ranking(list(reversed(signals)), CONFIG, as_of=RUN_DATE)
         ]
         assert forward == backward == [f"sig-{i}" for i in range(6)]
 
@@ -545,8 +559,14 @@ class TestRanking:
             make_signal("m2", change_type=ChangeType.LIMITS, vendor="openai"),
             make_signal("m3", change_type=ChangeType.OTHER),
         ]
-        first = [(s.signal_id, s.rank, s.score, s.tier) for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)]
-        second = [(s.signal_id, s.rank, s.score, s.tier) for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)]
+        first = [
+            (s.signal_id, s.rank, s.score, s.tier)
+            for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)
+        ]
+        second = [
+            (s.signal_id, s.rank, s.score, s.tier)
+            for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)
+        ]
         assert first == second
 
     def test_ranking_does_not_mutate_the_input(self):
@@ -588,10 +608,17 @@ class TestTiers:
     def test_tier_is_assigned_during_ranking(self):
         signals = [
             maximal_signal("lead"),
-            make_signal("standard", change_type=ChangeType.PRICING, vendor="anthropic", delta_status=DeltaStatus.UPDATED),
+            make_signal(
+                "standard",
+                change_type=ChangeType.PRICING,
+                vendor="anthropic",
+                delta_status=DeltaStatus.UPDATED,
+            ),
             make_signal("background", change_type=ChangeType.OTHER),
         ]
-        tiers = {s.signal_id: s.tier for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)}
+        tiers = {
+            s.signal_id: s.tier for s in apply_ranking(signals, CONFIG, as_of=RUN_DATE)
+        }
         assert tiers["lead"] is Tier.LEAD
         assert tiers["standard"] is Tier.STANDARD
         assert tiers["background"] is Tier.BACKGROUND
@@ -619,7 +646,9 @@ class TestRationale:
 
     def test_every_named_factor_actually_contributed(self):
         breakdown = score_signal(maximal_signal(), CONFIG, as_of=RUN_DATE)
-        named = [f for f in breakdown.factors if f.detail and f.detail in breakdown.rationale]
+        named = [
+            f for f in breakdown.factors if f.detail and f.detail in breakdown.rationale
+        ]
         assert named
         assert all(f.points > 0 and f.applied for f in named)
 
@@ -756,7 +785,89 @@ class TestShippedConfig:
         assert [s.rank for s in ranked] == [1, 2]
         assert all(0 <= s.score <= 100 for s in ranked)
         assert all(s.score_rationale for s in ranked)
-        assert all(find_unsupported_quantifiers(s.score_rationale) == [] for s in ranked)
+        assert all(
+            find_unsupported_quantifiers(s.score_rationale) == [] for s in ranked
+        )
+
+
+class TestWhatAMislabelledTypeCosts:
+    """The price stage 4 pays for guessing the type, priced in this module.
+
+    Nine cards of one run carried a type that contradicted their own
+    headline. The label is not decoration: it is the heaviest single factor
+    here, so the tests below pin what one wrong word does to the order of the
+    digest, on the shipped weights rather than on a fixture.
+    """
+
+    def shipped(self) -> dict:
+        path = Path(__file__).resolve().parents[1] / "config" / "ai-tools.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def retirement(self, change_type: ChangeType) -> Signal:
+        return make_signal(
+            f"sig-{change_type}",
+            change_type=change_type,
+            vendor="anthropic",
+            product="claude-opus-4-7",
+            delta_status=DeltaStatus.CONTINUING,
+            days_tracked=5,
+            primary_url=DEPRECATIONS_URL,
+            sunset_date="2027-04-16",
+        )
+
+    def test_calling_a_shutdown_routine_costs_the_full_weight_gap(self):
+        config = self.shipped()
+        weights = config["scoring"]["weights"]["change_type"]
+
+        named = score_signal(
+            self.retirement(ChangeType.DEPRECATION), config, as_of=RUN_DATE
+        )
+        routine = score_signal(
+            self.retirement(ChangeType.OTHER), config, as_of=RUN_DATE
+        )
+
+        gap = weights["deprecation"] - weights["other"]
+        assert named.by_key(FACTOR_CHANGE_TYPE).points == weights["deprecation"]
+        assert routine.by_key(FACTOR_CHANGE_TYPE).points == weights["other"]
+        assert named.raw_points - routine.raw_points == pytest.approx(gap)
+        assert named.score > routine.score
+
+    def test_the_mislabel_moves_the_card_across_the_publication_threshold(self):
+        config = self.shipped()
+        publish_threshold = config["scoring"]["publish_threshold"]
+
+        named = score_signal(
+            self.retirement(ChangeType.DEPRECATION), config, as_of=RUN_DATE
+        )
+        routine = score_signal(
+            self.retirement(ChangeType.OTHER), config, as_of=RUN_DATE
+        )
+
+        assert named.score >= publish_threshold
+        assert routine.score < publish_threshold
+
+    def test_the_rationale_names_the_type_the_points_came_from(self):
+        """The sentence and the number are drawn from the same field."""
+        config = self.shipped()
+        for change_type, label in (
+            (ChangeType.DEPRECATION, "объявление об отключении"),
+            (ChangeType.OTHER, "прочее"),
+        ):
+            breakdown = score_signal(
+                self.retirement(change_type), config, as_of=RUN_DATE
+            )
+            detail = breakdown.by_key(FACTOR_CHANGE_TYPE).detail
+            assert detail.startswith(label), (change_type, detail)
+
+    def test_a_signal_with_no_type_at_all_is_scored_as_missing_not_as_zero(self):
+        """An unclassified card must not be silently priced as `other`."""
+        config = self.shipped()
+        untyped = score_signal(self.retirement(None), config, as_of=RUN_DATE)
+        factor = untyped.by_key(FACTOR_CHANGE_TYPE)
+
+        assert factor.applied is False
+        assert factor.points == 0.0
+        assert factor.detail == ""
 
 
 class TestClusterVendorSurvives:
@@ -779,7 +890,9 @@ class TestClusterVendorSurvives:
         from radar.cluster import cluster_items
 
         item = CollectedItem(
-            url="https://example.test/a", title="Заголовок", raw_text="body",
+            url="https://example.test/a",
+            title="Заголовок",
+            raw_text="body",
             extra={"vendor": "openai"},
         )
         [cluster] = cluster_items([item])
@@ -798,12 +911,20 @@ class TestDeadlineLooksForward:
         from radar.models import Fact, FactKind, Signal, SignalType
 
         return Signal(
-            signal_id="s1", run_id="r1", signal_type=SignalType.DIGEST_ITEM,
-            created_at=datetime(2026, 8, 17, tzinfo=UTC), for_date=_date(2026, 8, 17),
+            signal_id="s1",
+            run_id="r1",
+            signal_type=SignalType.DIGEST_ITEM,
+            created_at=datetime(2026, 8, 17, tzinfo=UTC),
+            for_date=_date(2026, 8, 17),
             headline="Anthropic отключает модель",
             facts=[
-                Fact(kind=FactKind.SUNSET_DATE, value=d.isoformat(), source_url="u",
-                     evidence="q", value_date=d)
+                Fact(
+                    kind=FactKind.SUNSET_DATE,
+                    value=d.isoformat(),
+                    source_url="u",
+                    evidence="q",
+                    value_date=d,
+                )
                 for d in dates
             ],
         )
@@ -813,7 +934,9 @@ class TestDeadlineLooksForward:
 
         from radar.scoring import nearest_due_date
 
-        signal = self._signal([_date(2024, 11, 6), _date(2026, 10, 15), _date(2027, 5, 1)])
+        signal = self._signal(
+            [_date(2024, 11, 6), _date(2026, 10, 15), _date(2027, 5, 1)]
+        )
         due, days = nearest_due_date(signal, ["sunset_date"], _date(2026, 8, 17))
         assert due == _date(2026, 10, 15)
         assert days == 59
@@ -835,10 +958,20 @@ class TestDeadlineLooksForward:
         from radar.scoring import nearest_due_date
 
         signal = Signal(
-            signal_id="s", run_id="r", signal_type=SignalType.DIGEST_ITEM,
-            created_at=datetime(2026, 8, 17, tzinfo=UTC), for_date=_date(2026, 8, 17),
-            facts=[Fact(kind=FactKind.SUNSET_DATE, value="15 октября 2026",
-                        source_url="u", evidence="q", value_date=_date(2026, 10, 15))],
+            signal_id="s",
+            run_id="r",
+            signal_type=SignalType.DIGEST_ITEM,
+            created_at=datetime(2026, 8, 17, tzinfo=UTC),
+            for_date=_date(2026, 8, 17),
+            facts=[
+                Fact(
+                    kind=FactKind.SUNSET_DATE,
+                    value="15 октября 2026",
+                    source_url="u",
+                    evidence="q",
+                    value_date=_date(2026, 10, 15),
+                )
+            ],
         )
         due, days = nearest_due_date(signal, ["sunset_date"], _date(2026, 8, 17))
         assert due == _date(2026, 10, 15)

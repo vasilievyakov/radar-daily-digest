@@ -1131,6 +1131,151 @@
           ]
         ]
       }
+    },
+    {
+      "id": "google-vertex-lifecycle-row-release-and-shutdown",
+      "note": "One row of a lifecycle table states both a release date and a discontinuation date, so the model correctly returns two events. The shutdown is the lead: the card's headline and its type must both come from it. Recorded from the live run of 2026-08-18.",
+      "source_id": "google_vertex_model_versions",
+      "source_vendor": "google",
+      "url": "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions#embeddings-models",
+      "title": "Embeddings models - text-embedding-005",
+      "published_at": null,
+      "item_event_date": "2027-04-01",
+      "raw_text": "text-embedding-005 | November 18, 2024 | April 1, 2027 |",
+      "response": {
+        "events": [
+          {
+            "statement": "Google выпустила модель text-embedding-005 для Vertex AI.",
+            "change_type": "release",
+            "event_date": "2024-11-18",
+            "event_date_text": "November 18, 2024",
+            "product": "text-embedding-005",
+            "version": "",
+            "vendor": "",
+            "evidence": "text-embedding-005 | November 18, 2024",
+            "facts": [
+              {
+                "kind": "version",
+                "value": "text-embedding-005",
+                "subject": "",
+                "evidence": "text-embedding-005"
+              }
+            ]
+          },
+          {
+            "statement": "Модель text-embedding-005 будет выведена из обслуживания 1 апреля 2027 года.",
+            "change_type": "deprecation",
+            "event_date": "2027-04-01",
+            "event_date_text": "April 1, 2027",
+            "product": "text-embedding-005",
+            "version": "",
+            "vendor": "",
+            "evidence": "April 1, 2027",
+            "facts": [
+              {
+                "kind": "sunset_date",
+                "value": "2027-04-01",
+                "subject": "text-embedding-005",
+                "evidence": "April 1, 2027"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "statements": [
+          {
+            "index": 1,
+            "vendor": "google",
+            "change_type": "deprecation",
+            "event_date": "2027-04-01",
+            "date_precision": "day",
+            "version": null,
+            "facts": [
+              {
+                "kind": "sunset_date",
+                "value": "2027-04-01",
+                "value_date": "2027-04-01",
+                "date_precision": "day",
+                "subject": "text-embedding-005"
+              }
+            ]
+          },
+          {
+            "index": 0,
+            "vendor": "google",
+            "change_type": "release",
+            "event_date": "2024-11-18",
+            "date_precision": "day",
+            "version": "text-embedding-005",
+            "facts": [
+              {
+                "kind": "version",
+                "value": "text-embedding-005",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              }
+            ]
+          }
+        ],
+        "rejected": []
+      }
+    },
+    {
+      "id": "anthropic-status-row-typed-other-with-a-retirement-date",
+      "note": "A model-status row the extractor could not classify: it answered `other` while handing over a retirement date that verifies against the page. `other` is the one label a verified fact may overrule, so the statement is published as a deprecation. Recorded from the live run of 2026-08-18.",
+      "source_id": "anthropic_model_deprecations",
+      "source_vendor": "anthropic",
+      "url": "https://docs.claude.com/en/docs/about-claude/model-deprecations#model-status",
+      "title": "Model status - claude-opus-4-7",
+      "published_at": null,
+      "item_event_date": "2027-04-16",
+      "raw_text": "claude-opus-4-7 | Active | N/A | Not sooner than April 16, 2027",
+      "response": {
+        "events": [
+          {
+            "statement": "Anthropic установила дату прекращения поддержки модели claude-opus-4-7 не раньше 16 апреля 2027 года.",
+            "change_type": "other",
+            "event_date": "2027-04-16",
+            "event_date_text": "",
+            "product": "claude-opus-4-7",
+            "version": "",
+            "vendor": "",
+            "evidence": "Not sooner than April 16, 2027",
+            "facts": [
+              {
+                "kind": "sunset_date",
+                "value": "2027-04-16",
+                "subject": "claude-opus-4-7",
+                "evidence": "Not sooner than April 16, 2027"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "statements": [
+          {
+            "index": 0,
+            "vendor": "anthropic",
+            "change_type": "deprecation",
+            "event_date": "2027-04-16",
+            "date_precision": "day",
+            "version": null,
+            "facts": [
+              {
+                "kind": "sunset_date",
+                "value": "2027-04-16",
+                "value_date": "2027-04-16",
+                "date_precision": "day",
+                "subject": "claude-opus-4-7"
+              }
+            ]
+          }
+        ],
+        "rejected": []
+      }
     }
   ],
   "recorded_against": "extract-v1",
