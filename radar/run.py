@@ -413,7 +413,24 @@ def _collapse_to_events(
     return [winners[key] for key in order], collapsed
 
 
-def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
+# An event can carry a date and still impose no deadline. "Anthropic отменила
+# запланированное повышение цен" has an effective_date — the day the rise would
+# have taken effect — and the news is precisely that nothing happens then. The
+# card led the digest saying "срок наступает через 14 дней" about a deadline
+# that had been called off. There is no field for this: the model reports a
+# date and the pipeline cannot tell an obligation from its cancellation, so the
+# wording is read. When these words are present the date is still shown, as a
+# date, and nothing is promised about it.
+_CANCELS_THE_DEADLINE = re.compile(
+    r"\b(отмен\w+|не\s+будет|не\s+состо\w+|сохран\w+|остa?ётся|остаются|"
+    r"продлен\w+|перенес\w+|отложен\w+)\b",
+    re.IGNORECASE,
+)
+
+
+def _why_it_matters(
+    cluster: Any, facts: list[Fact], as_of: date, statement: str = ""
+) -> str:
     """Composed from verified facts, never from a second model call.
 
     Says why this deserves attention today, and every clause is backed by a
@@ -429,11 +446,15 @@ def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
             (f.subject for f in facts if f.value_date == deadline and f.subject), None
         )
         what = f"{subject}: " if subject else ""
-        reasons.append(
-            f"{what}срок наступает через {russian_days(days)}"
-            if days
-            else f"{what}срок сегодня"
-        )
+        if _CANCELS_THE_DEADLINE.search(statement or ""):
+            reasons.append(
+                f"{what}дата, о которой идёт речь — "
+                f"{deadline.day} {MONTHS_GENITIVE[deadline.month - 1]}"
+            )
+        elif days:
+            reasons.append(f"{what}срок наступает через {russian_days(days)}")
+        else:
+            reasons.append(f"{what}срок сегодня")
     if cluster.change_type in {"deprecation", "breaking_change"}:
         reasons.append("работающий код перестанет работать без правки")
     elif cluster.change_type == "security":
@@ -874,7 +895,10 @@ class DailyRun:
                 rank=0,
                 headline=headline,
                 summary=body or cluster.primary.raw_text[:2000],
-                why_it_matters=_why_it_matters(cluster, facts, self.for_date),
+                why_it_matters=_why_it_matters(
+                    cluster, facts, self.for_date,
+                    statement=lead.text if lead else "",
+                ),
                 product=lead.product if lead else None,
                 # Slugs used to travel into parameters named `label`, which
                 # is how the context sentence read "anthropic: deprecation"

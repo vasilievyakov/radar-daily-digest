@@ -1043,3 +1043,50 @@ class TestALongHeadlineLosesOnlyItsTail:
         for text in (self.PRICE, self.SECURITY):
             out = run_module._tighten(text)
             assert not out.endswith((",", "…", "...", " и", " с", " для"))
+
+
+class TestACancellationDoesNotPromiseADeadline:
+    """Лид дайджеста: «Anthropic отменила повышение цен» — «срок через 14 дней».
+
+    The event carries a date — the day the rise would have taken effect — and
+    the news is precisely that nothing happens then. There is no field for
+    this: the model reports a date and the pipeline cannot tell an obligation
+    from its cancellation, so the wording is read. The date is still shown; it
+    is simply not promised.
+    """
+
+    @staticmethod
+    def _inputs():
+        item = CollectedItem(url="https://docs.claude.com/pricing", title="Model pricing",
+                             raw_text="", raw_material_ref="ref")
+        cluster = Cluster(cluster_id="c1", dedup_key="d1", items=[item],
+                          vendor="anthropic", change_type="pricing")
+        facts = [Fact(kind=FactKind.EFFECTIVE_DATE, value="2026-09-01",
+                      source_url=item.url, evidence="September 1, 2026",
+                      value_date=date(2026, 9, 1), evidence_verified=True)]
+        return cluster, facts
+
+    def test_a_cancelled_rise_states_the_date_without_promising_it(self):
+        cluster, facts = self._inputs()
+        text = run_module._why_it_matters(
+            cluster, facts, date(2026, 8, 18),
+            statement="Anthropic отменила ранее запланированное повышение цен до $3/$15.",
+        )
+        assert "рок наступает" not in text
+        assert "1 сентября" in text
+
+    def test_an_actual_deadline_is_still_promised(self):
+        cluster, facts = self._inputs()
+        text = run_module._why_it_matters(
+            cluster, facts, date(2026, 8, 18),
+            statement="Anthropic поднимает цену Claude Sonnet 5 с 1 сентября.",
+        )
+        assert "рок наступает через 14 дней" in text  # первая буква поднята
+
+    def test_a_price_that_merely_stays_is_not_a_deadline_either(self):
+        cluster, facts = self._inputs()
+        text = run_module._why_it_matters(
+            cluster, facts, date(2026, 8, 18),
+            statement="Anthropic сохраняет цену $2/$10 как стандартную.",
+        )
+        assert "рок наступает" not in text
