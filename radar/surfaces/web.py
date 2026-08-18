@@ -80,6 +80,7 @@ RECORD_FORMS = ("запись", "записи", "записей")
 SOURCE_FORMS = ("источник", "источника", "источников")
 MATERIAL_FORMS = ("материал", "материала", "материалов")
 STORY_FORMS = ("сюжет", "сюжета", "сюжетов")
+SIGNAL_FORMS = ("сигнал", "сигнала", "сигналов")
 CALL_FORMS = ("вызов", "вызова", "вызовов")
 STATEMENT_FORMS = ("запись", "записи", "записей")
 
@@ -321,6 +322,9 @@ p { margin: 0 0 0.9rem; }
 .masthead { margin-bottom: 2.4rem; }
 .masthead .when-line { color: var(--ink-soft); font-size: 1rem; margin: 0; }
 .card { border-top: 1px solid var(--line); padding: 1.7rem 0 0.4rem; }
+.rank { display: inline-block; min-width: 1.9em; color: var(--muted);
+        font-variant-numeric: tabular-nums; font-weight: 500; }
+.tally { color: var(--muted); font-size: 0.95rem; margin: 0 0 0.4rem; }
 .card.lead { border-top: 2px solid var(--line-strong); padding-top: 1.9rem; }
 .card.lead h2 { font-size: 1.6rem; margin-bottom: 0.7rem; }
 .lede .when { color: var(--ink); }
@@ -993,10 +997,15 @@ def render_card(signal: Signal, today: date, *, lead: bool) -> str:
     without hiding anything: every card is one click from its full evidence.
     """
     headline = esc(clean(signal.headline)) or esc(clean(signal.summary))
+    # The rank, printed. Forty-one cards ran as one column of prose: each was
+    # there, each was one click from its evidence, and nothing on the page said
+    # how many there were — so the digest read as a single item and the funnel
+    # above it had nothing to land on.
+    number = f'<span class="rank">{signal.rank}</span>' if signal.rank else ""
     if lead:
         return (
             '<article class="card lead">\n'
-            f"<h2>{headline}</h2>\n"
+            f"<h2>{number}{headline}</h2>\n"
             f"{render_card_body(signal, today)}\n"
             "</article>"
         )
@@ -1005,7 +1014,7 @@ def render_card(signal: Signal, today: date, *, lead: bool) -> str:
     return (
         '<article class="card">\n'
         "<details>\n"
-        f"<summary>{headline}{tail}</summary>\n"
+        f"<summary>{number}{headline}{tail}</summary>\n"
         f"{render_card_body(signal, today)}\n"
         "</details>\n"
         "</article>"
@@ -1653,7 +1662,7 @@ def render_digest(
         body = _failure_body(failures[0], today)
         title = "Прогон не завершился"
     elif items:
-        body = _items_body(items, today)
+        body = _signal_count(items, for_date) + _items_body(items, today)
         title = clean(items[0].headline) or "Изменения в стеке"
     elif quiet:
         body = _quiet_body(quiet[0], today)
@@ -1687,6 +1696,38 @@ def _headline_for(
     if quiet:
         return clean(quiet[0].headline) or QUIET_DAY_LEAD
     return NOTHING_LEAD
+
+
+
+def _signal_count(items: list[Signal], for_date: date) -> str:
+    """How many, said out loud, above the first card.
+
+    Without it the page opens on one headline and the reader has no way to know
+    another forty follow: the cards are collapsed, which is right, but a column
+    of collapsed summaries reads as prose. The funnel on the run log ends at a
+    number, and this is where that number lands.
+    """
+    total = len(items)
+    opened = sum(1 for s in items if not s.in_progress)
+    day = f"{for_date.day} {MONTHS_GENITIVE[for_date.month - 1]}"
+    line = f"{count_phrase(total, SIGNAL_FORMS)} за {day}"
+    if opened and opened != total:
+        line += f", из них {opened} новых"
+
+    # When this page was produced. The digest showed one run and said nothing
+    # about which, so a page left over from the morning looked exactly like a
+    # fresh one. The moment comes from the signal itself — the digest surface
+    # reads signals and nothing else (SUR-1), and the list of other runs lives
+    # on the run-log page, one link away.
+    where = ""
+    moment = min((s.created_at for s in items), default=None)
+    if moment is not None:
+        where = f" Прогон {fmt_time(moment, DISPLAY_TZ)}."
+
+    return (
+        f'<p class="tally">{esc(line)}.{esc(where)} '
+        f'<a href="{esc(DEFAULT_LINKS.run_log)}">Как это получено</a></p>'
+    )
 
 
 def _items_body(items: list[Signal], today: date) -> str:

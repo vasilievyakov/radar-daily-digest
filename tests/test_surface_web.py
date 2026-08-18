@@ -1907,3 +1907,39 @@ class TestStorylinesWithNothingNewAreFolded:
     def test_nothing_is_folded_when_everything_is_new(self):
         html = web.render_digest(self._items(3, 0), today=date(2026, 8, 18))
         assert "ongoing" not in html
+
+
+class TestThePageSaysHowManySignalsThereAre:
+    """Сорок одна карточка читалась как одна.
+
+    Every signal was rendered and every one was a click from its evidence, but
+    nothing on the page stated the count — a column of collapsed summaries
+    reads as prose. The funnel on the run log ends at a number, and the digest
+    had nowhere for that number to land.
+    """
+
+    def _items(self, count):
+        return [
+            make_lead_signal(signal_id=f"s{i}", rank=i + 1,
+                             headline=f"Вендор отключает модель {i}",
+                             in_progress=i > 2)
+            for i in range(count)
+        ]
+
+    def test_the_count_is_stated_above_the_first_card(self):
+        html = web.render_digest(self._items(41), today=date(2026, 8, 18))
+        assert "41 сигнал" in html
+        assert "из них 3 новых" in html
+
+    def test_every_card_carries_its_rank(self):
+        html = web.render_digest(self._items(12), today=date(2026, 8, 18))
+        assert html.count('class="rank"') == 12
+
+    def test_the_page_says_when_the_run_was(self):
+        """A page left over from the morning looked exactly like a fresh one."""
+        html = web.render_digest(self._items(3), today=date(2026, 8, 18))
+        assert "Прогон" in html
+
+    def test_a_single_signal_is_not_pluralised_wrongly(self):
+        html = web.render_digest(self._items(1), today=date(2026, 8, 18))
+        assert "1 сигнал за" in html
