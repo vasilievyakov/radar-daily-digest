@@ -121,7 +121,14 @@ def run_result(conn, config, tmp_path):
     run_module.collect_all = cached_only
     try:
         run = DailyRun(conn, config, fetcher, RealShapedEnricher(),
-                       for_date=TODAY, log_dir=str(tmp_path / "logs"))
+                       for_date=TODAY, log_dir=str(tmp_path / "logs"),
+                       # Computed above and previously handed to nobody: the
+                       # test claimed two cached sources and walked all
+                       # seventy, collecting 7442 materials. Against that the
+                       # >= 45 threshold measured nothing, and losing 37% of
+                       # the data passed unnoticed. The same defect the file
+                       # exists to catch, inside the file itself.
+                       sources=sources)
         result = run.execute()
     finally:
         run_module.collect_all = original

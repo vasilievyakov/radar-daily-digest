@@ -175,101 +175,153 @@ class TestSupervisorIsReachable:
         assert report["missed_days"]
 
 
-class TestTokensAreRecorded:
-    """FR-8.4 asks for tokens and money. A row reading "5 calls, 0 tokens,
-    $0.20" is worse than no row: it discredits the numbers next to it."""
+class TestTheCommandsActuallyRun:
+    """Executes the wiring instead of reading it.
 
-    def test_the_enricher_forwards_the_call_log(self):
-        import inspect
+    The previous versions of these checks used `inspect.getsource` and `in`.
+    A director gutted every wiring line into a dead branch, left the searched
+    substrings behind, and the whole suite stayed green. Names in Python
+    resolve at call time, so the only proof is a call.
+    """
 
-        from radar.cli import _build_enricher
+    def test_the_run_command_executes_end_to_end(self, tmp_path, monkeypatch):
+        from radar import cli
+        from radar.contracts import EnrichResult
 
-        source = inspect.getsource(_build_enricher)
-        assert "run_log=call_log" in source, (
-            "the enricher must pass the backend's log through, otherwise "
-            "run_log=None overrides it and token counts are lost"
+        class Stub:
+            def enrich(self, item, source):
+                return EnrichResult(source_id="s", url=item.url, facts=[])
+
+        monkeypatch.setattr(cli, "_build_enricher", lambda *a, **k: Stub())
+        monkeypatch.setattr(
+            "radar.run.collect_all", lambda *a, **k: ([], [])
+        )
+        code = cli.main([
+            "--db", str(tmp_path / "r.db"),
+            "--cache", str(tmp_path / "cache"),
+            "run", "--no-filter", "--log-dir", str(tmp_path / "logs"),
+        ])
+        assert code == 0
+        # A run with nothing collected still has to publish a quiet day.
+        import sqlite3
+
+        conn = sqlite3.connect(tmp_path / "r.db")
+        assert conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] == 1
+        conn.close()
+
+    def test_the_run_command_records_what_it_spent(self, tmp_path, monkeypatch):
+        """Walks the same lines a paid run walks: a call is logged, and the
+        cost has to arrive in `model_calls`. Gutting `call_log.write` into a
+        dead branch left every other test green."""
+        import sqlite3
+
+        from radar import cli
+        from radar.contracts import EnrichResult
+
+        class Paying:
+            """Reports a call the way the real backend does."""
+
+            def __init__(self, call_log):
+                self.call_log = call_log
+
+            def enrich(self, item, source):
+                self.call_log.model_call(
+                    stage="enrich",
+                    model="anthropic/claude-haiku-4.5",
+                    tokens_in=1500,
+                    tokens_out=200,
+                    cost_usd=0.0079,
+                )
+                return EnrichResult(source_id="s", url=item.url, facts=[])
+
+        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log: Paying(log))
+
+        from radar.adapters.base import CollectedItem
+        from radar.collect import SourceOutcome
+        from radar.models import SourceStatus
+
+        item = CollectedItem(
+            url="https://example.test/a#one", title="Отключение модели",
+            raw_text="текст материала", extra={"source_id": "x", "source_priority": 1},
+        )
+        monkeypatch.setattr(
+            "radar.run.collect_all",
+            lambda *a, **k: ([item], [SourceOutcome("x", SourceStatus.OK, items=[item])]),
         )
 
+        db = tmp_path / "r.db"
+        assert cli.main([
+            "--db", str(db), "--cache", str(tmp_path / "cache"),
+            "run", "--no-filter", "--log-dir", str(tmp_path / "logs"),
+        ]) == 0
 
-class TestDeliveryIsActuallyWired:
-    """Three times in one night the orchestrator called a name that does not
-    exist: `keep()` on the filter, `extract-v1` in the golden set, and
-    `TelegramSurface` inside the fix for the previous two. Names are checked
-    here by construction, not by reading."""
+        conn = sqlite3.connect(db)
+        calls, tokens, cost = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(cost_usd), 0) "
+            "FROM model_calls"
+        ).fetchone()
+        conn.close()
+        assert calls == 1, "вызов модели не записан в model_calls"
+        assert tokens == 1500, "токены потеряны по дороге"
+        assert cost > 0, "стоимость прогона осталась нулём"
 
-    def test_the_run_command_builds_surfaces_that_exist(self):
-        from radar.cli import _deliver_run
-        import inspect
+    def test_the_deliver_flag_reaches_the_surface(self, tmp_path, monkeypatch):
+        """`--deliver` was inert and nothing noticed; the wrapper could also
+        call a method that does not exist."""
+        from radar import cli
+        from radar.contracts import EnrichResult
 
-        # Every attribute the wiring reaches for must resolve on the module.
-        from radar.surfaces import telegram
+        sent: list = []
 
-        assert hasattr(telegram, "send_digest"), (
-            "delivery calls telegram.send_digest; if the surface renames it, "
-            "the run silently reports 'канал недоступен' forever"
+        class Spy:
+            def send_digest(self, signals):
+                sent.append(signals)
+                return type("R", (), {"ok": True, "message_id": 1, "error": None})()
+
+        monkeypatch.setattr("radar.surfaces.telegram.send_digest", Spy().send_digest)
+        monkeypatch.setattr(
+            cli, "_build_enricher",
+            lambda *a, **k: type("E", (), {
+                "enrich": lambda self, i, s: EnrichResult(source_id="s", url=i.url)
+            })(),
         )
-        assert callable(telegram.send_digest)
-        # The helper must not reference a class that was never defined.
-        source = inspect.getsource(_deliver_run)
-        code_lines = [
-            line for line in source.splitlines() if not line.strip().startswith("#")
-        ]
-        assert "TelegramSurface" not in "\n".join(code_lines)
+        monkeypatch.setattr("radar.run.collect_all", lambda *a, **k: ([], []))
 
-    def test_the_built_surface_satisfies_the_delivery_protocol(self, env):
-        """Constructs it the way the CLI does and hands it a signal."""
-        conn, journal = env
+        cli.main([
+            "--db", str(tmp_path / "r.db"), "--cache", str(tmp_path / "cache"),
+            "run", "--no-filter", "--deliver", "--log-dir", str(tmp_path / "logs"),
+        ])
+        assert sent, "--deliver не дошёл до поверхности"
+
+    def test_the_supervise_command_executes(self, tmp_path):
+        from radar import cli
+
+        code = cli.main([
+            "--db", str(tmp_path / "r.db"),
+            "supervise", "--log-dir", str(tmp_path / "logs"),
+        ])
+        # Zero when everything is healthy, one when something needs attention;
+        # either way it must not raise.
+        assert code in (0, 1)
+
+    def test_a_misspelled_surface_attribute_is_not_swallowed(self, tmp_path):
+        """Three incidents tonight arrived as calm status messages."""
+        import pytest as _pytest
+
+        from radar.db import init_db, publish_signals
+        from radar.deliver import deliver
+        from radar.journal import Journal
+
+        conn = init_db(tmp_path / "r.db")
         publish_signals(conn, RUN, [make_signal()])
+        journal = Journal(conn, log_dir=tmp_path / "logs", run_id=RUN)
 
-        from radar.surfaces import telegram as tg
-
-        class _Telegram:
+        class Misspelled:
             name = "telegram"
 
             def send_digest(self, signals):
-                return tg.DeliveryResult(delivered=False, error="токена нет")
+                return self.send_digest_to_channel(signals)  # no such method
 
-        report = deliver(conn, {"telegram": _Telegram()}, RUN, journal)
-        # No token in the environment, so it must fail cleanly and be recorded
-        # rather than raise or silently do nothing.
-        assert report.results
-        assert report.results[0].channel == "telegram"
-        assert not report.results[0].delivered
-
-
-class TestRunCommandWiring:
-    """Three defects of one kind: an object is created and handed to nobody.
-
-    The filter can record reasons but was built without the run log, so every
-    rejected material vanished. The call log collected tokens and was never
-    written, so the run reported zero spend. The budget was constructed and
-    passed to no stage, so the ceiling could not trigger.
-    """
-
-    def test_the_filter_receives_the_run_log(self):
-        import inspect
-
-        from radar.cli import cmd_run
-
-        source = inspect.getsource(cmd_run)
-        assert "run_log=run.log" in source
-        assert "budget=run.budget" in source
-
-    def test_the_call_log_is_written_to_the_database(self):
-        import inspect
-
-        from radar.cli import cmd_run
-
-        source = inspect.getsource(cmd_run)
-        assert "call_log.write(conn" in source, (
-            "collected token rows must reach model_calls, otherwise the run "
-            "prints 0.0000 USD while checkpoints show real spend"
-        )
-
-    def test_spend_is_read_back_from_the_database(self):
-        """Printing the in-memory counter hides everything a crash lost."""
-        import inspect
-
-        from radar.cli import cmd_run
-
-        assert "FROM model_calls WHERE run_id" in inspect.getsource(cmd_run)
+        with _pytest.raises(AttributeError):
+            deliver(conn, {"telegram": Misspelled()}, RUN, journal)
+        conn.close()

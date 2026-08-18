@@ -114,6 +114,10 @@ def deliver(
         try:
             raw = surface.send_digest(signals)
             result = _outcome_of(raw, channel)
+        except (AttributeError, TypeError, NameError, ImportError):
+            # `TelegramSurface` did not exist and this line reported it as
+            # "канал недоступен" for as long as nobody looked.
+            raise
         except Exception as exc:
             result = ChannelResult(
                 channel, delivered=False, error=f"{type(exc).__name__}: {exc}"

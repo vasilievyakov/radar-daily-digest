@@ -2,12 +2,12 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from radar.adapters.base import CollectedItem, SourceConfig
+from radar.adapters.base import CollectedItem
 from radar.config import ThemeConfig
 from radar.contracts import EnrichResult, RejectedFact
 from radar.db import init_db, read_signals
 from radar.fetch import FetchResult, Fetcher
-from radar.models import ChangeType, Fact, FactKind, SignalType, Tier
+from radar.models import ChangeType, Fact, FactKind, SignalType
 from radar.run import DailyRun
 
 TODAY = date(2026, 8, 17)
@@ -340,9 +340,9 @@ class TestSeamsCarryValues:
     def test_the_change_type_weight_is_actually_applied(self, env):
         """Without the seam a deprecation scores like an ordinary release."""
         conn, config, fetcher, tmp = env
-        with_type = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
-                             run_id="typed", for_date=TODAY,
-                             log_dir=str(tmp / "logs")).execute()
+        DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                 run_id="typed", for_date=TODAY,
+                 log_dir=str(tmp / "logs")).execute()
 
         class Untyped(FakeEnricher):
             def enrich(self, item, source):
@@ -350,9 +350,9 @@ class TestSeamsCarryValues:
                 out.change_type = None
                 return out
 
-        without = DailyRun(conn, config, fetcher, Untyped([sunset_fact()]),
-                           run_id="untyped", for_date=TODAY,
-                           log_dir=str(tmp / "logs")).execute()
+        DailyRun(conn, config, fetcher, Untyped([sunset_fact()]),
+                 run_id="untyped", for_date=TODAY,
+                 log_dir=str(tmp / "logs")).execute()
         typed_score = read_signals(conn, "typed")[0].score
         untyped_score = read_signals(conn, "untyped")[0].score
         assert typed_score > untyped_score

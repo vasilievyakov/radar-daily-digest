@@ -343,6 +343,11 @@ class DailyRun:
             return outcome.clusters
         except BudgetExceeded:
             raise
+        except (AttributeError, TypeError, NameError, ImportError):
+            # Not an outage: a name that does not resolve, a signature that
+            # does not match. Three times tonight such an error arrived as a
+            # calm note about the outside world while the stage did nothing.
+            raise
         except Exception as exc:
             self.log.note(f"фильтр не отработал, материалы пропущены дальше: {exc}")
             return clusters

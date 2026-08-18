@@ -18,7 +18,7 @@ import threading
 import uuid
 import shutil
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
