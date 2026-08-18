@@ -250,6 +250,7 @@ CSS = """
   --line-strong: #cac2b3;
   --accent: #7a4a1c;
   --quote-bg: #f2ede3;
+  --card-bg: #fffdf8;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
     "Times New Roman", serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
@@ -268,6 +269,7 @@ CSS = """
     --line-strong: #4b463c;
     --accent: #d8a066;
     --quote-bg: #211f1a;
+    --card-bg: #1c1b17;
   }
 }
 * { box-sizing: border-box; }
@@ -321,12 +323,59 @@ p { margin: 0 0 0.9rem; }
 }
 .masthead { margin-bottom: 2.4rem; }
 .masthead .when-line { color: var(--ink-soft); font-size: 1rem; margin: 0; }
-.card { border-top: 1px solid var(--line); padding: 1.7rem 0 0.4rem; }
-.rank { display: inline-block; min-width: 1.9em; color: var(--muted);
-        font-variant-numeric: tabular-nums; font-weight: 500; }
-.tally { color: var(--muted); font-size: 0.95rem; margin: 0 0 0.4rem; }
-.card.lead { border-top: 2px solid var(--line-strong); padding-top: 1.9rem; }
-.card.lead h2 { font-size: 1.6rem; margin-bottom: 0.7rem; }
+/* A card has to look like one object. Forty-one of them ran as a single column
+   of prose separated by hairlines: the reader saw one item, and the count on
+   the run log had nothing to land on. Rank sits in its own column so a number
+   never touches the words, and the tier decides the weight — a card the core
+   called lead is loud, a background card is quiet, and that difference is what
+   makes the page a ranking rather than a list. */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1.1rem 1.2rem;
+  margin: 0 0 0.7rem;
+  background: var(--card-bg);
+}
+.card > details > summary,
+.card.lead > h2 {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr;
+  gap: 0.2rem;
+  align-items: baseline;
+}
+.rank {
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.tally {
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+.card.lead {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  padding: 1.5rem 1.4rem 0.9rem;
+  margin-bottom: 1.4rem;
+}
+.card.lead h2 { font-size: 1.5rem; margin-bottom: 0.7rem; }
+/* Tier is the core's judgement of weight; the surface only renders it — and
+   renders it sparingly. Nineteen of forty-one cards come back as `lead`, so
+   giving each an accent stripe restates "everything is important", which is
+   the thing the page is supposed to resolve. The accent belongs to the one
+   card that opens the page; the rest are marked, not shouted. */
+.card.tier-lead { border-left: 3px solid var(--line-strong); }
+.card.tier-standard { border-left: 3px solid var(--line); }
+.card.tier-background { border-left: 3px solid transparent; opacity: 0.85; }
+.card.tier-background > details > summary { color: var(--ink-soft); }
+.card.lead.tier-lead,
+.card.lead.tier-standard { border-left: 3px solid var(--accent); }
 .lede .when { color: var(--ink); }
 .why { color: var(--ink); }
 .when-missing { font-family: var(--sans); font-size: 0.92rem; color: var(--ink-soft); }
@@ -354,7 +403,15 @@ summary {
 summary::marker { color: var(--ink-faint); }
 summary:hover { color: var(--accent); }
 .more { font-family: var(--sans); font-size: 0.85rem; color: var(--accent); }
-.card details > summary { font-size: 1.05rem; }
+.card > details > summary { font-size: 1.05rem; font-weight: 500; }
+/* Precedent lists live inside a card and had the same disclosure marker as the
+   card itself: seventy-six triangles for forty-one cards, all looking alike. */
+.card details details > summary {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+  font-weight: 400;
+}
 .precedents { margin: 0.9rem 0 0; padding-left: 1.1rem; }
 .precedents li { margin-bottom: 1rem; }
 .precedents p { margin: 0 0 0.25rem; }
@@ -1002,19 +1059,20 @@ def render_card(signal: Signal, today: date, *, lead: bool) -> str:
     # how many there were — so the digest read as a single item and the funnel
     # above it had nothing to land on.
     number = f'<span class="rank">{signal.rank}</span>' if signal.rank else ""
+    tier = f" tier-{signal.tier}" if signal.tier else ""
     if lead:
         return (
-            '<article class="card lead">\n'
-            f"<h2>{number}{headline}</h2>\n"
+            f'<article class="card lead{tier}">\n'
+            f"<h2>{number}<span>{headline}</span></h2>\n"
             f"{render_card_body(signal, today)}\n"
             "</article>"
         )
     when = signal_when(signal, today)
     tail = f' <span class="when">— {esc(when)}</span>' if when else ""
     return (
-        '<article class="card">\n'
+        f'<article class="card{tier}">\n'
         "<details>\n"
-        f"<summary>{number}{headline}{tail}</summary>\n"
+        f"<summary>{number}<span>{headline}{tail}</span></summary>\n"
         f"{render_card_body(signal, today)}\n"
         "</details>\n"
         "</article>"
