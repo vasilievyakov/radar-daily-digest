@@ -98,10 +98,6 @@ CREATE TABLE IF NOT EXISTS event_statements (
 );
 CREATE INDEX IF NOT EXISTS idx_es_filter ON event_statements(vendor, change_type, event_date);
 CREATE INDEX IF NOT EXISTS idx_es_date ON event_statements(event_date);
--- Empty keys are exempt: a statement whose subject could not be named is not
--- claimed to be unique, and refusing to store it would lose the event.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_es_event
-    ON event_statements(event_key) WHERE event_key <> '';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS event_statements_fts USING fts5(
     text,
@@ -221,9 +217,49 @@ def connect(path: str | Path, read_only: bool = False) -> sqlite3.Connection:
     return conn
 
 
+# Empty keys are exempt: a statement whose subject could not be named is not
+# claimed to be unique, and refusing to store it would lose the event.
+EVENT_KEY_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_es_event "
+    "ON event_statements(event_key) WHERE event_key <> ''"
+)
+
+
+def migrate_event_key(conn: sqlite3.Connection) -> str | None:
+    """Bring a corpus written before event identity existed up to date.
+
+    `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists,
+    so a database from yesterday has no `event_key` column and the unique index
+    over it cannot be created. Adding the column is safe; creating the index is
+    not, because the corpus it is meant to protect may already hold the
+    duplicates it forbids. In that case the index is skipped and the reason
+    returned, rather than taking down every command that opens the database.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(event_statements)")}
+    if not columns:
+        return None
+    if "event_key" not in columns:
+        conn.execute(
+            "ALTER TABLE event_statements ADD COLUMN event_key TEXT NOT NULL DEFAULT ''"
+        )
+    try:
+        conn.execute(EVENT_KEY_INDEX)
+    except sqlite3.IntegrityError:
+        rows = conn.execute(
+            "SELECT count(*) FROM (SELECT event_key FROM event_statements "
+            "WHERE event_key <> '' GROUP BY event_key HAVING count(*) > 1)"
+        ).fetchone()[0]
+        return (
+            f"корпус содержит {rows} событий, записанных больше одного раза; "
+            "индекс уникальности не создан — пересоберите корпус"
+        )
+    return None
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(DDL)
+    migrate_event_key(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
