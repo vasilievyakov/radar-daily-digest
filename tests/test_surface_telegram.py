@@ -33,6 +33,7 @@ from radar.models import (
     UpcomingDeadline,
 )
 from radar.surfaces import telegram
+tg = telegram
 
 TODAY = date(2026, 8, 17)
 RUN_ID = "20260817T060000-ab12cd"
@@ -1031,3 +1032,20 @@ class TestDelivery:
 
         assert result.ok is False
         assert result.chars > 0
+
+
+class TestARelativePathIsNotALink:
+    """`run_log_url` is "run-log.html" unless a public base is configured.
+
+    Correct for the site that hosts both pages, meaningless in a message. Bot
+    API would carry the dead href out to the reader, and a link that goes
+    nowhere is the kind of care that only looks like care.
+    """
+
+    def test_a_relative_run_log_is_rendered_as_text(self):
+        assert "<a" not in tg._link("run-log.html", "Лог прогона")
+        assert "Лог прогона" in tg._link("run-log.html", "Лог прогона")
+
+    def test_an_absolute_run_log_is_rendered_as_a_link(self):
+        rendered = tg._link("https://radar.test/run-log.html", "Лог прогона")
+        assert 'href="https://radar.test/run-log.html"' in rendered

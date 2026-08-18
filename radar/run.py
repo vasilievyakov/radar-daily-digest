@@ -460,6 +460,14 @@ class DailyRun:
         # which is why it comes from config rather than being hardcoded here.
         base = str(config.delivery.get("run_log_url_base", "") or "").rstrip("/")
         self.run_log_url = f"{base}/run-log.html" if base else "run-log.html"
+        if not base:
+            # Said out loud rather than left to each surface to discover. The
+            # relative path works on the site and is meaningless in a message:
+            # email drops it silently, Telegram would carry a dead href.
+            self.log.note(
+                "delivery.run_log_url_base не задан: ссылка на лог прогона "
+                "будет работать только на веб-странице"
+            )
         self.journal = Journal(conn, log_dir=log_dir, run_id=self.run_id)
         self.budget = Budget(
             float(config.section("budget").get("max_usd_per_run", 0.5))

@@ -323,8 +323,20 @@ def _esc(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
+def _absolute(url: str) -> bool:
+    lowered = url.strip().lower()
+    return lowered.startswith("http://") or lowered.startswith("https://")
+
+
 def _link(url: str | None, text: str) -> str:
-    if not url:
+    """A relative path is not a link outside the page that hosts it.
+
+    `run_log_url` is "run-log.html" unless a public base is configured, which
+    is right for the site and meaningless in a message: Bot API would carry a
+    dead href out to the reader. Text without a link is honest; a link that
+    goes nowhere is the kind of care that only looks like care.
+    """
+    if not url or not _absolute(url):
         return _esc(text)
     return f'<a href="{html.escape(url, quote=True)}">{_esc(text)}</a>'
 
