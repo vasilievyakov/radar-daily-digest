@@ -1776,3 +1776,71 @@ def test_make_statement_id_is_a_function_of_the_backfill_key():
     assert make_statement_id(bare, 3) != make_statement_id(url, 3)
     assert make_statement_id(url, 3) != make_statement_id(url, 4)
     assert statement_index_of(make_statement_id(url, 12)) == 12
+
+
+class TestARelativeWordIsNotADate:
+    """«Origin begins rolling out today» — and the page prints no date at all.
+
+    The quote check passes, because the word really is on the page. The model
+    then resolves it against its own clock and the card carries the day of the
+    run as the day of the announcement. This is the defect described in
+    docs/finding-verification.md, arriving through the one branch that had no
+    guard: a pointer that exists but is not a date.
+    """
+
+    TEXT = (
+        "Cursor can now host your code. Origin begins rolling out today in "
+        "early beta on all paid plans."
+    )
+
+    def test_today_does_not_become_the_run_date(self, config):
+        backend = FakeBackend({
+            "events": [event(
+                event_date="2026-08-18",
+                event_date_text="today",
+                evidence="Origin begins rolling out today",
+                facts=[],
+            )]
+        })
+        result = enricher(config, backend).enrich(
+            make_item(text=self.TEXT), make_source(vendor="cursor")
+        )
+
+        assert result.ok, result.error
+        assert result.statements[0].event_date is None, (
+            "a word the model resolved against its own clock became the "
+            "announcement date"
+        )
+        assert any(r.reason == "date_not_printed" for r in result.rejected_facts)
+
+    def test_a_date_printed_elsewhere_on_the_page_survives(self, config):
+        text = self.TEXT + " Available from August 18, 2026."
+        backend = FakeBackend({
+            "events": [event(
+                event_date="2026-08-18",
+                event_date_text="today",
+                evidence="Origin begins rolling out today",
+                facts=[],
+            )]
+        })
+        result = enricher(config, backend).enrich(
+            make_item(text=text), make_source(vendor="cursor")
+        )
+
+        assert result.statements[0].event_date == date(2026, 8, 18)
+
+    def test_the_entry_date_still_wins_when_the_collector_read_one(self, config):
+        backend = FakeBackend({
+            "events": [event(
+                event_date="2026-08-18",
+                event_date_text="today",
+                evidence="Origin begins rolling out today",
+                facts=[],
+            )]
+        })
+        result = enricher(config, backend).enrich(
+            make_item(text=self.TEXT, event_date=date(2026, 8, 18)),
+            make_source(vendor="cursor"),
+        )
+
+        assert result.statements[0].event_date == date(2026, 8, 18)

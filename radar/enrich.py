@@ -943,7 +943,24 @@ class LlmEnricher:
             # The year came from the collector, not from the page, and the
             # record has to keep saying so.
             return filled.value, DatePrecision.INFERRED
-        return (stated, precision) if stated is not None else _fallback_date(item)
+        # The pointer exists but is not a date: "today", "now", "this week".
+        # Cursor's post says Origin ships "today" and prints no date anywhere;
+        # the model resolved that against its own clock and produced the day of
+        # the run. The quote check passes — the word really is on the page — so
+        # only this branch stands between a collection date and a card. The
+        # value survives when the page prints the date in some other form, or
+        # when the collector read it from the entry itself.
+        if stated is not None and (
+            item.event_date == stated or _date_is_printed(stated, precision, text)
+        ):
+            return stated, precision
+        if stated is not None:
+            rejected.append(
+                RejectedFact(
+                    "event_date", event.event_date, printed, "date_not_printed"
+                )
+            )
+        return _fallback_date(item)
 
     # -- logging -------------------------------------------------------
 
