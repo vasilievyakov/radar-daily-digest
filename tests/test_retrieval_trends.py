@@ -314,3 +314,36 @@ class TestTrendPersistence:
 
     def test_an_unrelated_statement_has_no_trend(self, db):
         assert trend_for_statement(db, "nope") is None
+
+
+class TestTheAlarmSeesTheCellItLandedIn:
+    """`other` is where the classifier goes when unsure, so it neighbours all.
+
+    Seven real retirements filed as `other` drew their precedents from a corpus
+    cell holding sixteen daily bugfixes. No warning was written, because strict
+    equalled relaxed: `other` had no neighbours to relax into. The fifteen
+    warnings that were written all concerned the ordinary
+    deprecation/breaking_change gap on correctly typed cards — the alarm was
+    loudest where nothing was wrong and silent where everything was.
+    """
+
+    def test_a_card_typed_other_finds_the_deprecations_next_door(self, db):
+        for index in range(4):
+            add(
+                db,
+                f"d{index}",
+                "anthropic",
+                "deprecation",
+                f"2026-0{index + 3}-01",
+                text="Anthropic отключает модель",
+                index=index,
+            )
+
+        result = CorpusRetriever(db).find_precedents(
+            "anthropic", "other", date(2026, 8, 18), text="Anthropic отключает модель"
+        )
+
+        assert result.report.strict_hits == 0
+        assert result.report.relaxed_hits >= 4, (
+            "the alarm cannot see the cell the card actually landed in"
+        )

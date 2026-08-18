@@ -38,6 +38,19 @@ DEFAULT_MIN_EVIDENCE = 2
 DEFAULT_RELAXED_GROUPS = [
     ["pricing", "limits"],
     ["deprecation", "breaking_change"],
+    # `other` is the type the classifier reaches for when it is unsure, so it
+    # neighbours everything. Without this the alarm was blind exactly where it
+    # was needed: seven real retirements filed as `other` drew their precedents
+    # from a cell holding sixteen daily bugfixes, strict equalled relaxed
+    # because `other` had no neighbours, and no warning was written. The
+    # fifteen warnings that were written concern the ordinary
+    # deprecation/breaking_change gap on correctly typed cards.
+    ["other", "deprecation"],
+    ["other", "breaking_change"],
+    ["other", "release"],
+    ["other", "pricing"],
+    ["other", "limits"],
+    ["other", "security"],
 ]
 
 _FTS_UNSAFE = re.compile(r"[^\w\s]", re.UNICODE)
