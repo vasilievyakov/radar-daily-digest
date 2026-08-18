@@ -499,9 +499,11 @@ class TestOneRunHasOneCost:
         )
 
         db = tmp_path / "r.db"
+        # With --deliver, because delivery flushes the run log and an earlier
+        # version of the reconciliation was silently undone by that flush.
         cli.main([
             "--db", str(db), "--cache", str(tmp_path / "c"),
-            "run", "--no-filter", "--log-dir", str(tmp_path / "l"),
+            "run", "--no-filter", "--deliver", "--log-dir", str(tmp_path / "l"),
         ])
         conn = sqlite3.connect(db)
         run_cost, run_calls = conn.execute(
