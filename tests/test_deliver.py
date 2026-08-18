@@ -242,11 +242,18 @@ class TestTheCommandsActuallyRun:
 
         item = CollectedItem(
             url="https://example.test/a#one", title="Отключение модели",
-            raw_text="текст материала", extra={"source_id": "x", "source_priority": 1},
+            raw_text="текст материала",
+            # A real source id: enrichment now skips material whose source
+            # vanished from the config rather than enriching against nothing,
+            # and an invented id would exercise that path instead of this one.
+            extra={"source_id": "anthropic_model_deprecations", "source_priority": 1},
         )
         monkeypatch.setattr(
             "radar.run.collect_all",
-            lambda *a, **k: ([item], [SourceOutcome("x", SourceStatus.OK, items=[item])]),
+            lambda *a, **k: (
+                [item],
+                [SourceOutcome("anthropic_model_deprecations", SourceStatus.OK, items=[item])],
+            ),
         )
 
         db = tmp_path / "r.db"
@@ -403,3 +410,48 @@ class TestABrokenChannelLeavesATrace:
                   if e["kind"] == str(EventKind.DELIVERY_FAILED)]
         assert events, "отказ канала не записан в журнал"
         assert "AttributeError" in str(events[0]["payload"].get("error"))
+
+
+class TestTheSchedulerExists:
+    """PRD measures "share of runs that ended in delivery >= 95%". With no
+    scheduler in the repository that number is zero by construction, and the
+    supervisor guards a job nobody starts."""
+
+    def test_both_jobs_are_valid_plists(self):
+        import plistlib
+        from pathlib import Path
+
+        files = sorted(Path("deploy").glob("*.plist"))
+        assert len(files) == 2, "нет расписания для прогона и наблюдения"
+        for path in files:
+            plist = plistlib.loads(path.read_bytes())
+            assert plist["Label"].startswith("com.radar.")
+            assert plist["ProgramArguments"]
+
+    def test_the_daily_job_delivers(self):
+        """Without --deliver the supervisor sees NEVER_DELIVERED every day."""
+        import plistlib
+        from pathlib import Path
+
+        plist = plistlib.loads(Path("deploy/com.radar.daily.plist").read_bytes())
+        command = " ".join(plist["ProgramArguments"])
+        assert "run" in command and "--deliver" in command
+
+    def test_the_daily_job_uses_a_calendar_not_an_interval(self):
+        """cron does not fire on a sleeping laptop and skips the day in
+        silence; launchd runs the job on wake."""
+        import plistlib
+        from pathlib import Path
+
+        plist = plistlib.loads(Path("deploy/com.radar.daily.plist").read_bytes())
+        assert "StartCalendarInterval" in plist
+
+    def test_supervision_runs_apart_from_the_run_it_watches(self):
+        """An instrument that only runs inside the job it watches cannot
+        report that the job never started."""
+        import plistlib
+        from pathlib import Path
+
+        plist = plistlib.loads(Path("deploy/com.radar.supervise.plist").read_bytes())
+        assert "StartInterval" in plist
+        assert "supervise" in " ".join(plist["ProgramArguments"])

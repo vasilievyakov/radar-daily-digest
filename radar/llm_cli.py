@@ -64,7 +64,7 @@ from radar.llm import (
 # and the schema handling have to stay bit-identical across both backends, and
 # a second copy would drift.
 from radar.llm import _completion_from_cache, _resolve_schema
-from radar.runlog import Budget, RunLog
+from radar.runlog import Budget, RunLog, RunLogLike
 
 PROVIDER = "claude-cli"
 
@@ -189,7 +189,7 @@ class ClaudeCLIClient:
         schema: Any = None,
         system: str | None = None,
         cache_prefix: str | None = None,
-        run_log: RunLog | None = None,
+        run_log: RunLogLike | None = None,
         budget: Budget | None = None,
         provider: str | None = None,
         max_tokens: int | None = None,
@@ -414,7 +414,7 @@ class ClaudeCLIClient:
         return payload
 
     def _check_prompt_stability(
-        self, run_log: RunLog | None, stage: str, system_prompt: str
+        self, run_log: RunLogLike | None, stage: str, system_prompt: str
     ) -> None:
         """A stage that changes its system prompt pays six times the price."""
         fingerprint = digest(system_prompt)
@@ -454,7 +454,7 @@ class ClaudeCLIClient:
         )
 
     @staticmethod
-    def _log(run_log: RunLog | None, stage: str, completion: Completion) -> None:
+    def _log(run_log: RunLogLike | None, stage: str, completion: Completion) -> None:
         if run_log is None:
             return
         run_log.model_call(
@@ -476,7 +476,7 @@ def make_backend(
     prefer: str | None = None,
     *,
     cache: ModelCache | None = None,
-    run_log: RunLog | None = None,
+    run_log: RunLogLike | None = None,
     **kwargs: Any,
 ) -> OpenRouterClient | ClaudeCLIClient:
     """Pick a model backend and say so in the log.

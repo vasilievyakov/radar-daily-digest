@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Supervision every four hours.
+
+  Separate from the run on purpose: an instrument that only runs as part of
+  the job it watches cannot report that the job never started. This one
+  printed a real defect in its own output during the night and nobody read
+  it, because it had to be invoked by hand.
+
+  Exit code 1 means something needs attention; launchd records it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.radar.supervise</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd "$HOME/Demo Challenge" &amp;&amp; .venv/bin/python -m radar.cli supervise</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>14400</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/radar-supervise.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/radar-supervise.err</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

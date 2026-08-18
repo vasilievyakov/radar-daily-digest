@@ -59,7 +59,7 @@ from radar.contracts import EXTRACTION_PROMPT_VERSION, EnrichResult, RejectedFac
 from radar.journal import EventKind, Journal, Outcome
 from radar.models import ChangeType, DatePrecision, EventStatement, Fact, FactKind
 from radar.normalize import Normalizer
-from radar.runlog import Budget, RunLog
+from radar.runlog import Budget, RunLog, RunLogLike
 
 STAGE = "enrich"
 
@@ -404,7 +404,7 @@ class LlmEnricher:
         backend: ModelBackend | None = None,
         *,
         normalizer: Normalizer | None = None,
-        run_log: RunLog | None = None,
+        run_log: RunLogLike | None = None,
         journal: Journal | None = None,
         budget: Budget | None = None,
         fetcher: Any = None,
@@ -926,7 +926,7 @@ class LlmEnricher:
 # --------------------------------------------------------------------------
 
 
-def _default_backend(config: ThemeConfig, run_log: RunLog | None) -> ModelBackend:
+def _default_backend(config: ThemeConfig, run_log: RunLogLike | None) -> ModelBackend:
     # Imported here so importing the stage does not pull an HTTP client into
     # processes that only want the prompt or the chunker.
     from radar.cache import ModelCache

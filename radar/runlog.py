@@ -15,7 +15,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from radar.models import SourceStatus
 
@@ -23,6 +23,23 @@ from radar.models import SourceStatus
 def new_run_id(now: datetime | None = None) -> str:
     now = now or datetime.now(UTC)
     return f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
+
+
+@runtime_checkable
+class RunLogLike(Protocol):
+    """What a stage may assume about a run log.
+
+    Declared so a stand-in can be checked structurally: `_CallLog` implemented
+    three of nine methods, claimed to be a RunLog, and cost four materials on
+    a live run. A protocol makes that a type error instead of an
+    AttributeError halfway through a paid stage.
+    """
+
+    def model_call(self, *args: Any, **kwargs: Any) -> None: ...
+    def note(self, message: str) -> None: ...
+    def filtered(self, *args: Any, **kwargs: Any) -> None: ...
+    def source_result(self, *args: Any, **kwargs: Any) -> None: ...
+    def delivered(self, *args: Any, **kwargs: Any) -> None: ...
 
 
 class RunLog:

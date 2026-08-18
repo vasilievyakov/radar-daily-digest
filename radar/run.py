@@ -220,7 +220,7 @@ class DailyRun:
         self.journal.checkpoint("filter", item_count=len(relevant))
 
         result.failed_stage = "enrich"
-        enriched: list[tuple[Any, list[Fact]]] = []
+        enriched: list[tuple[Any, list[Fact], list[Any]]] = []
         with self.log.stage("enrich", in_count=len(relevant)) as record:
             total = len(relevant)
             for position, cluster in enumerate(relevant, 1):
@@ -234,6 +234,18 @@ class DailyRun:
                 source = self.config.source(
                     str(cluster.primary.extra.get("source_id", ""))
                 )
+                if source is None:
+                    # An item whose source vanished from the config still has
+                    # a vendor to lose: skip it loudly rather than enrich it
+                    # against nothing.
+                    self.log.filtered(
+                        url=cluster.primary.url,
+                        title=cluster.title,
+                        reason_code="другое",
+                        stage="enrich",
+                        note="источник не найден в конфиге",
+                    )
+                    continue
                 outcome = self.enricher.enrich(cluster.primary, source)
                 if not outcome.ok:
                     self.journal.record(
