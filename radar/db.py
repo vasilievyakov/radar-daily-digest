@@ -484,13 +484,38 @@ def corpus_readiness(
     ]
     vendors = sorted({c["vendor"] for c in cells})
     total = conn.execute("SELECT COUNT(*) AS n FROM event_statements").fetchone()["n"]
+
+    # Two more criteria the config states and the verdict ignored: size and
+    # depth. A corpus of forty statements a week deep could call itself ready
+    # because three cells happened to hold three events each. Density is still
+    # the binding constraint, but a number written in the file must decide
+    # something or not be in the file.
+    min_statements = int(readiness.get("min_statements", 0) or 0)
+    min_depth_days = int(readiness.get("min_depth_days", 0) or 0)
+    span = conn.execute(
+        "SELECT MIN(event_date) AS first, MAX(event_date) AS last "
+        "FROM event_statements WHERE event_date IS NOT NULL"
+    ).fetchone()
+    depth_days = 0
+    if span and span["first"] and span["last"]:
+        depth_days = (
+            date.fromisoformat(span["last"]) - date.fromisoformat(span["first"])
+        ).days
+
     return {
         "total_statements": total,
         "dense_cells": cells,
         "vendors_with_dense_cell": vendors,
-        "ready_for_trend_demo": len(vendors) >= min_vendors,
+        "ready_for_trend_demo": (
+            len(vendors) >= min_vendors
+            and total >= min_statements
+            and depth_days >= min_depth_days
+        ),
         "required_vendors": min_vendors,
         "required_events_per_cell": min_events,
+        "required_statements": min_statements,
+        "required_depth_days": min_depth_days,
+        "depth_days": depth_days,
     }
 
 

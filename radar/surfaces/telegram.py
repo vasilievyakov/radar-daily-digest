@@ -50,7 +50,21 @@ from radar.models import (
 
 MAX_MESSAGE_CHARS = 4096
 NOTIFICATION_CHARS = 40
-MAX_ITEMS = 5
+# The channel's capacity, overridable per theme. It was a constant here and a
+# key in both configs, and they happened to agree — so `max_items_telegram: 3`
+# would have changed nothing and nobody would have known why.
+DEFAULT_MAX_ITEMS = 5
+
+
+def max_items(config: dict | None = None) -> int:
+    delivery = (config or {}).get("delivery") or {}
+    try:
+        return max(1, int(delivery.get("max_items_telegram", DEFAULT_MAX_ITEMS)))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ITEMS
+
+
+MAX_ITEMS = DEFAULT_MAX_ITEMS
 MAX_UPCOMING = 3
 # Telegram carries the lead and the standard band; the background band lives
 # in surfaces with more room (PRD 10.3). This is capacity, not a threshold.

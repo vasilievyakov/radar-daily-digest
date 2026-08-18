@@ -754,7 +754,12 @@ class TestTrendsOnTheNewCorpus:
         report = corpus_readiness(db, config.data)
         assert report["required_events_per_cell"] == 3
         assert report["vendors_with_dense_cell"] == ["aws", "cloudflare", "stripe"]
-        assert report["ready_for_trend_demo"] is True
+        # Density is there — three vendors with a dense cell — and the verdict
+        # is still no, because the theme also asks for a minimum size and depth
+        # and nine statements do not meet them. Those two numbers used to sit
+        # in the config without deciding anything.
+        assert report["ready_for_trend_demo"] is False
+        assert report["total_statements"] < report["required_statements"]
 
 
 # -- 7. The sources themselves ----------------------------------------------

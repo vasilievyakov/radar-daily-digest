@@ -241,13 +241,49 @@ class TestSupervisor:
         problems = Supervisor(conn, journal).scan(now=NOW + timedelta(hours=1))
         assert [d.run_id for d in problems] == ["bad"]
 
+    @staticmethod
+    def _delivered(conn, run_id, channel="telegram", status="ok"):
+        """Write the delivery record the run log keeps in log_json."""
+        import json
+
+        conn.execute(
+            "UPDATE runs SET log_json = ? WHERE run_id = ?",
+            (json.dumps({"delivery": [{"channel": channel, "status": status}]}), run_id),
+        )
+        conn.commit()
+
     def test_missed_days_catches_an_agent_that_stopped_running(self, env):
         """A daily agent gone silent is indistinguishable from a quiet day."""
         conn, journal, _ = env
-        start_run(conn, status="ok", started=NOW - timedelta(days=1), finished=NOW)
+        start_run(conn, run_id="d1", status="ok",
+                  started=NOW - timedelta(days=1), finished=NOW)
+        self._delivered(conn, "d1")
+
         missed = Supervisor(conn, journal).missed_days(expected_days=3, now=NOW)
+
         assert "2026-08-16" not in missed
         assert missed == ["2026-08-14", "2026-08-15"]
+
+    def test_a_finished_run_that_delivered_nothing_does_not_cover_the_day(self, env):
+        """The query asked for status='ok', which knows nothing about delivery:
+        a week where the reader received nothing reported full coverage."""
+        conn, journal, _ = env
+        start_run(conn, run_id="d2", status="ok",
+                  started=NOW - timedelta(days=1), finished=NOW)
+
+        missed = Supervisor(conn, journal).missed_days(expected_days=3, now=NOW)
+
+        assert "2026-08-16" in missed
+
+    def test_a_run_whose_only_channel_failed_does_not_cover_it_either(self, env):
+        conn, journal, _ = env
+        start_run(conn, run_id="d3", status="ok",
+                  started=NOW - timedelta(days=1), finished=NOW)
+        self._delivered(conn, "d3", channel="email", status="failed")
+
+        assert "2026-08-16" in Supervisor(conn, journal).missed_days(
+            expected_days=3, now=NOW
+        )
 
     def test_report_is_serializable_for_a_recovery_agent(self, env):
         conn, journal, _ = env

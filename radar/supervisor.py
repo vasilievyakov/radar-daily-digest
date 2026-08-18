@@ -237,8 +237,17 @@ class Supervisor:
         afford: silence is a promised feature here.
         """
         now = now or datetime.now(UTC)
+        # Delivered, not merely finished. The docstring said "no delivered run"
+        # and the query asked for status='ok', which knows nothing about
+        # delivery: a week in which the reader received nothing would report
+        # full coverage. The one failure this product cannot afford is silence
+        # that looks like health, and the instrument built against it was
+        # measuring the wrong thing.
         rows = self.conn.execute(
-            "SELECT DISTINCT for_date FROM runs WHERE status = 'ok'"
+            "SELECT DISTINCT r.for_date FROM runs r WHERE r.status = 'ok' "
+            "AND EXISTS (SELECT 1 FROM json_each("
+            "  COALESCE(json_extract(r.log_json, '$.delivery'), '[]')"
+            ") WHERE json_extract(value, '$.status') = 'ok')"
         ).fetchall()
         delivered = {r["for_date"] for r in rows}
         expected = {

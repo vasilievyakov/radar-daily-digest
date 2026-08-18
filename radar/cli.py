@@ -768,7 +768,7 @@ def _deliver_run(
     run: Any,
     result: Any,
     settings: dict[str, Any] | None = None,
-) -> None:
+) -> Any:
     """Hand the run to the channels and record the outcome.
 
     Without this call the delivery layer existed and nothing invoked it, so
@@ -827,6 +827,7 @@ def _deliver_run(
     for channel in report.results:
         state = "доставлено" if channel.delivered else f"не доставлено: {channel.error}"
         print(f"  {channel.channel}: {state}")
+    return report
 
 
 def _reconcile_cost(conn: sqlite3.Connection, run_id: str) -> None:
@@ -924,11 +925,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not result.ok:
         print(f"Прогон не завершился на стадии {result.failed_stage}: {result.error}")
     print(RULE)
+    delivery = None
     if args.deliver:
         # Not gated on having digest items: a quiet day is a record, and PUB-4
         # says silence reaches the reader as a message. Gating here meant the
         # channel stayed untouched on exactly the day worth speaking about.
-        _deliver_run(conn, run, result, settings=config.delivery)
+        delivery = _deliver_run(conn, run, result, settings=config.delivery)
 
     # One run, one cost — and reconciled last, after every writer is done.
     # An earlier attempt ran before delivery, and delivery's flush() rewrote
@@ -959,6 +961,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Страницы собрать не удалось: {type(exc).__name__}: {exc}")
 
     conn.close()
+    # Delivery failure is a run failure. The report was assembled, printed and
+    # thrown away: `any_delivered` exists precisely for this line and was
+    # called only from tests, which is how a dead email channel survived three
+    # runs unnoticed. A scheduler that gets exit 0 has no way to know the
+    # reader received nothing.
+    if args.deliver and delivery is not None and not delivery.any_delivered:
+        print("Ни один канал не принял сводку.")
+        return 1
     return 0 if result.ok else 1
 
 
@@ -1133,7 +1143,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_env_file(path: str | Path = ".env") -> int:
+    """Read the secrets file the whole product assumes is loaded.
+
+    Nothing read it. Every secret is fetched with `os.environ.get`, the file
+    sits in the repository root, `.env.example` documents it, and the launchd
+    job runs `bash -lc` in a session that never sources anything — so under the
+    scheduler `TELEGRAM_BOT_TOKEN` is None and the digest goes nowhere. It
+    reached the phone today only because the run was started from a shell that
+    had exported it by hand.
+
+    The environment wins over the file: a value already set was set on purpose,
+    and a stale line in a checked-out file must not override it.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return 0
+    loaded = 0
+    for raw in target.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        value = value.strip().strip("'\"")
+        if name and not os.environ.get(name):
+            os.environ[name] = value
+            loaded += 1
+    return loaded
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))

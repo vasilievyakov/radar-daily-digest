@@ -488,7 +488,23 @@ def make_backend(
     `prefer` wins, then `models.backend` in the theme config, then the
     environment: a key means OpenRouter, no key means the CLI. Extra keyword
     arguments go to whichever client is built.
+
+    `llm.max_output_tokens` is passed on. It carries an incident in its own
+    comment — a run that produced 424 thousand output tokens — and it reached
+    no client: the ceiling recorded against that incident was never in force.
+    An explicit keyword still wins, so callers that know better are unaffected.
     """
+    section = {}
+    if config is not None:
+        getter = getattr(config, "section", None)
+        section = getter("llm") if callable(getter) else (config.get("llm") or {})
+    ceiling = section.get("max_output_tokens")
+    if ceiling and "max_tokens" not in kwargs:
+        try:
+            kwargs["max_tokens"] = int(ceiling)
+        except (TypeError, ValueError):
+            pass
+
     if prefer is not None:
         choice, reason = _backend_name(prefer), "explicit preference"
     else:

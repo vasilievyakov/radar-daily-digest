@@ -21,7 +21,6 @@ theme:
 # vendor или change_type ломает обязательные фильтры ретривала (FR-5.16,
 # FR-6.13), а расширять словарь после бэкфилла поздно.
 corpus:
-  retention: forever
 
   # Готовность корпуса. Плотность на ячейку (vendor, change_type) важнее
   # общего объёма: фильтры ретривала конъюнктивны.
@@ -260,7 +259,6 @@ retrieval:
   # полтора года. Короткое окно оставлено первым, чтобы свежая серия всё-таки
   # датировалась узко.
   windows: [365, 1095]
-  required_filters: [vendor, change_type]
   max_results_per_cluster: 10
   min_evidence_for_trend: 2
   # Смежные типы, которые классификатор путает именно в этом домене.
@@ -338,15 +336,14 @@ enrichment:
   # Порядок отражает домен: дата отключения — первый вопрос к любому
   # материалу, затронутый продукт или регион — второй.
   fact_kinds: [sunset_date, effective_date, affected_product, version, limit, price]
-  require_evidence: true
   max_evidence_words: 15
 
 delivery:
   channels: [telegram, email]
-  schedule: "0 9 * * *"
+  # Время запуска задаётся расписанием системы (deploy/*.plist) — там оно
+  # исполняется. Второй экземпляр здесь читался бы как настройка и не был бы ею.
   timezone: "Europe/Moscow"
   max_items_telegram: 5
-  quiet_day_message: true
 
 llm:
   backend: auto        # auto | claude_cli | openrouter
@@ -378,14 +375,5 @@ budget:
   max_usd_per_run: 0.40
   # Бэкфилл мельче: из десяти источников историю отдают шесть.
   max_usd_per_backfill: 18.00
-  max_usd_per_call: 0.50
-  stop_on_exceed: true
 
 # Обнаружение источников. Темы GitHub — свои: инфраструктурные проекты, а не
-# ИИ-фреймворки.
-scout:
-  topics: [database, kubernetes, message-queue, payments, devops, cloud-native]
-  min_stars: 4000
-  min_stars_gained: 300
-  min_releases: 5
-  schedule: "0 9 * * 1"

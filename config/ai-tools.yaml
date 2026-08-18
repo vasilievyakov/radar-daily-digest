@@ -17,7 +17,6 @@ theme:
 # к источникам и применяется единообразно. Пустой vendor или change_type
 # ломает обязательные фильтры ретривала (FR-5.16, FR-6.13).
 corpus:
-  retention: forever
 
   # Целевой критерий готовности корпуса. Абсолютный объём (300 записей) не
   # предсказывает работоспособность ретривала: фильтры конъюнктивны, и решает
@@ -1401,7 +1400,6 @@ collection:
 
 retrieval:
   windows: [180, 365]
-  required_filters: [vendor, change_type]
   max_results_per_cluster: 12
   min_evidence_for_trend: 2
   # Второй запрос по смежным типам. Строгий фильтр институционализирует
@@ -1469,15 +1467,14 @@ filter:
 
 enrichment:
   fact_kinds: [version, effective_date, sunset_date, price, limit, affected_product]
-  require_evidence: true
   max_evidence_words: 15
 
 delivery:
   channels: [telegram, email]
-  schedule: "0 8 * * *"
+  # Время запуска задаётся расписанием системы (deploy/*.plist) — там оно
+  # исполняется. Второй экземпляр здесь читался бы как настройка и не был бы ею.
   timezone: "Europe/Moscow"
   max_items_telegram: 5
-  quiet_day_message: true
   # The reader's dial. Everything the core judged significant is published
   # either way; this is what is worth interrupting a morning for. Empty means
   # everything. A quiet day and a failed run always arrive: those are
@@ -1548,22 +1545,8 @@ budget:
   # (~$9), so roughly $19. The limit carries headroom so the run stops on its
   # own terms rather than mid-corpus.
   max_usd_per_backfill: 50.00
-  # Second line of defence handed to the CLI itself, per call.
-  max_usd_per_call: 0.50
-  stop_on_exceed: true
 
 # Обнаружение источников. Отдельный процесс, а не стадия пайплайна: растущий
 # репозиторий не является изменением в отслеживаемом продукте, у него нет ни
 # даты события, ни факта для извлечения, и в дайджест он не попадает никогда.
 # Его роль — предлагать пополнение списка источников, потому что список
-# вендоров заморожен вручную и через полгода устареет.
-scout:
-  topics: [llm, ai-agents, mcp, rag, llmops, agentic-ai]
-  min_stars: 4000
-  # Прирост считается между снимками: у GitHub нет эндпоинта trending,
-  # а сортировка по звёздам возвращает тех, кто и так был большим.
-  min_stars_gained: 300
-  # Без релизов у проекта нет структурированной датированной истории,
-  # то есть источником он стать не может, сколько бы звёзд ни набрал.
-  min_releases: 5
-  schedule: "0 9 * * 1"
