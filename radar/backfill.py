@@ -434,7 +434,9 @@ def _prior_cost(conn: sqlite3.Connection, run_id: str) -> float:
 
 
 def persist_statements(
-    conn: sqlite3.Connection, harvest: list[tuple[int, EnrichResult]]
+    conn: sqlite3.Connection,
+    harvest: list[tuple[int, EnrichResult]],
+    ingest_mode: str = INGEST_MODE,
 ) -> tuple[int, int]:
     """Write one batch's harvest to the corpus. Returns (inserted, ignored).
 
@@ -481,8 +483,12 @@ def persist_statements(
                         (statement.ingested_at or now).isoformat(),
                         # Stamped by the writer rather than trusted from the
                         # enricher: the row's provenance belongs to whoever
-                        # puts it in the corpus (FR-6.4).
-                        INGEST_MODE,
+                        # puts it in the corpus (FR-6.4). The daily run passes
+                        # "live", and the distinction matters: a corpus that
+                        # cannot say which records came from a nightly agent
+                        # and which from one evening's backfill cannot be
+                        # selectively rebuilt.
+                        ingest_mode,
                         statement.extractor_model,
                         statement.prompt_version,
                         statement.raw_material_ref,

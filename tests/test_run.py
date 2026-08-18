@@ -17,6 +17,7 @@ from radar.models import (
     FactKind,
     SignalType,
 )
+from radar import run as run_module
 from radar.run import DailyRun, _headline_for
 from radar.scoring import vendor_labels
 
@@ -661,3 +662,135 @@ class TestHeadlineIsAClaimAboutTheEvent:
         assert stored
         assert stored[0].headline != title
         assert re.search(r"[а-яё]", stored[0].headline, re.IGNORECASE)
+
+
+class TestOneCardPerEvent:
+    """Clustering runs before the model and cannot see what the pages agree on.
+
+    Five pages announcing one Veo shutdown — a table row, a release note, two
+    mirrors of one document, a changelog line — differ in every word and match
+    on nothing clustering can compare. What they share appears only after
+    extraction: the vendor, the kind of change, the model being retired.
+    """
+
+    def _enriched(self, wordings: list[tuple[str, str]]):
+        out = []
+        for index, (product, text) in enumerate(wordings):
+            item = CollectedItem(
+                url=f"https://example.test/page-{index}",
+                title=text[:40],
+                raw_text=text,
+                raw_material_ref="cache/ref",
+                extra={"source_id": f"src-{index}"},
+            )
+            cluster = Cluster(
+                cluster_id=f"c{index}",
+                dedup_key=f"d{index}",
+                items=[item],
+                vendor="google",
+                change_type="deprecation",
+            )
+            statement = EventStatement(
+                statement_id=f"st-{index}",
+                text=text,
+                vendor="google",
+                product=product,
+                change_type=ChangeType.DEPRECATION,
+                event_date=date(2026, 6, 30),
+                source_url=f"https://example.test/page-{index}",
+                evidence=product,
+                ingested_at=datetime(2026, 8, 18, tzinfo=UTC),
+                ingest_mode="live",
+                extractor_model="fake",
+                prompt_version="test",
+                raw_material_ref="ref",
+            )
+            fact = Fact(
+                kind=FactKind.SUNSET_DATE,
+                value=f"2026-06-30 ({index})",
+                source_url=f"https://example.test/page-{index}",
+                evidence=product,
+                value_date=date(2026, 6, 30),
+                evidence_verified=True,
+            )
+            out.append((cluster, [fact], [statement]))
+        return out
+
+    def test_five_wordings_of_one_shutdown_become_one_card(self):
+        enriched = self._enriched([
+            ("veo-2.0-generate-001", "Google отключает veo-2.0-generate-001 30 июня."),
+            ("veo-2.0-generate-001", "Google прекращает поддержку veo-2.0-generate-001."),
+            ("veo-2.0-generate-001", "Отключение veo-2.0-generate-001 назначено на 30 июня 2026."),
+            ("veo-2.0-generate-001", "Google объявила о выводе veo-2.0-generate-001."),
+            ("veo-2.0-generate-001", "veo-2.0-generate-001 будет отключена."),
+        ])
+
+        collapsed, dropped = run_module._collapse_to_events(enriched)
+
+        assert len(collapsed) == 1
+        assert dropped == 4
+        cluster, facts, statements = collapsed[0]
+        # Merged, not discarded: the card can say it was seen in five places.
+        assert cluster.duplicates_count == 4
+        assert len(facts) == 5
+        assert len(statements) == 5
+
+    def test_two_models_retired_the_same_day_stay_two_cards(self):
+        enriched = self._enriched([
+            ("veo-2.0-generate-001", "Google отключает veo-2.0-generate-001 30 июня."),
+            ("veo-3.0-generate-001", "Google отключает veo-3.0-generate-001 30 июня."),
+        ])
+
+        collapsed, dropped = run_module._collapse_to_events(enriched)
+
+        assert len(collapsed) == 2
+        assert dropped == 0
+
+    def test_the_richer_extraction_leads(self):
+        enriched = self._enriched([
+            ("veo-2.0-generate-001", "Короткая формулировка."),
+            ("veo-2.0-generate-001", "Google отключает veo-2.0-generate-001 30 июня 2026 года."),
+        ])
+        # Give the second one another verified fact, so it is the fuller read.
+        enriched[1][1].append(
+            Fact(
+                kind=FactKind.AFFECTED_PRODUCT,
+                value="veo-2.0-generate-001",
+                source_url="https://example.test/page-1",
+                evidence="veo-2.0-generate-001",
+                evidence_verified=True,
+            )
+        )
+
+        collapsed, _ = run_module._collapse_to_events(enriched)
+
+        assert len(collapsed) == 1
+        _, _, statements = collapsed[0]
+        assert statements[0].text.startswith("Google отключает")
+
+
+class TestEverySignalLinksItsRunLog:
+    """The one link that turns a claim into something a reader can check.
+
+    `run_log_url` is on the contract, the web surface renders it, and no code
+    path ever set it: it was None on all thirty-four signals of the last run.
+    A card saying "the fourth time since February" with no way to see how that
+    was computed is asking to be believed.
+    """
+
+    def test_digest_items_carry_it(self, env):
+        conn, config, fetcher, tmp = env
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+
+        stored = read_signals(conn, result.run_id)
+        assert stored
+        assert all(s.run_log_url for s in stored)
+
+    def test_an_absolute_base_from_config_wins(self, env):
+        conn, config, fetcher, tmp = env
+        config.data.setdefault("delivery", {})["run_log_url_base"] = "https://radar.test/"
+        run = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+
+        assert run.run_log_url == "https://radar.test/run-log.html"

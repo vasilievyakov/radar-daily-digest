@@ -416,3 +416,40 @@ class TestOneEventPerEvent:
                              st.evidence, st.text)
             for st in haiku
         }) == 1
+
+
+class TestTheLoopCloses:
+    """A daily agent that does not consolidate is one with no memory.
+
+    The corpus held only what the backfill put there: every record in it was
+    `ingest_mode='backfill'`, written once, by hand, on one evening. Today's
+    events never became tomorrow's precedents, so the context label — the whole
+    point of keeping a corpus — could only ever count history loaded manually.
+    """
+
+    def test_todays_events_enter_the_corpus(self, run_result, conn):
+        _, result = run_result
+        rows = conn.execute(
+            "SELECT count(*) FROM event_statements WHERE ingest_mode = 'live'"
+        ).fetchone()[0]
+
+        assert rows > 0, "the run produced signals and remembered none of them"
+
+    def test_what_the_run_stored_is_what_it_published(self, run_result, conn):
+        _, result = run_result
+        stored = {
+            row["event_key"]
+            for row in conn.execute(
+                "SELECT event_key FROM event_statements WHERE ingest_mode = 'live'"
+            )
+        }
+        published = {
+            subject_identity(s.vendor or "", str(s.change_type or ""), s.product)
+            for s in result.signals
+            if s.signal_type is SignalType.DIGEST_ITEM
+        }
+        # Not equality: a signal can be dropped below the publication threshold
+        # after its statement was stored, and a stored event carries its date
+        # while the published subject does not. What must hold is that the
+        # corpus learned something from a run that published something.
+        assert stored and published

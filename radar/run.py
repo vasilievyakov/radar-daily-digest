@@ -30,6 +30,9 @@ from radar.delta import compute_delta, prune_state, resolve_expired, save_state
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
 from radar.models import DatePrecision, Fact, FactKind, Signal, Tier
+from radar.backfill import persist_statements
+from radar.contracts import EnrichResult
+from radar.normalize import subject_identity
 from radar.publish import (
     MONTHS_GENITIVE,
     build_quiet_day,
@@ -306,6 +309,74 @@ def _headline_for(
     return cluster.title
 
 
+def _collapse_to_events(
+    enriched: list[tuple], log: Any = None
+) -> tuple[list[tuple], int]:
+    """One card per event, however many places state it.
+
+    Clustering runs before the model and can only compare raw text, so five
+    pages announcing one Veo shutdown — a table row, a release note, two
+    mirrors of the same document, a changelog line — stay five clusters and
+    become five cards. What they have in common only exists after extraction:
+    the vendor, the kind of change and the model being retired.
+
+    The materials are merged rather than dropped, so `duplicates_count` counts
+    them and the card can say it was seen in five places. Facts are unioned:
+    a lifecycle table states the announcement date and the shutdown date in
+    different rows, and the card needs both.
+    """
+    winners: dict[str, tuple] = {}
+    order: list[str] = []
+    collapsed = 0
+
+    for cluster, facts, statements in enriched:
+        lead = statements[0] if statements else None
+        key = subject_identity(
+            cluster.vendor or "",
+            cluster.change_type or "",
+            lead.product if lead else None,
+            lead.evidence if lead else None,
+            lead.text if lead else cluster.title,
+        )
+        if key not in winners:
+            winners[key] = (cluster, list(facts), list(statements))
+            order.append(key)
+            continue
+
+        kept_cluster, kept_facts, kept_statements = winners[key]
+        # The richer extraction leads: more verified facts means more of the
+        # event was actually read off the page.
+        if len(facts) > len(kept_facts):
+            kept_cluster, cluster = cluster, kept_cluster
+            kept_facts, facts = list(facts), kept_facts
+            kept_statements, statements = list(statements), kept_statements
+
+        kept_cluster.items.extend(cluster.items)
+        for source in cluster.seen_in:
+            if source not in kept_cluster.seen_in:
+                kept_cluster.seen_in.append(source)
+        seen = {(f.kind, f.value) for f in kept_facts}
+        for fact in facts:
+            if (fact.kind, fact.value) not in seen:
+                seen.add((fact.kind, fact.value))
+                kept_facts.append(fact)
+        for statement in statements:
+            if statement.text not in {st.text for st in kept_statements}:
+                kept_statements.append(statement)
+        winners[key] = (kept_cluster, kept_facts, kept_statements)
+        collapsed += 1
+        if log is not None:
+            log.filtered(
+                url=cluster.primary.url,
+                title=cluster.title,
+                reason_code="то_же_событие",
+                stage="collapse",
+                note=f"уже описано другим материалом: {key}",
+            )
+
+    return [winners[key] for key in order], collapsed
+
+
 def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
     """Composed from verified facts, never from a second model call.
 
@@ -359,6 +430,13 @@ class DailyRun:
         self.for_date = for_date or datetime.now(UTC).date()
         self.run_id = run_id or new_run_id()
         self.log = RunLog(conn, self.run_id, self.for_date)
+        # "Как это получено" was None on every signal ever produced, so the
+        # one link that turns a claim into something checkable led nowhere.
+        # Relative by default because the web surface writes both pages side
+        # by side; a channel that leaves the machine needs the absolute form,
+        # which is why it comes from config rather than being hardcoded here.
+        base = str(config.delivery.get("run_log_url_base", "") or "").rstrip("/")
+        self.run_log_url = f"{base}/run-log.html" if base else "run-log.html"
         self.journal = Journal(conn, log_dir=log_dir, run_id=self.run_id)
         self.budget = Budget(
             float(config.section("budget").get("max_usd_per_run", 0.5))
@@ -494,6 +572,34 @@ class DailyRun:
         result.enriched = len(enriched)
         self.journal.checkpoint("enrich", item_count=len(enriched))
 
+        # Before retrieval, so the corpus is not queried once per copy, and
+        # before delta, so one event does not carry several histories.
+        with self.log.stage("collapse", in_count=len(enriched)) as record:
+            enriched, collapsed = _collapse_to_events(enriched, self.log)
+            record["out_count"] = len(enriched)
+            if collapsed:
+                self.log.note(
+                    f"{collapsed} материалов описывали событие, уже собранное "
+                    f"из другого источника"
+                )
+        self.journal.checkpoint("collapse", item_count=len(enriched))
+
+        # The loop closes here. Until this line the corpus held only what one
+        # evening's backfill put in it: today's events never became tomorrow's
+        # precedents, so "the third time since May" could only ever refer to
+        # history loaded by hand. A daily agent that does not consolidate what
+        # it learns is a daily agent with anterograde amnesia.
+        harvest = [
+            (index, EnrichResult(source_id="", url=cluster.primary.url,
+                                 statements=list(statements)))
+            for index, (cluster, _facts, statements) in enumerate(enriched)
+        ]
+        stored, already = persist_statements(self.conn, harvest, ingest_mode="live")
+        self.log.note(
+            f"в корпус записано {stored} событий сегодняшнего прогона"
+            + (f", {already} уже там были" if already else "")
+        )
+
         result.failed_stage = "contextualize"
         with self.log.stage("contextualize", in_count=len(enriched)) as record:
             contexts = []
@@ -555,7 +661,10 @@ class DailyRun:
             if not signals:
                 # PUB-4: silence is delivered as a record, not as nothing.
                 signals = [
-                    build_quiet_day(self.conn, self.run_id, self.for_date, summary)
+                    build_quiet_day(
+                        self.conn, self.run_id, self.for_date, summary,
+                        run_log_url=self.run_log_url,
+                    )
                 ]
                 result.quiet = True
             publish_signals(self.conn, self.run_id, signals)
@@ -643,6 +752,7 @@ class DailyRun:
                     cluster.change_type or "", cluster.change_type or ""
                 ),
                 run_summary=summary,
+                run_log_url=self.run_log_url,
             )
             drafts.append(signal)
             source_ids[signal.signal_id] = str(
@@ -697,7 +807,8 @@ class DailyRun:
                 [], result.collected, 0, cost_usd=self.log.cost_usd
             )
             signal = build_run_failure(
-                self.run_id, self.for_date, stage, reason, summary
+                self.run_id, self.for_date, stage, reason, summary,
+                run_log_url=self.run_log_url,
             )
             publish_signals(self.conn, self.run_id, [signal])
             result.signals = [signal]
