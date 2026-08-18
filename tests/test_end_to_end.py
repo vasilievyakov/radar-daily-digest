@@ -475,8 +475,25 @@ class TestTheFunnelNamesEveryDrop:
         ).fetchone()[0]
 
         assert dropped == distinct_keys
-        # The funnel: what came in, what came out, what is accounted for.
-        assert result.clusters - result.relevant <= dropped + result.enriched
+
+        # Per stage and exactly, not "at least". A one-sided check passes on a
+        # run that writes four reasons for two drops, and a reason attached to
+        # nothing is as misleading as a drop with no reason: both make the
+        # arithmetic on the page unfollowable.
+        for name in ("filter", "enrich", "collapse", "score"):
+            stage = next(
+                (s for s in run.log.stages if s.get("stage") == name), None
+            )
+            if stage is None:
+                continue
+            lost = max(0, (stage.get("in_count") or 0) - (stage.get("out_count") or 0))
+            recorded = conn.execute(
+                "SELECT count(*) FROM filtered_items WHERE run_id = ? AND stage = ?",
+                (run.run_id, name),
+            ).fetchone()[0]
+            assert recorded == lost, (
+                f"стадия {name}: выбыло {lost}, причин записано {recorded}"
+            )
 
     def test_two_sections_of_one_page_are_two_rows(self, conn, config, tmp_path):
         from radar.runlog import RunLog
