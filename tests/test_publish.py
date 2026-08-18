@@ -578,3 +578,64 @@ class TestPersistence:
         restored = read_signals(db, "run-1")
         assert len(restored) == 2
         assert restored[0].headline
+
+
+class TestRecurrenceIsNotClaimedForRoutine:
+    """A vendor ships releases. Saying so seventeen times over is not context.
+
+    The trends stage already excludes RELEASE and OTHER from recurrence — a
+    change a vendor makes every few days carries no information by repeating,
+    and the readiness report prints exactly that. The card did not know it, so
+    sixteen bullet points of one Claude Code changelog, stored as sixteen
+    records of type "other", produced "Anthropic: other, the 17th time since
+    August 17".
+    """
+
+    def _precedents(self, n, change_type=ChangeType.OTHER):
+        return [
+            Precedent(
+                statement_id=f"p{i}",
+                text=f"пункт {i}",
+                source_url="https://example.test/changelog",
+                event_date=date(2026, 8, 17),
+                vendor="anthropic",
+                change_type=change_type,
+            )
+            for i in range(n)
+        ]
+
+    def test_no_sentence_for_a_routine_type(self):
+        note = build_context_note(
+            ContextLabel.RECURRING,
+            self._precedents(16),
+            "Anthropic",
+            "прочее",
+            date(2026, 8, 18),
+            total_found=16,
+            change_type=ChangeType.OTHER,
+        )
+        assert note is None
+
+    def test_no_sentence_for_releases_either(self):
+        note = build_context_note(
+            ContextLabel.RECURRING,
+            self._precedents(4, ChangeType.RELEASE),
+            "Google",
+            "релиз",
+            date(2026, 8, 18),
+            total_found=4,
+            change_type=ChangeType.RELEASE,
+        )
+        assert note is None
+
+    def test_a_deprecation_still_gets_one(self):
+        note = build_context_note(
+            ContextLabel.RECURRING,
+            self._precedents(3, ChangeType.DEPRECATION),
+            "AWS Bedrock",
+            "объявление об отключении",
+            date(2026, 8, 18),
+            total_found=13,
+            change_type=ChangeType.DEPRECATION,
+        )
+        assert note and "14-й раз" in note

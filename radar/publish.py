@@ -41,6 +41,7 @@ from radar.models import (
     UpcomingDeadline,
 )
 from radar.retrieval import RetrievalResult
+from radar.trends import ROUTINE_TYPES
 
 MONTHS_GENITIVE = [
     "января",
@@ -94,6 +95,7 @@ def build_context_note(
     *,
     total_found: int | None = None,
     earliest_match: date | None = None,
+    change_type: ChangeType | None = None,
 ) -> str | None:
     """One sentence, every number of which the corpus can back.
 
@@ -107,6 +109,13 @@ def build_context_note(
     COUNT(*) over the strict filter and are what the sentence quotes.
     """
     if label is None or label is ContextLabel.NOT_FOUND_IN_CORPUS:
+        return None
+    # A vendor ships releases; saying so seventeen times over is not context.
+    # The trends stage already holds this judgement (ROUTINE_TYPES) and the
+    # readiness report prints it — "routine change type, recurrence carries no
+    # information" — while the card said "Anthropic: other, the 17th time since
+    # August 17" about sixteen bullet points of one changelog.
+    if change_type in ROUTINE_TYPES:
         return None
     dated = sorted(p.event_date for p in precedents if getattr(p, "event_date", None))
     if len(dated) < 2:
@@ -335,6 +344,7 @@ def build_signal(
             # capped list above it.
             total_found=retrieval.report.total_found if retrieval else None,
             earliest_match=retrieval.report.earliest_event_date if retrieval else None,
+            change_type=ChangeType(cluster.change_type) if cluster.change_type else None,
         ),
         score=score,
         score_rationale=rationale,

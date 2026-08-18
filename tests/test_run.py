@@ -735,6 +735,36 @@ class TestOneCardPerEvent:
         assert len(facts) == 5
         assert len(statements) == 5
 
+    def test_every_merge_is_recorded_under_its_own_key(self):
+        """Otherwise the funnel says seven merged and names two.
+
+        The five sections behind one shutdown share a URL, so a rejection keyed
+        by address overwrites its neighbours — the same defect that made the
+        corpus store one event eight times, one layer up.
+        """
+        class SpyLog:
+            def __init__(self):
+                self.rows = []
+
+            def filtered(self, **kwargs):
+                self.rows.append(kwargs)
+
+        enriched = self._enriched([
+            ("veo-2.0-generate-001", "Google отключает veo-2.0-generate-001 30 июня."),
+            ("veo-2.0-generate-001", "Отключение veo-2.0-generate-001 назначено."),
+            ("veo-2.0-generate-001", "Google выводит veo-2.0-generate-001."),
+        ])
+        # One address for all three, as a page with a single anchor gives.
+        for cluster, _f, _s in enriched:
+            cluster.items[0].url = "https://example.test/deprecations#veo"
+
+        log = SpyLog()
+        collapsed, dropped = run_module._collapse_to_events(enriched, log)
+
+        assert dropped == 2
+        assert len(log.rows) == 2
+        assert len({row["item_key"] for row in log.rows}) == 2
+
     def test_two_models_retired_the_same_day_stay_two_cards(self):
         enriched = self._enriched([
             ("veo-2.0-generate-001", "Google отключает veo-2.0-generate-001 30 июня."),

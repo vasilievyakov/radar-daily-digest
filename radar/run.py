@@ -385,6 +385,9 @@ def _collapse_to_events(
                 reason_code="то_же_событие",
                 stage="collapse",
                 note=f"уже описано другим материалом: {key}",
+                # Five sections of one page share a URL. Without this the
+                # collapse stage reported seven merges and could name two.
+                item_key=cluster.cluster_id,
             )
 
     return [winners[key] for key in order], collapsed
