@@ -1025,6 +1025,49 @@ class TestPrompt:
         assert len(result.statements) == 1
         assert result.statements[0].raw_material_ref == "ref-full"
 
+    def test_a_section_of_a_page_is_not_completed_by_refetching_that_page(
+        self, config
+    ):
+        """The teaser rule must not turn one table row into the whole table.
+
+        A deprecation table is cut into one material per row. Every row is
+        shorter than the 600-character teaser threshold, and the document
+        behind its URL is the page the row came from. Fetching it replaced one
+        event with all of them: sixty-five rows each re-read the same page, and
+        the corpus ended up holding one event eight times. The precedent count
+        is what the context label is computed from, so the copies were not a
+        storage problem — they were "the eighth time since May" on a card.
+        """
+        page = (
+            "<html><body><table>"
+            "<tr><th>Model</th><th>Shutdown</th></tr>"
+            "<tr><td>imagen-4.0-generate-001</td><td>August 17, 2026</td></tr>"
+            "<tr><td>veo-2.0-generate-001</td><td>June 30, 2026</td></tr>"
+            "<tr><td>gemini-2.0-flash</td><td>June 1, 2026</td></tr>"
+            "</table></body></html>"
+        )
+        fetcher = FakeFetcher(page)
+        row = "imagen-4.0-generate-001 | August 17, 2026"
+        backend = FakeBackend({"events": [event(facts=[])]})
+
+        result = enricher(config, backend, fetcher=fetcher).enrich(
+            make_item(
+                text=row,
+                url="https://ai.google.dev/gemini-api/docs/deprecations#imagen",
+                extra={
+                    "source_id": "google_gemini_deprecations",
+                    "page_section": "https://ai.google.dev/gemini-api/docs/deprecations",
+                },
+            ),
+            make_source(),
+        )
+
+        assert fetcher.urls == [], "the page was fetched again for its own row"
+        prompt = backend.calls[0]["prompt"]
+        assert row in prompt
+        assert "veo-2.0-generate-001" not in prompt, "neighbouring rows leaked in"
+        assert result.ok, result.error
+
 
 class TestSystemPromptStability:
     """A stage that changes its system prompt pays roughly six times more."""

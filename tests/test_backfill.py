@@ -18,6 +18,7 @@ import pytest
 
 from radar import backfill as bf
 from radar.adapters.base import CollectedItem, SourceConfig
+from radar.cache import digest
 from radar.collect import SourceOutcome
 from radar.config import ThemeConfig
 from radar.contracts import EnrichResult, RejectedFact
@@ -105,10 +106,17 @@ def make_statement(
     vendor: str = "anthropic",
     change_type: str = "deprecation",
     event_date: date | None = None,
+    # Two sections of one page describe two events, not one event twice. The
+    # fixture used to give every material the same statement, which made the
+    # corpus store the same event under two slots and read it back as two
+    # precedents. Naming the subject is what a real extractor does.
+    subject: str | None = None,
 ) -> EventStatement:
+    subject = subject or f"endpoint-v{position}"
     return EventStatement(
         statement_id=f"{url}#{position}",
-        text=f"{vendor} отключает эндпоинт {position}",
+        text=f"{vendor} отключает {subject}",
+        product=subject,
         vendor=vendor,
         change_type=ChangeType(change_type),
         event_date=event_date or date(2026, 3, 1),
@@ -165,6 +173,12 @@ class FakeEnricher:
                             vendor=self.vendor_of(item),
                             event_date=date(2026, 1, 1)
                             + timedelta(days=30 * (position + len(self.calls) % 5)),
+                            # Derived from the material, not from a call
+                            # counter: a resumed run starts counting again, and
+                            # the same subject arriving twice is one event —
+                            # which the corpus is right to store once, and which
+                            # would make resume look like it lost work.
+                            subject=f"endpoint-{digest(item.url)[:8]}-v{position}",
                         )
                     )
             facts = [
@@ -385,7 +399,7 @@ class TestWrite:
             source_id="alpha", url=url, statements=[make_statement(url, 0)]
         )
         second = EnrichResult(
-            source_id="alpha", url=url, statements=[make_statement(url, 0)]
+            source_id="alpha", url=url, statements=[make_statement(url, 1)]
         )
         assert bf.persist_statements(db, [(0, first), (1, second)]) == (2, 0)
         stored = rows(db)

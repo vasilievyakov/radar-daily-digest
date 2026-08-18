@@ -535,9 +535,20 @@ class LlmEnricher:
             self._note(f"{item.url}: {len(errors)} of {len(chunks)} chunks failed")
 
     def _full_text(self, item: CollectedItem, source: SourceConfig) -> tuple[str, str]:
-        """FR-4.1: enrich the material, not the teaser a feed handed over."""
+        """FR-4.1: enrich the material, not the teaser a feed handed over.
+
+        The rule was written for RSS, where the entry is a headline and the
+        article lives behind the link. A section cut out of a page is the
+        opposite case: the document behind its URL is the one the section came
+        from, and fetching it replaces one event with the whole page. Sixty-five
+        rows of a deprecation table, each below the 600-character threshold,
+        each re-reading the same 121 KB page, is how the corpus came to hold one
+        event eight times over.
+        """
         text = item.raw_text or ""
         ref = item.raw_material_ref
+        if item.extra.get("page_section"):
+            return text, ref
         if len(text) >= self.min_full_text or self.fetcher is None or not item.url:
             return text, ref
         try:

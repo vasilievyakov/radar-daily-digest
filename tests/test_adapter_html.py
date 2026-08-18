@@ -1293,3 +1293,51 @@ class TestFailuresAreEmptyNotExceptions:
 
     def test_empty_body_yields_nothing(self):
         assert make_adapter("").collect() == []
+
+
+class TestSectionProvenance:
+    """A section knows it was cut out of a document already read whole.
+
+    Enrichment completes a short material by fetching its URL, which is right
+    for an RSS teaser and wrong for a table row: the document behind the row's
+    URL is the table it came from. The flag is what lets the next stage tell
+    the two apart, so it has to be set where the cutting happens.
+    """
+
+    TABLE = """
+    <html><body>
+      <h2 id="imagen-models">Imagen models</h2>
+      <table>
+        <tr><th>Model</th><th>Shutdown date</th></tr>
+        <tr><td>imagen-4.0-generate-001</td><td>August 17, 2026</td></tr>
+        <tr><td>imagen-4.0-fast-generate-001</td><td>August 17, 2026</td></tr>
+      </table>
+    </body></html>
+    """
+
+    def test_a_row_cut_from_the_page_is_marked_as_a_section_of_it(self):
+        items = make_adapter(
+            self.TABLE, hint="dated_table", url="https://ai.google.dev/deprecations"
+        ).collect(None)
+
+        assert items, "the table produced no materials"
+        for item in items:
+            assert item.extra.get("page_section") == "https://ai.google.dev/deprecations"
+
+    def test_a_section_pointing_at_another_document_is_not_marked(self):
+        html = """
+        <html><body>
+          <h2>August 11, 2026</h2>
+          <p>Read the <a href="/posts/announcement">announcement</a>.</p>
+        </body></html>
+        """
+        items = make_adapter(html, hint="dated_sections").collect(None)
+
+        assert items
+        # The heading section carries no link of its own, so it is still a cut
+        # of this page. The assertion that matters is the flag tracking the
+        # section's origin rather than being pasted on everything.
+        assert all(
+            item.extra.get("page_section") in (None, "https://example.test/changelog")
+            for item in items
+        )

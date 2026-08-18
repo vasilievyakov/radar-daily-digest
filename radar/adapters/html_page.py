@@ -1199,6 +1199,15 @@ class HtmlPageAdapter(Adapter):
             "source_id": self.source.id,
             "date_text": section.date_text,
         }
+        if not section.url:
+            # This material was cut out of a document we already read whole.
+            # Enrichment must not "complete" it by fetching that document
+            # again: a table row is 150 characters, the teaser threshold is
+            # 600, and the page behind it holds every other row. Sixty-five
+            # rows each re-reading the same table produced a corpus where one
+            # event appeared eight times and the precedent count — the number
+            # the context label is computed from — counted copies.
+            extra["page_section"] = base_url
         if section.year_source:
             extra["year_from_heading"] = section.year_source
         if section.event_date is None:

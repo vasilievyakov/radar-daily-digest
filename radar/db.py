@@ -86,12 +86,22 @@ CREATE TABLE IF NOT EXISTS event_statements (
     raw_material_ref TEXT NOT NULL,
     embedding        BLOB,
     supersedes       TEXT REFERENCES event_statements(statement_id),
+    -- What makes two records the same event: vendor, kind, date and the named
+    -- subject. Distinct from the key below, which is about where a record came
+    -- from. A page that prints one retirement in two tables produced two
+    -- records with different origins and one identity, and the context label
+    -- counted them as two precedents.
+    event_key        TEXT NOT NULL DEFAULT '',
     -- Idempotency key for backfill (FR-6.7): canonical URL plus the position
     -- of the event inside the material.
     UNIQUE (source_url, statement_index)
 );
 CREATE INDEX IF NOT EXISTS idx_es_filter ON event_statements(vendor, change_type, event_date);
 CREATE INDEX IF NOT EXISTS idx_es_date ON event_statements(event_date);
+-- Empty keys are exempt: a statement whose subject could not be named is not
+-- claimed to be unique, and refusing to store it would lose the event.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_es_event
+    ON event_statements(event_key) WHERE event_key <> '';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS event_statements_fts USING fts5(
     text,

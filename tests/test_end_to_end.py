@@ -13,16 +13,23 @@ already paid for, so this costs nothing but the model calls, which are faked.
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, date, datetime
 
 import pytest
 
+from radar.collect import build_adapter
+from radar.backfill import persist_statements
 from radar.config import ThemeConfig
 from radar.contracts import EnrichResult
 from radar.db import init_db, read_signals
 from radar.deliver import deliver
+from radar.enrich import SOURCE_CLOSE, SOURCE_OPEN, LlmEnricher
+from radar.llm import Completion
 from radar.fetch import Fetcher
 from radar.journal import Journal
+from radar.normalize import subject_identity
 from radar.models import ChangeType, EventStatement, Fact, FactKind, SignalType
 from radar.run import DailyRun
 from radar.supervisor import Action, RunState, Supervisor
@@ -269,3 +276,143 @@ class TestTheCardShowsExtractedText:
         for signal in read_signals(conn, result.run_id):
             if signal.why_it_matters and "срок" in signal.why_it_matters:
                 assert any(f.value_date for f in signal.facts)
+
+
+# --------------------------------------------------------------------------
+# one event per event
+# --------------------------------------------------------------------------
+
+
+class RowCountingBackend:
+    """A model that extracts from what it was actually given.
+
+    Every fake enricher until now returned a fixed answer regardless of its
+    input, which is precisely why the duplication survived every test: the
+    stage that decides how much text reaches the model was replaced by a stub
+    that does not read text at all. This one names the first model identifier
+    it can see, the way a real extractor would, so handing it a whole page
+    instead of one row shows up as the same answer arriving many times.
+    """
+
+    # The hyphen is required: without it "claude.com" in a URL reads as a
+    # model name and the test measures the prompt template, not the leak.
+    IDENT = re.compile(r"\b(?:claude|gpt|gemini|imagen|veo|o\d)-[\w.]*\d[\w.-]*", re.I)
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete(self, prompt: str, **kwargs: object) -> Completion:
+        self.calls.append(prompt)
+        found = self.IDENT.findall(prompt)
+        subject = found[0] if found else "неизвестная модель"
+        payload = {
+            "events": [
+                {
+                    "statement": f"Вендор объявил об отключении {subject}.",
+                    "change_type": "deprecation",
+                    "event_date": "2026-10-15",
+                    "event_date_text": "October 15, 2026",
+                    "product": subject,
+                    "version": "",
+                    "vendor": "",
+                    "evidence": subject,
+                    "facts": [],
+                }
+            ]
+        }
+        return Completion(
+            text=json.dumps(payload, ensure_ascii=False),
+            model="fake",
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            cached=False,
+        )
+
+
+class TestOneEventPerEvent:
+    """A page read once per row is a page read as many times as it has rows.
+
+    The teaser rule (FR-4.1) completes a short material by fetching its URL.
+    For a table row that URL is the table, so sixty-five rows each pulled the
+    whole page and extracted every event in it. The corpus took the copies as
+    separate precedents, and the precedent count is the number the context
+    label puts on the card: "the eighth time since May" was one row read eight
+    times.
+    """
+
+    @pytest.fixture
+    def extracted(self, config):
+        source = next(
+            s for s in config.sources if s.id == "anthropic_model_deprecations"
+        )
+        fetcher = Fetcher(cache_root="cache", polite_delay=0.0, offline=True)
+        items = build_adapter(source, fetcher).backfill(540)
+        backend = RowCountingBackend()
+        stage = LlmEnricher(config, backend, fetcher=fetcher, ingest_mode="backfill")
+        results = [stage.enrich(item, source) for item in items]
+        return items, results, backend
+
+    def test_the_page_yields_more_than_one_material(self, extracted):
+        items, _, _ = extracted
+        assert len(items) > 3, "the table was not cut into rows at all"
+
+    def test_no_material_is_enriched_with_its_own_page(self, extracted):
+        items, _, backend = extracted
+        # Comparing prompt length against material length measures the prompt
+        # template, not the leak. What matters is whose text is in there: a row
+        # completed by its own page carries every other row's models with it.
+        for item, prompt in zip(items, backend.calls, strict=True):
+            # Only the fenced body, not the metadata around it: the URL of a
+            # deprecation section is itself made of model names.
+            body = prompt.split(SOURCE_OPEN, 1)[-1].split(SOURCE_CLOSE, 1)[0]
+            mine = set(RowCountingBackend.IDENT.findall(item.raw_text or ""))
+            in_prompt = set(RowCountingBackend.IDENT.findall(body))
+            strangers = in_prompt - mine
+            assert not strangers, (
+                f"material {item.url} was enriched with models it does not "
+                f"mention: {sorted(strangers)[:5]}"
+            )
+
+    def test_the_corpus_holds_one_record_per_event(self, extracted, conn):
+        """The row is the unit of extraction; the event is the unit of record."""
+        _, results, _ = extracted
+        persist_statements(conn, [(i, r) for i, r in enumerate(results)])
+
+        rows = conn.execute(
+            "SELECT event_key, count(*) n FROM event_statements "
+            "WHERE event_key <> '' GROUP BY 1 HAVING n > 1"
+        ).fetchall()
+        assert not rows, (
+            "the corpus holds the same event more than once: "
+            + ", ".join(f"{r['event_key']} x{r['n']}" for r in rows[:5])
+        )
+
+    def test_one_retirement_is_one_subject_however_many_milestones(self, extracted):
+        """Anthropic's page states each retirement twice, and both are true.
+
+        The status table says `claude-3-haiku-20240307` was deprecated on
+        February 19; the deprecation table says it was retired on April 20.
+        Two records, correctly, because the dates differ. One card, because
+        the reader is losing one model, not two.
+        """
+        _, results, _ = extracted
+        statements = [st for r in results for st in r.statements]
+        subjects = {
+            subject_identity(st.vendor, str(st.change_type), st.product,
+                             st.evidence, st.text)
+            for st in statements
+        }
+
+        assert len(statements) > len(subjects), (
+            "this page is supposed to state some retirement twice; if it no "
+            "longer does, the test is measuring nothing"
+        )
+        # The pair that made the point: one model, two milestones, one subject.
+        haiku = [st for st in statements if st.product == "claude-3-haiku-20240307"]
+        assert len(haiku) == 2, [st.product for st in statements]
+        assert len({
+            subject_identity(st.vendor, str(st.change_type), st.product,
+                             st.evidence, st.text)
+            for st in haiku
+        }) == 1

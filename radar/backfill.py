@@ -64,6 +64,7 @@ from radar.config import ThemeConfig
 from radar.contracts import EnrichResult, Enricher
 from radar.db import corpus_readiness
 from radar.fetch import Fetcher
+from radar.normalize import event_identity
 from radar.journal import EventKind, Journal, Outcome
 from radar.runlog import Budget, BudgetExceeded, RunLog, new_run_id
 from radar.trends import (
@@ -460,8 +461,8 @@ def persist_statements(
                     "statement_id, cluster_id, text, vendor, product, change_type, "
                     "event_date, date_precision, version, source_url, statement_index, "
                     "evidence, ingested_at, ingest_mode, extractor_model, prompt_version, "
-                    "raw_material_ref, embedding, supersedes) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "raw_material_ref, embedding, supersedes, event_key) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         statement_id,
                         statement.cluster_id,
@@ -487,6 +488,20 @@ def persist_statements(
                         statement.raw_material_ref,
                         None,
                         None,
+                        # One event, one record (PRD 5.5). The unique index on
+                        # this column is what makes the sentence true: without
+                        # it a page printing the same retirement in two tables
+                        # put two precedents behind one event, and the card
+                        # said "the eighth time since May" about one row read
+                        # eight times.
+                        event_identity(
+                            statement.vendor,
+                            str(statement.change_type),
+                            statement.event_date,
+                            statement.product,
+                            statement.evidence,
+                            statement.text,
+                        ),
                     ),
                 )
                 if cursor.rowcount:

@@ -131,3 +131,99 @@ class Normalizer:
         corpus is built rather than after filtering silently misses records.
         """
         return sorted(self.unknown_vendors.items(), key=lambda kv: -kv[1])
+
+
+# --------------------------------------------------------------------------
+# event identity
+# --------------------------------------------------------------------------
+
+# A model identifier as vendors print it: a name with a version or a date
+# glued on. Two rows of the same page describing one retirement — one in the
+# status table, one in the deprecation table — agree on this and on nothing
+# else, so it is what identity has to be built from.
+_MODEL_IDENT = re.compile(
+    r"\b[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*-(?:\d[\w.]*|[a-z]+-?\d[\w.]*)\b", re.I
+)
+
+
+def model_identifiers(*texts: str | None) -> list[str]:
+    """Model names in the order they appear, folded, without repeats.
+
+    Order carries meaning and sorting destroys it. A deprecation table reads
+    "April 20, 2026 | claude-3-haiku-20240307 | claude-haiku-4-5-20251001":
+    the first name is what is being retired, the second is what to move to.
+    Sorted, the retirement of one model and the retirement of another become
+    indistinguishable from each other.
+    """
+    found: list[str] = []
+    for text in texts:
+        for match in _MODEL_IDENT.findall(text or ""):
+            token = match.casefold()
+            if token not in found:
+                found.append(token)
+    return found
+
+
+def subject_identity(
+    vendor: str,
+    change_type: str,
+    product: str | None = None,
+    evidence: str | None = None,
+    text: str | None = None,
+) -> str:
+    """What the reader counts as one thing happening.
+
+    Weaker than `event_identity` by one field, and the field is the date. A
+    lifecycle table states two milestones for one retirement — Anthropic's
+    page says `claude-3-haiku-20240307` was deprecated on February 19 and
+    retired on April 20 — and both are true, so the corpus keeps both. A
+    digest that prints both prints one model twice.
+
+    So: the corpus is unique by event, the digest is unique by subject, and
+    the precedent count is a count of subjects. Otherwise "the fourth time
+    since February" counts the milestones of one deprecation.
+    """
+    named = (
+        model_identifiers(product)
+        or model_identifiers(evidence)
+        or model_identifiers(text)
+    )
+    subject = named[0] if named else _fold(text or "")[:120]
+    return "|".join((_fold(vendor), _fold(change_type), subject))
+
+
+def event_identity(
+    vendor: str,
+    change_type: str,
+    event_date: Any,
+    product: str | None = None,
+    evidence: str | None = None,
+    text: str | None = None,
+) -> str:
+    """What makes two statements the same event, and nothing more.
+
+    The corpus is append-only and its records are how the context label counts
+    ("the third time since May"). A page that prints one retirement twice —
+    Anthropic's status table and its deprecation table both name
+    `claude-3-haiku-20240307` — put two precedents behind one event, and the
+    number on the card counted rows rather than events.
+
+    Identity is the named subject, not the wording: two extractions of the
+    same row differ in every word and agree on the model name. When no model
+    name can be found the statement's own text is used, which never merges two
+    events by accident — a duplicate slipping through costs one repeated card,
+    a false merge silently deletes an event.
+    """
+    # The subject is the first name in the most specific field that has one:
+    # the extractor's own `product` when it filled it, otherwise the quote,
+    # otherwise the statement. Only the first — the names after it are
+    # replacements and successors, which differ between two readings of one
+    # row and would split the event in two.
+    named = (
+        model_identifiers(product)
+        or model_identifiers(evidence)
+        or model_identifiers(text)
+    )
+    subject = named[0] if named else _fold(text or "")[:120]
+    when = getattr(event_date, "isoformat", lambda: str(event_date or ""))()
+    return "|".join((_fold(vendor), _fold(change_type), when, subject))
