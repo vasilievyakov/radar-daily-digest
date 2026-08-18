@@ -890,11 +890,38 @@ def render_context(signal: Signal, today: date) -> str:
     )
 
 
+def _same_sentence(one: str, other: str) -> bool:
+    """Same text once punctuation and spacing stop mattering.
+
+    A prefix is not a match. A summary that opens with the headline and then
+    says what to migrate to is carrying the part the headline had to drop, and
+    hiding it would cost the reader the only actionable line on the card.
+    """
+    def fold(value: str) -> str:
+        return re.sub(r"[^\w]+", "", value).casefold()
+
+    a, b = fold(one), fold(other)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # Trailing punctuation, a dropped bracket: the same sentence, near enough.
+    longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
+    return longer.startswith(shorter) and len(longer) - len(shorter) <= 3
+
+
 def render_card_body(signal: Signal, today: date) -> str:
     parts: list[str] = []
     when = signal_when(signal, today)
     missing_date = when == MISSING_SUNSET_DATE
     summary = clean(signal.summary)
+    # The core stores the statement whole in both fields, and a headline built
+    # from a single-sentence statement is that sentence. Printing it twice,
+    # once as the title and once as the body, is the surface's mistake to
+    # avoid: the store is right to keep both (PUB-2), the page is not obliged
+    # to show both.
+    if summary and _same_sentence(summary, clean(signal.headline)):
+        summary = ""
     lede = []
     if when and not missing_date:
         lede.append(f'<span class="when">{esc(when)}.</span>')

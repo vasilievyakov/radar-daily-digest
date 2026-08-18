@@ -1617,3 +1617,38 @@ class TestTimesSayWhichClockTheyAreOn:
         # sqlite hands back strings; one written without an offset must not be
         # silently reinterpreted in whatever zone the machine happens to be in.
         assert web.fmt_time("2026-08-18T02:51:56") == "02:51:56 UTC"
+
+
+class TestTheCardDoesNotSayItTwice:
+    """The core stores the statement whole in headline and summary alike.
+
+    That is right for the store: a surface with room for one line takes the
+    headline, a channel with room for a paragraph takes the summary, and PUB-2
+    puts the choice on the surface. But when the statement is a single
+    sentence the two are the same string, and the card printed it as a title
+    and again as its own body.
+    """
+
+    def test_a_repeated_sentence_is_printed_once(self):
+        sentence = (
+            "Anthropic сделал стандартной ценой Claude Sonnet 5 прежнее "
+            "вводное предложение в размере $2 за миллион входных токенов"
+        )
+        signal = make_lead_signal(headline=sentence, summary=sentence)
+
+        card = web.render_card(signal, date(2026, 8, 18), lead=True)
+
+        assert card.count("Anthropic сделал стандартной ценой") == 1
+
+    def test_a_summary_that_says_more_is_kept(self):
+        signal = make_lead_signal(
+            headline="Anthropic отключает claude-3-opus",
+            summary=(
+                "Anthropic отключает claude-3-opus. Замена — claude-opus-4-8, "
+                "миграция описана в документации."
+            ),
+        )
+
+        card = web.render_card(signal, date(2026, 8, 18), lead=True)
+
+        assert "Замена" in card
