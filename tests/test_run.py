@@ -34,7 +34,14 @@ class FakeFetcher(Fetcher):
 
 
 class FakeEnricher:
-    """Stands in for stage 4 so the thread through stages can be tested alone."""
+    """Stands in for stage 4 so the thread through stages can be tested alone.
+
+    Returns a statement, not only facts. It used to return facts alone, which
+    is a shape the real stage produces only when the model found no event at
+    all — and the pipeline turned that into a card reading "Anthropic сообщает
+    об изменении" with nothing under it. Every test here ran through that
+    branch while claiming to test the ordinary one.
+    """
 
     def __init__(self, facts=None, fail=False, rejected=0):
         self.facts = facts if facts is not None else []
@@ -46,8 +53,24 @@ class FakeEnricher:
         self.calls += 1
         if self.fail:
             return EnrichResult(source_id="s", url=item.url, error="модель недоступна")
+        statement = EventStatement(
+            statement_id=f"st-{abs(hash(item.url)) % 10**8}",
+            text=f"Anthropic объявила об отключении модели из материала «{item.title}».",
+            vendor=str(source.vendor or "anthropic") if source else "anthropic",
+            product=(item.title or "модель")[:40],
+            change_type=ChangeType.DEPRECATION,
+            event_date=date(2026, 10, 15),
+            source_url=item.url,
+            evidence=(item.raw_text or item.title or "цитата")[:40],
+            ingested_at=NOW,
+            ingest_mode="live",
+            extractor_model="fake",
+            prompt_version="test",
+            raw_material_ref=item.raw_material_ref or "ref",
+        )
         return EnrichResult(
             source_id="s", url=item.url, facts=list(self.facts),
+            statements=[statement],
             rejected_facts=[RejectedFact("sunset_date", "x", "y", "evidence_not_in_source")] * self.rejected,
             change_type=ChangeType.DEPRECATION, cost_usd=0.005,
         )
@@ -927,3 +950,50 @@ class TestNotKnowingIsNotQuiet:
         stored = read_signals(conn, result.run_id)
         assert stored[0].signal_type is SignalType.QUIET_DAY
         assert stored[0].run_summary.sources_checked > 0
+
+
+class TestAMaterialWithNothingInItIsNotACard:
+    """«Anthropic сообщает об изменении» — ноль фактов, 41 балл, порог 35.
+
+    A table row reading "claude-opus-4-8 | Active | N/A | Not sooner than May
+    28, 2027" states no event, and the model correctly returned none. The stage
+    reported success, the cluster travelled on, and the publication threshold
+    asks for a score, not for a single verified fact. A card with nothing on it
+    is worse than no card.
+    """
+
+    def test_it_never_reaches_the_digest(self, env):
+        conn, config, fetcher, tmp = env
+
+        class SilentEnricher(FakeEnricher):
+            def enrich(self, item, source):
+                out = super().enrich(item, source)
+                out.statements = []
+                out.facts = []
+                return out
+
+        result = DailyRun(conn, config, fetcher, SilentEnricher(),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+
+        stored = read_signals(conn, result.run_id)
+        assert all(s.signal_type is not SignalType.DIGEST_ITEM for s in stored)
+
+    def test_the_funnel_is_told_why(self, env):
+        conn, config, fetcher, tmp = env
+
+        class SilentEnricher(FakeEnricher):
+            def enrich(self, item, source):
+                out = super().enrich(item, source)
+                out.statements = []
+                out.facts = []
+                return out
+
+        result = DailyRun(conn, config, fetcher, SilentEnricher(),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+
+        rows = conn.execute(
+            "SELECT reason_code FROM filtered_items WHERE run_id = ? AND stage = 'enrich'",
+            (result.run_id,),
+        ).fetchall()
+        assert rows
+        assert all(row["reason_code"] == "нечего_извлечь" for row in rows)

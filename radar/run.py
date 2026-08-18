@@ -631,6 +631,30 @@ class DailyRun:
                 # about plumbing instead of the news.
                 if outcome.change_type is not None:
                     cluster.change_type = str(outcome.change_type)
+                if not outcome.statements:
+                    # The stage succeeded and found nothing to say. That is a
+                    # legitimate answer — a table row reading "Active | N/A"
+                    # states no event — but it used to travel on as a card:
+                    # "Anthropic сообщает об изменении", no facts, no reason
+                    # why it matters, forty-one points, above the publication
+                    # threshold. A card with nothing on it is worse than no
+                    # card, and the funnel owes it a line either way.
+                    self.log.filtered(
+                        url=cluster.primary.url,
+                        title=cluster.title,
+                        reason_code="нечего_извлечь",
+                        stage="enrich",
+                        note="модель не нашла в материале ни одного события",
+                        item_key=cluster.cluster_id,
+                    )
+                    self.journal.record(
+                        EventKind.ITEM_FILTERED,
+                        actor="enrich",
+                        target=cluster.cluster_id,
+                        outcome=Outcome.SKIPPED,
+                        reason="нечего_извлечь",
+                    )
+                    continue
                 enriched.append((cluster, outcome.facts, outcome.statements))
             record["out_count"] = len(enriched)
         result.enriched = len(enriched)
