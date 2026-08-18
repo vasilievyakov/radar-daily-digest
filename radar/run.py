@@ -701,6 +701,19 @@ class DailyRun:
                 enriched.append((cluster, outcome.facts, outcome.statements))
             record["out_count"] = len(enriched)
         result.enriched = len(enriched)
+        # Spellings the vendor dictionary does not know. The normaliser has
+        # counted them since the beginning and `report_unknown` was read by
+        # nobody, so a vendor written a new way was dropped from retrieval in
+        # silence — and FR-5.16 asks for the opposite: say it before the corpus
+        # is built, not after the filter has been quietly missing records.
+        unknown = getattr(getattr(self.enricher, "normalizer", None), "report_unknown", None)
+        if callable(unknown):
+            rows = unknown()
+            if rows:
+                named = ", ".join(f"{name} ({count})" for name, count in rows[:5])
+                self.log.note(
+                    f"вендоры вне словаря, встречены при извлечении: {named}"
+                )
         self.journal.checkpoint("enrich", item_count=len(enriched))
 
         # Before retrieval, so the corpus is not queried once per copy, and

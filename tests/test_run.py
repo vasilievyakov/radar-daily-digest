@@ -1155,3 +1155,38 @@ class TestALineOnTheTableReachesTheCard:
         ).fetchone()[0]
         assert before == 1
         assert after == 0, "линия, переставшая держаться, осталась в таблице"
+
+
+class TestUnknownVendorsAreNamedNotSwallowed:
+    """The normaliser counted them from the start; nothing ever read the count.
+
+    A vendor spelled a way the dictionary does not know is dropped from
+    retrieval — the strict filter needs the id — and the drop is silent.
+    FR-5.16 asks for the opposite: say it while the dictionary can still be
+    widened, not after the corpus was built around the gap.
+    """
+
+    def test_the_run_log_names_them(self, env):
+        conn, config, fetcher, tmp = env
+
+        class Unknowing(FakeEnricher):
+            class normalizer:  # noqa: N801 — stands in for the real one
+                @staticmethod
+                def report_unknown():
+                    return [("Мистраль", 4), ("некийвендор", 1)]
+
+        run = DailyRun(conn, config, fetcher, Unknowing([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        run.execute()
+
+        notes = " ".join(run.log.notes)
+        assert "вне словаря" in notes
+        assert "Мистраль (4)" in notes
+
+    def test_silence_when_every_vendor_is_known(self, env):
+        conn, config, fetcher, tmp = env
+        run = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                       for_date=TODAY, log_dir=str(tmp / "logs"))
+        run.execute()
+
+        assert not any("вне словаря" in note for note in run.log.notes)
