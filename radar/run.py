@@ -37,7 +37,11 @@ from radar.delta import (
 )
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
-from radar.language import days as russian_days, sentence as russian_sentence
+from radar.language import (
+    count as russian_count,
+    days as russian_days,
+    sentence as russian_sentence,
+)
 from radar.normalize import subject_identity
 from radar.models import (
     DatePrecision,
@@ -697,8 +701,14 @@ class DailyRun:
         ]
         stored, already = persist_statements(self.conn, harvest, ingest_mode="live")
         self.log.note(
-            f"в корпус записано {stored} событий сегодняшнего прогона"
-            + (f", {already} уже там были" if already else "")
+            "в корпус записано "
+            + russian_count(stored, "событие", "события", "событий")
+            + " сегодняшнего прогона"
+            + (
+                ", " + russian_count(already, "уже был", "уже были", "уже были")
+                if already
+                else ""
+            )
         )
 
         result.failed_stage = "contextualize"

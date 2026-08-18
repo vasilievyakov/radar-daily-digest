@@ -464,6 +464,18 @@ def theme_names(config: dict[str, Any] | None) -> Names:
             _add_name(words, label)
         for alias in vendor.get("aliases") or []:
             _add_name(words, str(alias))
+
+    # Sources carry labels too, and the page did not read them: every source
+    # in the run log went through the slug speller instead, which turned
+    # gh_aaif_goose_goose into "Gh aaif goose goose". The config had said
+    # "aaif-goose/goose" since the labels were cleaned up; nothing carried it
+    # across.
+    for source in (config or {}).get("sources") or []:
+        source_id = str(source.get("id") or "").strip()
+        label = str(source.get("label") or "").strip()
+        if source_id and label:
+            labels[source_id.lower()] = label
+
     return Names(labels=labels, words=words)
 
 
@@ -1271,9 +1283,34 @@ class RunLogView:
         """What this run costs when nothing is served from cache."""
         return sum(cost.full_usd or cost.usd for cost in self.costs)
 
+    # Merging is not dropping. `cluster` folds duplicates into one story and
+    # the materials live on inside it, counted by duplicates_count — so its
+    # in/out difference is not a loss and owes no reason. Counting it made the
+    # page accuse itself of losing twenty-four materials it had merely tidied,
+    # on the one slide whose whole purpose is that the arithmetic can be
+    # followed.
+    # Only `cluster`. It merges before the model has spoken, silently and
+    # without a per-material record, because at that point there is nothing to
+    # say about a duplicate beyond "same page". `collapse` also merges, but it
+    # knows what it merged and writes a reason for each — so it belongs in the
+    # accounting, and leaving it out swung the arithmetic the other way.
+    MERGING_STAGES = frozenset({"cluster"})
+
     @property
     def dropped_total(self) -> int:
-        return sum(stage.dropped for stage in self.stages)
+        return sum(
+            stage.dropped
+            for stage in self.stages
+            if stage.name not in self.MERGING_STAGES
+        )
+
+    @property
+    def merged_total(self) -> int:
+        return sum(
+            stage.dropped
+            for stage in self.stages
+            if stage.name in self.MERGING_STAGES
+        )
 
     @property
     def failed_sources(self) -> list[SourceRow]:
@@ -1753,14 +1790,20 @@ def _stage_table(
 def funnel_sentence(run: RunLogView) -> str:
     """Say the discrepancy out loud, or say that there is none."""
     dropped = run.dropped_total
+    merged = run.merged_total
     recorded = len(run.filtered)
     if dropped == 0 and recorded == 0:
         return "Ни один материал не отсеян."
     if recorded == dropped:
-        return (
+        line = (
             f"Отсеяно {count_phrase(dropped, MATERIAL_FORMS)}, "
             "причина записана у каждого."
         )
+        # Named, not hidden: the reader who adds up the funnel finds the
+        # difference and deserves to know it is merging, not loss.
+        if merged:
+            line += f" Ещё {count_phrase(merged, MATERIAL_FORMS)} слито как дубликаты."
+        return line
     if recorded < dropped:
         gap = dropped - recorded
         return (
@@ -1768,6 +1811,7 @@ def funnel_sentence(run: RunLogView) -> str:
             f"причины записаны у {fmt_int(recorded)}. "
             f"У {count_phrase(gap, MATERIAL_FORMS)} причина не записана."
         )
+
     return (
         f"Причин записано {fmt_int(recorded)} при "
         f"{count_phrase(dropped, MATERIAL_FORMS)} по счётчикам стадий: "

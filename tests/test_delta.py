@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, date, datetime, timedelta
 
+import json
+
 import pytest
 
 from radar.adapters.base import CollectedItem
@@ -604,3 +606,57 @@ class TestIdentity:
             for n in range(3)
         ]
         assert len({material_id(s) for s in sections}) == 3
+
+
+class TestTheSweepWorksBothWays:
+    """A rule and the table it governs must not be able to disagree.
+
+    When the closing rule was corrected, thirty-three verdicts written by the
+    previous version stayed in `clusters`, and the sweep read only unclosed
+    rows — so the corrected rule could never revisit what the old one had
+    condemned. The digest went on printing "closed" over dates in 2027.
+    """
+
+    def _cluster(self, conn, cluster_id, when, resolved_at=None):
+        facts = [{
+            "kind": "sunset_date", "value": when.isoformat(),
+            "source_url": "https://example.test/x", "evidence": "shutdown",
+            "value_date": when.isoformat(), "date_precision": "day",
+            "evidence_verified": True, "confidence": "high", "subject": None,
+        }]
+        conn.execute(
+            "INSERT INTO clusters (cluster_id, dedup_key, title, primary_url, vendor, "
+            "change_type, duplicates_count, first_seen_run, last_seen_run, "
+            "days_tracked, delta_status, facts_json, updated_at, resolved_at) "
+            "VALUES (?, ?, 't', 'u', 'anthropic', 'deprecation', 0, 'r1', 'r1', 1, "
+            "'continuing', ?, '2026-08-18', ?)",
+            (cluster_id, cluster_id, json.dumps(facts), resolved_at),
+        )
+        conn.commit()
+
+    def test_a_verdict_from_the_old_rule_is_lifted(self, db):
+        # Closed yesterday by the "any date" rule; its own date is next year.
+        self._cluster(db, "c-wrong", date(2027, 2, 5), resolved_at="2026-08-17")
+
+        resolve_expired(db, date(2026, 8, 18))
+
+        left = db.execute(
+            "SELECT resolved_at FROM clusters WHERE cluster_id = 'c-wrong'"
+        ).fetchone()[0]
+        assert left is None, "исправленное правило не пересмотрело чужой приговор"
+
+    def test_a_story_that_is_genuinely_over_stays_closed(self, db):
+        self._cluster(db, "c-done", date(2026, 8, 1), resolved_at="2026-08-02")
+
+        resolve_expired(db, date(2026, 8, 18))
+
+        assert db.execute(
+            "SELECT resolved_at FROM clusters WHERE cluster_id = 'c-done'"
+        ).fetchone()[0] is not None
+
+    def test_it_still_closes_what_has_passed(self, db):
+        self._cluster(db, "c-new", date(2026, 8, 17))
+
+        closed = resolve_expired(db, date(2026, 8, 18))
+
+        assert closed == ["c-new"]

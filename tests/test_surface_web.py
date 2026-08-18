@@ -1816,3 +1816,43 @@ class TestACachedRunSaysWhatItWouldHaveCost:
         block = web._cost_block(web.load_run_log(conn, "r1"))
 
         assert "Без кэша" not in block
+
+
+class TestMergingIsNotLosing:
+    """«У 24 материалов причина не записана» — на слайде, который открывают первым.
+
+    The page counted `cluster` among the stages that drop material. It does not
+    drop anything: duplicates are folded into one story and live on inside it,
+    counted by duplicates_count. So the run log accused itself of losing
+    twenty-four materials it had merely tidied, on the one slide whose entire
+    purpose is that a reader can add up the arithmetic.
+    """
+
+    def _view(self, stages, filtered):
+        return web.RunLogView(
+            run_id="r1", for_date=date(2026, 8, 18), status="ok",
+            stages=[web.StageRow(name=n, in_count=i, out_count=o) for n, i, o in stages],
+            filtered=[
+                web.FilteredRow(url=f"u{i}", title="t", reason_code="x", stage="filter")
+                for i in range(filtered)
+            ],
+        )
+
+    def test_a_merge_is_named_as_a_merge(self):
+        view = self._view(
+            [("collect", 104, 104), ("cluster", 104, 80), ("filter", 80, 48)], 32
+        )
+        sentence = web.funnel_sentence(view)
+
+        assert "причина записана у каждого" in sentence
+        assert "24 материала слито как дубликаты" in sentence
+        assert "не записана" not in sentence
+
+    def test_a_real_gap_is_still_confessed(self):
+        view = self._view([("filter", 80, 48)], 20)
+        assert "причина не записана" in web.funnel_sentence(view)
+
+    def test_collapse_counts_as_a_drop_because_it_writes_reasons(self):
+        # It merges too, but it knows what it merged and records each one.
+        view = self._view([("collapse", 46, 40)], 6)
+        assert "причина записана у каждого" in web.funnel_sentence(view)

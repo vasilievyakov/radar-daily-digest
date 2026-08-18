@@ -1,0 +1,598 @@
+<title>Статус Радара</title>
+<style>
+  :root {
+    --ground: #e9edf0;
+    --surface: #ffffff;
+    --surface-sunk: #f2f5f7;
+    --ink: #101821;
+    --ink-soft: #4a5765;
+    --ink-faint: #78838f;
+    --rule: #cfd8de;
+    --rule-soft: #e2e8ec;
+    --signal: #0d6b73;
+    --signal-soft: #d8ebec;
+    --open: #8a5a12;
+    --open-soft: #f6ead4;
+    --closed: #2f6b3a;
+    --closed-soft: #dcecdd;
+    --shadow: 0 1px 2px rgba(16, 24, 33, .06), 0 8px 24px rgba(16, 24, 33, .05);
+    --display: ui-sans-serif, system-ui, "Helvetica Neue", Arial, sans-serif;
+    --body: Charter, "Iowan Old Style", "Source Serif 4", Georgia, serif;
+    --data: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0d1319;
+      --surface: #141c24;
+      --surface-sunk: #101821;
+      --ink: #e6ecf1;
+      --ink-soft: #a3b0bc;
+      --ink-faint: #74818d;
+      --rule: #26323d;
+      --rule-soft: #1c2630;
+      --signal: #56b8bf;
+      --signal-soft: #123134;
+      --open: #d9a441;
+      --open-soft: #33280f;
+      --closed: #6fbb7c;
+      --closed-soft: #16301b;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0d1319;
+    --surface: #141c24;
+    --surface-sunk: #101821;
+    --ink: #e6ecf1;
+    --ink-soft: #a3b0bc;
+    --ink-faint: #74818d;
+    --rule: #26323d;
+    --rule-soft: #1c2630;
+    --signal: #56b8bf;
+    --signal-soft: #123134;
+    --open: #d9a441;
+    --open-soft: #33280f;
+    --closed: #6fbb7c;
+    --closed-soft: #16301b;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  /* -- masthead ------------------------------------------------ */
+
+  .masthead { display: flex; flex-direction: column; gap: 14px; }
+
+  .eyebrow {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--signal);
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-size: clamp(30px, 5vw, 44px);
+    font-weight: 680;
+    letter-spacing: -.02em;
+    line-height: 1.08;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    margin: 0;
+    max-width: 62ch;
+    font-size: 19px;
+    color: var(--ink-soft);
+  }
+
+  /* -- metric strip -------------------------------------------- */
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .metric { background: var(--surface); padding: 16px 18px; }
+
+  .metric dt {
+    font-family: var(--display);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 6px;
+  }
+
+  .metric dd {
+    margin: 0;
+    font-family: var(--data);
+    font-size: 24px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+  }
+
+  .metric dd small {
+    display: block;
+    font-family: var(--body);
+    font-size: 13px;
+    letter-spacing: 0;
+    color: var(--ink-faint);
+    margin-top: 3px;
+  }
+
+  /* -- sections ------------------------------------------------ */
+
+  section { display: grid; grid-template-columns: 132px 1fr; gap: 28px; }
+
+  @media (max-width: 720px) {
+    section { grid-template-columns: 1fr; gap: 14px; }
+  }
+
+  .rail {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-top: 5px;
+    border-top: 2px solid var(--ink);
+    height: fit-content;
+  }
+
+  .rail span { display: block; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink-faint); margin-top: 4px; font-size: 12.5px; }
+
+  h2 {
+    font-family: var(--display);
+    font-size: 23px;
+    font-weight: 650;
+    letter-spacing: -.015em;
+    margin: 0 0 14px;
+  }
+
+  .body-col { min-width: 0; }
+  .body-col > p { margin: 0 0 14px; max-width: 66ch; }
+  .body-col > p:last-child { margin-bottom: 0; }
+
+  /* -- lists --------------------------------------------------- */
+
+  ul.plain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+
+  ul.plain li {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    gap: 10px;
+    align-items: baseline;
+    max-width: 68ch;
+  }
+
+  ul.plain li::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--closed);
+    transform: translateY(-2px);
+    justify-self: center;
+  }
+
+  ul.plain.open li::before { background: none; border: 1.5px solid var(--open); }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--display);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 2px;
+    vertical-align: 2px;
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+  .tag.now { background: var(--signal-soft); color: var(--signal); }
+  .tag.later { background: var(--open-soft); color: var(--open); }
+
+  /* -- table --------------------------------------------------- */
+
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--surface); }
+
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule-soft); }
+  th {
+    font-family: var(--display);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    background: var(--surface-sunk);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--data); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.was { color: var(--ink-faint); }
+
+  /* -- incidents ----------------------------------------------- */
+
+  .incidents { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+
+  .incident { background: var(--surface); padding: 15px 18px; display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; }
+
+  .incident h3 {
+    font-family: var(--display);
+    font-size: 15.5px;
+    font-weight: 640;
+    letter-spacing: -.005em;
+    margin: 0;
+    grid-column: 1;
+  }
+
+  .found {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    text-align: right;
+    padding-top: 2px;
+    white-space: nowrap;
+  }
+
+  .incident p { margin: 0; grid-column: 1; font-size: 15.5px; color: var(--ink-soft); max-width: 64ch; }
+
+  .incident .cost { font-family: var(--data); font-size: 13px; color: var(--signal); margin-top: 4px; }
+
+  /* -- callout ------------------------------------------------- */
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--signal);
+    padding: 16px 20px;
+    box-shadow: var(--shadow);
+    border-radius: 0 3px 3px 0;
+  }
+  .callout p { margin: 0; max-width: 64ch; }
+  .callout p + p { margin-top: 10px; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 18px;
+    font-size: 13.5px;
+    color: var(--ink-faint);
+    font-family: var(--display);
+  }
+
+  code { font-family: var(--data); font-size: .88em; background: var(--surface-sunk); padding: 1px 5px; border-radius: 2px; }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Радар изменений в AI-инструментах · 18 августа, утро</div>
+    <h1>Система собрана; двое приняли, третий держит блокер</h1>
+    <p class="standfirst">
+      За сутки: 80 коммитов, 1580 тестов, корпус из тысячи событий и шесть живых
+      прогонов. Ниже — что планировали, что вышло, что осталось и какие дефекты
+      нашлись по дороге. Дефектов было много, и это главная часть отчёта.
+    </p>
+  </header>
+
+  <dl class="metrics">
+    <div class="metric"><dt>Прогон</dt><dd>1:40<small>вхолодную 4:55</small></dd></div>
+    <div class="metric"><dt>Стоимость</dt><dd>$0.19<small>без кэша $0.58</small></dd></div>
+    <div class="metric"><dt>Карточек</dt><dd>33<small>из 104 материалов</small></dd></div>
+    <div class="metric"><dt>Корпус</dt><dd>1000<small>16 вендоров, 0 дублей</small></dd></div>
+    <div class="metric"><dt>Тестов</dt><dd>1580<small>xfail нет</small></dd></div>
+    <div class="metric"><dt>Потрачено</dt><dd>$15.83<small>на модель, за всё</small></dd></div>
+  </dl>
+
+  <section>
+    <div class="rail">Замысел<span>ТЗ v1.2</span></div>
+    <div class="body-col">
+      <h2>Что планировали</h2>
+      <p>
+        Автономный агент, который каждое утро обходит источники, находит изменения
+        в инструментах разработчика и присылает сводку, где под каждым утверждением
+        стоит дословная цитата из первоисточника.
+      </p>
+      <ul class="plain">
+        <li>Конвейер из семи стадий: сбор, нормализация, склейка, фильтр значимости, извлечение фактов, поиск прецедентов в своём корпусе, публикация.</li>
+        <li>Три запрета исполняемым кодом, а не просьбой к модели: факт без дословной цитаты не публикуется; фразу «третий раз с мая» ставит код по числу прецедентов; обобщение без числа запрещено.</li>
+        <li>Накопленный корпус событий, чтобы сегодняшнее изменение можно было поставить в ряд с прошлыми.</li>
+        <li>Четыре поверхности над одним контрактом: веб, Telegram, почта, план родного клиента для macOS.</li>
+        <li>Полный журнал действий и надзиратель, который заметит, что агент замолчал.</li>
+        <li>Запуск по расписанию, без человека.</li>
+      </ul>
+      <p style="margin-top:16px">
+        Совет директоров предлагал сократить объём — убрать клиент, почту, вторую
+        тему, векторные представления. Решение было делать всё.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="rail">Итог<span>на 09:40</span></div>
+    <div class="body-col">
+      <h2>Что сделали</h2>
+      <p>
+        Работает целиком, на живых источниках и настоящих деньгах. Прогон
+        <code>20260818T073111</code> собран сегодня утром: 104 материала, 80 историй
+        после склейки, 48 через фильтр, 33 карточки.
+      </p>
+
+      <div class="scroll" style="margin: 18px 0">
+        <table>
+          <thead>
+            <tr><th>Прогон</th><th class="num">Время</th><th class="num">Стоимость</th><th class="num">Обогащено</th><th>Состояние</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="was">Вчера, первый</td><td class="num was">1 ч 54 мин</td><td class="num was">$4.27</td><td class="num was">28 из 40</td><td class="was">12 материалов потеряно на таймаутах</td></tr>
+            <tr><td class="was">Вчера, второй</td><td class="num was">6 мин 47 с</td><td class="num was">$0.71</td><td class="num was">37 из 37</td><td class="was">отключено расширенное мышление</td></tr>
+            <tr><td>Сегодня, вхолодную</td><td class="num">4 мин 55 с</td><td class="num">$0.4329</td><td class="num">44 из 44</td><td>кэш ответов стёрт, честный замер</td></tr>
+            <tr><td>Сегодня, последний</td><td class="num">1 мин 40 с</td><td class="num">$0.19</td><td class="num">46 из 48</td><td>тёплый кэш, страница говорит об этом сама</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <ul class="plain">
+        <li><strong>93 источника</strong> в конфиге, 61 вендор. Три состояния источника: работает, проверен и молчит, сломан.</li>
+        <li><strong>Корпус в 1000 событий</strong> по 16 вендорам, ноль дублей, глубина с июня 2023 по июль 2027.</li>
+        <li><strong>Сеть спрашивает, изменилась ли страница</strong> — условными запросами. Четыре источника из десяти отвечают «не изменилось», и это ответ сети, а не пропущенный вопрос.</li>
+        <li><strong>Тихий день доказан на живом прогоне</strong>: сообщение «сегодня ничего не изменилось» приходит с числами под ним — сколько источников проверено, что собрано, какие сроки впереди.</li>
+        <li><strong>Воронка сходится по каждой стадии</strong>: 32 и 32, 2 и 2, 6 и 6, 7 и 7. Каждый отсеянный материал оставил письменную причину.</li>
+        <li><strong>1580 тестов</strong>, включая проверку типов как тест и сквозной прогон по настоящей форме данных за девять секунд.</li>
+        <li><strong>Приёмка:</strong> Мурати приняла, Карпати принял. Айв не принял — блокер ниже.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="rail">Долг<span>открыто</span></div>
+    <div class="body-col">
+      <h2>Что осталось</h2>
+      <ul class="plain open">
+        <li><strong>Читатель не может ответить.</strong> Система каждый день выносит три десятка суждений о значимости и не узнаёт ни об одном промахе. Ни «не моё», ни «больше не показывай». Пока этого нет, фильтр не улучшится никогда. <span class="tag later">после эфира</span></li>
+        <li><strong>Конфиг на полторы тысячи строк</strong> — это конфиг для автора, не для читателя. Чтобы убрать вендора, нужно знать, что его идентификатор завязан на поиск прецедентов. <span class="tag later">после эфира</span></li>
+        <li><strong>Формулировки не воспроизводятся дословно.</strong> У выбранного бэкенда нет ни температуры, ни зерна. Ядро устойчиво — 84% совпадения по вендору, продукту и типу, 32 заголовка побайтово, — плавает хвост на ±3 карточки. Это цена решения и её надо называть вслух. <span class="tag later">известно</span></li>
+        <li><strong>Первый выпуск у нового читателя наполовину из архива:</strong> таблицы жизненного цикла читаются впервые, и всё в них — новость. Либо сказать это на самой странице, либо придержать первый выпуск. <span class="tag later">решение</span></li>
+        <li><strong>Родной клиент для macOS</strong> существует как план, а не как код. <span class="tag later">после эфира</span></li>
+        <li><strong>Приговоры старого правила остались в базе.</strong> Правило закрытия сюжета исправлено, но 33 записи несут пометку, поставленную прежней логикой, и обход выбирает только незакрытые — исправленное правило по построению не пересмотрит тех, кого осудило старое. На странице это 26 строк «Закрыто» над датами 2027 года. Блокер Айва. <span class="tag now">чиню сейчас</span></li>
+        <li><strong>Единица новости выбрана неверно.</strong> Семь карточек подряд — строки одной таблицы статусов Anthropic, семь грамматик одного факта: «Anthropic обновила статусы, вот пять новых дат». Сначала единица была слишком крупной (вся страница на одну строку), теперь слишком мелкой. Система дважды приняла структуру источника за структуру новости. <span class="tag now">решается</span></li>
+        <li><strong>Страница лога обвиняет себя ложно:</strong> «у 24 материалов причина не записана» — на самом деле это склейка дубликатов, которая ничего не выбрасывает. Строка стоит на первом же слайде эфира. <span class="tag now">чиню сейчас</span></li>
+        <li><strong>Первая карточка вешает срок на отмену срока:</strong> «Anthropic отменила повышение цен» и рядом «срок наступает через 14 дней». Срока нет, в этом и новость. <span class="tag now">чиню сейчас</span></li>
+        <li><strong>Время не имеет честного двойника.</strong> Цену страница называет и с кэшем, и без; время — только с кэшем. <span class="tag now">чиню сейчас</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="rail">Журнал<span>13 разборов</span></div>
+    <div class="body-col">
+      <h2>Что ломалось</h2>
+      <p>
+        Почти каждый дефект нашёлся не в коде, а в выводе — на карточках, которые
+        читал человек. Столбец справа говорит, кто нашёл.
+      </p>
+
+      <div class="incidents" style="margin-top:18px">
+
+        <article class="incident">
+          <h3>Корпус на 93% состоял из дублей одного события</h3>
+          <div class="found">я</div>
+          <p>
+            Правило «обогащай материал, а не тизер ленты» дочитывало страницу для
+            любого фрагмента короче 600 знаков. Строка таблицы отключений — 150
+            знаков, и каждая из 65 строк перечитывала свою же страницу на 121 КБ,
+            извлекая из неё всю таблицу заново. Число прецедентов — это то, из чего
+            код считает фразу «восьмой раз с мая»: восемь раз означало одну строку,
+            прочитанную восемь раз.
+          </p>
+          <p class="cost">409 записей → 372 настоящих события, ноль дублей</p>
+        </article>
+
+        <article class="incident">
+          <h3>Ни один прогон за день не ходил в сеть</h3>
+          <div class="found">Карпати</div>
+          <p>
+            Кэш без срока жизни, без условных запросов, без чтения меток изменения.
+            Восемь источников из восьми отдавались с диска за шесть миллисекунд,
+            а в логе стояли честные 400–4000 мс — это было время разбора. Радар
+            физически не мог увидеть, что страница изменилась, и тихий день, которым
+            я отчитался, наступал потому, что смотрящий закрыл глаза.
+          </p>
+          <p class="cost">0 запросов → 10 запросов: 6 загрузок, 4 подтверждения «не изменилось»</p>
+        </article>
+
+        <article class="incident">
+          <h3>Я отчитался ценой кэша вместо цены работы</h3>
+          <div class="found">я, после его разбора</div>
+          <p>
+            Отдал на приёмку прогон «1 минута 19 секунд, $0.16». Все 42 вызова
+            обогащения были попаданиями в кэш; шестнадцать центов купили один фильтр.
+            Это тот же класс, на котором Карпати поймал меня утром, повторённый
+            через несколько часов после того, как он на него указал. Теперь страница
+            называет обе цифры сама.
+          </p>
+          <p class="cost">честно: 4 мин 55 с и $0.4329</p>
+        </article>
+
+        <article class="incident">
+          <h3>Тихий день пришёл бы без единой цифры</h3>
+          <div class="found">агент проверки</div>
+          <p>
+            Telegram и почта строили всю доказательную часть тихого дня из поля,
+            которое ядро не заполняет никогда. На живом сигнале там пусто, то есть
+            «сегодня ничего не изменилось» ушло бы голой фразой — неотличимо от
+            агента, который просто перестал ходить. Это ровно тот единственный
+            провал, ради предотвращения которого продукт затевался.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>69 источников из 77 объявлялись сломанными в обычный день</h3>
+          <div class="found">Карпати</div>
+          <p>
+            Порог «не меньше десяти записей» писался под глубину первичного сбора за
+            540 дней, а применялся к окну в 26 часов. Репозиторий без сегодняшнего
+            релиза читался как неисправность. Продукт, чья главная ставка — отличать
+            «тихо» от «сломано», не делал этого различия у себя внутри.
+          </p>
+          <p class="cost">8 работают / 69 сломаны → 25 работают / 51 молчит / 1 сломан</p>
+        </article>
+
+        <article class="incident">
+          <h3>«Тринадцатый раз с 3 марта» — это константа пагинации плюс один</h3>
+          <div class="found">Карпати</div>
+          <p>
+            Двенадцать карточек показали одно и то же число, потому что список
+            прецедентов упирался в потолок выдачи. Вся машина проверок построена
+            против выдумки модели, а неверное число на экран поставил
+            детерминированный код. У даты в той же фразе был тот же дефект.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>Двадцать семь карточек из тридцати четырёх были помечены закрытыми</h3>
+          <div class="found">Айв</div>
+          <p>
+            И все двадцать семь — неверно: у каждой есть дата в будущем. Сюжет
+            закрывался по любой прошедшей дате среди накопленных фактов, а факты
+            копятся по всей истории, где одна секция таблицы несёт даты десятка
+            соседних моделей. Страница одновременно говорила «19 августа, завтра» и
+            «история закрыта».
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>Тип изменения противоречил собственному заголовку</h3>
+          <div class="found">Карпати</div>
+          <p>
+            «Google выпустила модель veo-3.1» под ярлыком «объявление об отключении».
+            Одна строка таблицы жизненного цикла — это два события: релиз с датой
+            выпуска и отключение с датой отключения. Заголовок строился из первого,
+            тип брался от второго. Девять карточек, и одна из них попала в первую
+            тройку по весу.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>Шестнадцать заголовков из тридцати четырёх были названиями страниц</h3>
+          <div class="found">Айв</div>
+          <p>
+            «Deprecations — OpenAI API» вместо утверждения о событии. Причина
+            оказалась не в выборе источника, а в арифметике: утверждение длиннее 120
+            знаков молча роняло заголовок на название страницы, и у всех шестнадцати
+            за спиной лежала нормальная русская фраза длиной 122–173.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>Слово «today» превращалось в дату прогона</h3>
+          <div class="found">я, при перезаписи эталонов</div>
+          <p>
+            Пост Cursor объявляет запуск «today» и не печатает даты нигде. Проверка
+            цитаты проходит — слово действительно на странице, — а дальше модель
+            разворачивает его по своим часам. Нашлось при обновлении эталонного
+            набора: первый проход записал это поведение как ожидаемое. Ровно для
+            этого эталонный набор и нужен.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>Страницы затирались прогоном из чужой базы</h3>
+          <div class="found">Айв</div>
+          <p>
+            За двенадцать минут чтения витрина была перезаписана четыре раза
+            страницей «Проверено 0 источников» — от прогонов, которых нет ни в одной
+            таблице. Каталог вывода по умолчанию не был связан с базой. Пустая
+            страница не выглядит сломанной: она выглядит как спокойное утро.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>«Срок наступает через 1 дней»</h3>
+          <div class="found">Айв</div>
+          <p>
+            Четырнадцать карточек из тридцати четырёх. Помощник, согласующий
+            числительное, жил в почтовой поверхности, куда ядро не дотягивалось, — и
+            единственная строка, ради которой человек встаёт и что-то чинит,
+            оказалась единственной невычитанной.
+          </p>
+        </article>
+
+        <article class="incident">
+          <h3>«Зову имя, которого не существует» — одиннадцать раз за сутки</h3>
+          <div class="found">повторяется</div>
+          <p>
+            Самый упорный класс. Дважды случился внутри починки предыдущего такого
+            же случая, один раз — в тесте, написанном специально против него. Лечится
+            не внимательностью: проверка типов поставлена отдельным тестом, а узкие
+            исключения перестали глотать несуществующие имена как «внешний сбой».
+          </p>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="rail">Вывод<span>для эфира</span></div>
+    <div class="body-col">
+      <h2>Что из этого показывать</h2>
+      <div class="callout">
+        <p>
+          Сильнейшее в системе — не карточки. Карточки умеет и чат. Сильнее всего
+          страница лога прогона: воронка 104 → 80 → 48 → 33, у каждого отсеянного
+          материала названа причина, рядом колонка «Сеть» с ответами серверов, и
+          строка о стоимости, которая сама себя проверяет — «$0.19, без кэша
+          ответов та же работа стоила бы $0.58».
+        </p>
+        <p>
+          Чат не может показать, о чём он промолчал. Агент обязан — и это вся
+          разница, которую стоит показать в зале.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Радар изменений в AI-инструментах · 80 коммитов · 1580 тестов ·
+    последний прогон 20260818T073111-d5530d
+  </footer>
+
+</div>

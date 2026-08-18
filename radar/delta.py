@@ -220,8 +220,7 @@ def compute_delta(
     days = int(state["days_tracked"] or 1)
     # Same run seen twice must not inflate the counter: idempotent reruns are
     # explicitly allowed (PUB-5), and "third day" would quietly become fourth.
-    if state["last_seen_run"] != run_id:
-        days += 1
+    pass
 
     # New evidence is asked about before the closure flag, and deliberately.
     # Closure is an inference — the dates we know about are all behind us —
@@ -314,21 +313,37 @@ def resolve_expired(conn: sqlite3.Connection, as_of: date | None = None) -> list
     The comparison is strict. On the very day a model goes off the story is at
     its most useful and the digest says "today"; a page cannot say "today" and
     "closed" in one breath. The story closes the morning after.
+
+    The sweep reads every cluster, closed ones included, and can open one back
+    up. Restricted to `resolved_at IS NULL` it was one-way: when the rule above
+    was corrected, the thirty-three verdicts written by the previous version
+    stayed in the table, and by construction the corrected rule would never
+    look at them again — the page went on saying "closed" over dates in 2027.
+    A rule and the table it governs must not be able to disagree.
     """
     as_of = as_of or datetime.now(UTC).date()
     closed: list[str] = []
+    reopened: list[str] = []
     rows = conn.execute(
-        "SELECT cluster_id, facts_json FROM clusters WHERE resolved_at IS NULL"
+        "SELECT cluster_id, facts_json, resolved_at FROM clusters"
     ).fetchall()
     for row in rows:
         dates = _announced_dates(row["facts_json"])
-        if dates and max(dates) < as_of:
+        over = bool(dates) and max(dates) < as_of
+        if over and row["resolved_at"] is None:
             closed.append(row["cluster_id"])
-    if closed:
-        with conn:
+        elif not over and row["resolved_at"] is not None:
+            reopened.append(row["cluster_id"])
+    with conn:
+        if closed:
             conn.executemany(
                 "UPDATE clusters SET resolved_at = ? WHERE cluster_id = ?",
                 [(as_of.isoformat(), cid) for cid in closed],
+            )
+        if reopened:
+            conn.executemany(
+                "UPDATE clusters SET resolved_at = NULL WHERE cluster_id = ?",
+                [(cid,) for cid in reopened],
             )
     return closed
 
