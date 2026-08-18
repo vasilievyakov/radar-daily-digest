@@ -688,3 +688,60 @@ class TestTheBufferForwardsWhatItWasGiven:
             ("run-live",),
         ).fetchone()
         assert row["original_cost_usd"] == row["cost_usd"] == 0.17
+
+
+class TestEveryDeclaredChannelIsActuallyWired:
+    """`delivery.channels` said [telegram, email]; only Telegram was built.
+
+    The email surface was written, tested and rendered for two days without a
+    single run ever being handed to it — the config declared it, the run log
+    would have shown it, and nothing called it. A channel nobody calls is
+    indistinguishable from a channel that always fails silently.
+    """
+
+    def test_the_run_builds_both_channels(self, tmp_path, monkeypatch):
+        from radar import cli
+
+        built: list[str] = []
+
+        class Spy:
+            def __init__(self, name):
+                self.name = name
+
+            def send_digest(self, signals):
+                built.append(self.name)
+                return type("R", (), {"ok": True, "message_id": 1, "error": None})()
+
+        monkeypatch.setattr(
+            "radar.surfaces.telegram.send_digest",
+            lambda signals: built.append("telegram") or type(
+                "R", (), {"ok": True, "message_id": 1, "error": None}
+            )(),
+        )
+        monkeypatch.setattr(
+            "radar.surfaces.email.send_digest",
+            lambda digest, **kw: built.append("email") or type(
+                "R", (), {"ok": True, "message_id": 2, "error": None}
+            )(),
+        )
+
+        conn = init_db(tmp_path / "r.db")
+        signal = Signal(
+            signal_id="s1", run_id="run-1", signal_type=SignalType.DIGEST_ITEM,
+            created_at=datetime(2026, 8, 18, tzinfo=UTC), for_date=date(2026, 8, 18),
+            headline="Anthropic отключает claude-3-opus", tier=Tier.LEAD,
+        )
+        publish_signals(conn, "run-1", [signal])
+
+        from radar.runlog import RunLog
+
+        run = type(
+            "R", (), {
+                "run_id": "run-1",
+                "journal": Journal(conn, log_dir=tmp_path / "l", run_id="run-1"),
+                "log": RunLog(conn, "run-1", date(2026, 8, 18)),
+            },
+        )()
+        cli._deliver_run(conn, run, None)
+
+        assert set(built) == {"telegram", "email"}

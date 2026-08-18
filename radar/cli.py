@@ -788,6 +788,24 @@ def _deliver_run(
     except Exception as exc:
         print(f"Telegram недоступен: {exc}")
 
+    # Email was declared in `delivery.channels` and called by nobody: the
+    # surface has been written, tested and rendered for two days without ever
+    # being handed a run. The wrapper is here for the same reason the Telegram
+    # one is — the surface exposes functions, and the digest has to be built
+    # from the signals before it can be sent.
+    try:
+        from radar.surfaces import email as mail
+
+        class _Email:
+            name = "email"
+
+            def send_digest(self, signals):
+                return mail.send_digest(mail.build_email(signals))
+
+        surfaces["email"] = _Email()
+    except Exception as exc:
+        print(f"Почта недоступна: {exc}")
+
     if not surfaces:
         print("Ни один канал не собран, доставка пропущена.")
         return
