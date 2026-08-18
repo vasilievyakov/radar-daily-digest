@@ -160,6 +160,7 @@ class ClaudeCLIClient:
         seed: int | None = 7,
         schema_strict: bool = True,
         cwd: str | None = None,
+        thinking_tokens: int | None = 0,
     ) -> None:
         # Resolved per call, not here: a fully cached replay has to run on a
         # machine with no CLI at all.
@@ -172,6 +173,8 @@ class ClaudeCLIClient:
         self.seed = seed
         self.schema_strict = schema_strict
         self.cwd = cwd
+        # None leaves the CLI default; 0 turns extended thinking off.
+        self.thinking_tokens = thinking_tokens
         # stage -> digest of the system prompt it last used.
         self._system_seen: dict[str, str] = {}
 
@@ -338,6 +341,25 @@ class ClaudeCLIClient:
             argv += ["--max-budget-usd", f"{cap:.4f}"]
         return argv
 
+    def _child_env(self) -> dict[str, str]:
+        """Environment for the CLI child.
+
+        Measured over a full run: 424k output tokens paid for, 74k of JSON
+        parsed. The missing 82 percent is extended thinking, which extraction
+        does not need — it returns structured events, it does not reason its
+        way to them. On the same material with thinking off: 6 seconds instead
+        of 16, half the cost, the same four events and the same three dates,
+        losing only incidental facts that never reach a card.
+
+        It also removes the second defect: the largest legitimate call ran 165
+        seconds against a 180 second timeout, so seven materials were cut off
+        mid-answer. Short answers do not reach the ceiling.
+        """
+        env = dict(os.environ)
+        if self.thinking_tokens is not None:
+            env["MAX_THINKING_TOKENS"] = str(self.thinking_tokens)
+        return env
+
     def _invoke(
         self,
         binary: str,
@@ -357,6 +379,7 @@ class ClaudeCLIClient:
                 check=False,
                 shell=False,
                 cwd=self.cwd,
+                env=self._child_env(),
             )
         except subprocess.TimeoutExpired as exc:
             # subprocess.run kills and reaps the child before re-raising, so a

@@ -717,3 +717,37 @@ def test_real_cli_answers(tmp_path, monkeypatch):
     assert result.provider == "claude-cli"
     assert result.cost_usd > 0
     assert budget.spent_usd == pytest.approx(result.cost_usd)
+
+
+class TestThinkingIsOffByDefault:
+    """Measured over a full run: 82 percent of paid output tokens never
+    reached the pipeline. That was extended thinking, and it cost 64 of the 92
+    minutes spent enriching, plus seven materials cut off by the timeout.
+    Extraction returns structured events; it does not need to think aloud.
+    """
+
+    def test_the_child_environment_turns_thinking_off(self):
+        from radar.llm_cli import ClaudeCLIClient
+
+        assert ClaudeCLIClient()._child_env()["MAX_THINKING_TOKENS"] == "0"
+
+    def test_it_can_be_left_at_the_cli_default(self):
+        from radar.llm_cli import ClaudeCLIClient
+
+        env = ClaudeCLIClient(thinking_tokens=None)._child_env()
+        assert "MAX_THINKING_TOKENS" not in env
+
+    def test_a_budget_can_be_granted_for_hard_material(self):
+        from radar.llm_cli import ClaudeCLIClient
+
+        env = ClaudeCLIClient(thinking_tokens=2000)._child_env()
+        assert env["MAX_THINKING_TOKENS"] == "2000"
+
+    def test_the_rest_of_the_environment_survives(self, monkeypatch):
+        """The child still needs PATH and the user's home."""
+        from radar.llm_cli import ClaudeCLIClient
+
+        monkeypatch.setenv("RADAR_PROBE", "keep-me")
+        env = ClaudeCLIClient()._child_env()
+        assert env.get("RADAR_PROBE") == "keep-me"
+        assert "PATH" in env

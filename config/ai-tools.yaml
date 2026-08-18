@@ -1378,7 +1378,15 @@ delivery:
 # corpus built on one backend is not re-paid for on the other.
 llm:
   backend: auto        # auto | claude_cli | openrouter
-  timeout_seconds: 180
+  # Measured over a full run: 424k output tokens paid for, 74k of JSON
+  # actually parsed — 17% arrives. The rest is reasoning the pipeline never
+  # sees, and it is what pushed calls from 30 seconds to four minutes and
+  # into the timeout. Extraction returns structured events; it does not need
+  # room to think out loud.
+  max_output_tokens: 4000
+  # Above the largest legitimate call measured (165 s), so a timeout means a
+  # stuck process rather than work being cut off mid-answer.
+  timeout_seconds: 240
   max_schema_retries: 2
   # Concurrent batches, not concurrent records. One source is split into
   # batches of this size so a single large source stops being the tail:

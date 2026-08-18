@@ -114,36 +114,56 @@ def deliver(
         try:
             raw = surface.send_digest(signals)
             result = _outcome_of(raw, channel)
-        except (AttributeError, TypeError, NameError, ImportError):
+        except (AttributeError, TypeError, NameError, ImportError) as exc:
             # `TelegramSurface` did not exist and this line reported it as
-            # "канал недоступен" for as long as nobody looked.
+            # "канал недоступен" for as long as nobody looked. It is re-raised,
+            # but only after the attempt is recorded: a channel that vanishes
+            # without a line leaves the supervisor saying NEVER_DELIVERED with
+            # no reason attached.
+            result = ChannelResult(
+                channel, delivered=False, error=f"{type(exc).__name__}: {exc}"
+            )
+            _record(report, result, run_log, journal, channel, started, resolved_run,
+                    len(signals))
             raise
         except Exception as exc:
             result = ChannelResult(
                 channel, delivered=False, error=f"{type(exc).__name__}: {exc}"
             )
 
-        report.results.append(result)
-        duration = int((datetime.now(UTC) - started).total_seconds() * 1000)
-
-        if run_log is not None:
-            run_log.delivered(
-                channel=channel,
-                status="ok" if result.delivered else "failed",
-                message_id=result.message_id,
-                error=result.error,
-            )
-        if journal is not None:
-            journal.record(
-                EventKind.DELIVERY_SENT
-                if result.delivered
-                else EventKind.DELIVERY_FAILED,
-                actor="deliver",
-                target=channel,
-                outcome=Outcome.OK if result.delivered else Outcome.FAILED,
-                duration_ms=duration,
-                run_id_delivered=resolved_run,
-                signals=len(signals),
-                error=result.error,
-            )
+        _record(report, result, run_log, journal, channel, started, resolved_run,
+                len(signals))
     return report
+
+
+def _record(
+    report: DeliveryReport,
+    result: ChannelResult,
+    run_log: RunLog | None,
+    journal: Journal | None,
+    channel: str,
+    started: datetime,
+    run_id: str,
+    signals: int,
+) -> None:
+    """Write down one attempt, whatever its outcome."""
+    report.results.append(result)
+    duration = int((datetime.now(UTC) - started).total_seconds() * 1000)
+    if run_log is not None:
+        run_log.delivered(
+            channel=channel,
+            status="ok" if result.delivered else "failed",
+            message_id=result.message_id,
+            error=result.error,
+        )
+    if journal is not None:
+        journal.record(
+            EventKind.DELIVERY_SENT if result.delivered else EventKind.DELIVERY_FAILED,
+            actor="deliver",
+            target=channel,
+            outcome=Outcome.OK if result.delivered else Outcome.FAILED,
+            duration_ms=duration,
+            run_id_delivered=run_id,
+            signals=signals,
+            error=result.error,
+        )

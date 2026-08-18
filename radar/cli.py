@@ -11,6 +11,7 @@ Output is Russian because a person reads it; code and identifiers are English.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import date
 import os
 import sqlite3
@@ -102,6 +103,9 @@ class _CallLog:
         self._lock = threading.Lock()
         self.calls: list[dict[str, Any]] = []
         self.notes: list[str] = []
+        self.drops: list[dict[str, Any]] = []
+        self.sources: list[dict[str, Any]] = []
+        self.deliveries: list[dict[str, Any]] = []
 
     def model_call(self, **row: Any) -> None:
         with self._lock:
@@ -111,8 +115,84 @@ class _CallLog:
         with self._lock:
             self.notes.append(message)
 
+    # The rest of the RunLog surface. Implementing three methods out of nine
+    # cost four materials on a single run: enrichment calls `filtered()` to
+    # record why it dropped an event, and got AttributeError instead. The
+    # reason this class exists is thread safety of the sqlite connection, not
+    # a smaller interface, so everything else buffers the same way and is
+    # flushed from the main thread by `write`.
+    def filtered(
+        self,
+        url: str,
+        title: str,
+        reason_code: str,
+        stage: str,
+        note: str | None = None,
+    ) -> None:
+        with self._lock:
+            self.drops.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "reason_code": reason_code,
+                    "stage": stage,
+                    "note": note,
+                }
+            )
+
+    def source_result(self, source_id: str, status: Any, items_count: int = 0,
+                      latency_ms: int | None = None, error: str | None = None) -> None:
+        with self._lock:
+            self.sources.append(
+                {
+                    "source_id": source_id,
+                    "status": str(status),
+                    "items_count": items_count,
+                    "latency_ms": latency_ms,
+                    "error": error,
+                }
+            )
+
+    def delivered(self, channel: str, status: str, message_id: str | None = None,
+                  error: str | None = None) -> None:
+        with self._lock:
+            self.deliveries.append(
+                {"channel": channel, "status": status,
+                 "message_id": message_id, "error": error}
+            )
+
+    @contextmanager
+    def stage(self, name: str, in_count: int = 0):
+        """Accepted and ignored: staging belongs to the owning RunLog."""
+        record: dict[str, Any] = {"stage": name, "in_count": in_count, "out_count": 0}
+        yield record
+
+    def as_dict(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "calls": list(self.calls),
+                "notes": list(self.notes),
+                "filtered": list(self.drops),
+            }
+
+    def flush(self) -> None:
+        """No-op: this buffer is written once, by `write`."""
+
+    def finish(self, status: str = "ok") -> None:
+        """No-op: the owning RunLog closes the run."""
+
     def write(self, conn: sqlite3.Connection, run_id: str) -> tuple[int, int]:
-        """Persist the collected calls. Returns (tokens in, tokens out)."""
+        """Persist the collected rows. Returns (tokens in, tokens out)."""
+        with conn:
+            for drop in self.drops:
+                conn.execute(
+                    "INSERT INTO filtered_items (run_id, url, title, reason_code, "
+                    "reason_note, stage) VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(run_id, url, stage) DO UPDATE SET "
+                    "reason_code = excluded.reason_code",
+                    (run_id, drop["url"], drop["title"], drop["reason_code"],
+                     drop["note"], drop["stage"]),
+                )
         tokens_in = tokens_out = 0
         with conn:
             for row in self.calls:

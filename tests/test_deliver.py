@@ -325,3 +325,81 @@ class TestTheCommandsActuallyRun:
         with _pytest.raises(AttributeError):
             deliver(conn, {"telegram": Misspelled()}, RUN, journal)
         conn.close()
+
+
+class TestStandInSatisfiesTheRealInterface:
+    """Fifth instance of one class of error in a night, and the second one
+    that arrived inside a fix for the previous ones.
+
+    `_CallLog` stands in for `RunLog` so the sqlite connection stays on its
+    own thread. It implemented three methods out of nine, enrichment called
+    `filtered()` to record why it dropped an event, and four materials per run
+    disappeared into AttributeError while 1321 tests stayed green.
+    """
+
+    def test_it_implements_every_method_it_stands_in_for(self):
+        from radar.cli import _CallLog
+        from radar.runlog import RunLog
+
+        expected = {m for m in dir(RunLog) if not m.startswith("_")}
+        missing = sorted(m for m in expected if not hasattr(_CallLog, m))
+        assert missing == [], (
+            f"подставка не реализует {missing}: вызов такого метода станет "
+            "AttributeError посреди оплаченного прогона"
+        )
+
+    def test_the_call_it_actually_failed_on_works(self):
+        from radar.cli import _CallLog
+
+        log = _CallLog()
+        log.filtered(url="https://example.test/a", title="Заголовок",
+                     reason_code="unsupported_quantifier", stage="enrich")
+        assert log.drops
+
+    def test_buffered_drops_reach_the_database(self, tmp_path):
+        import sqlite3
+
+        from radar.cli import _CallLog
+        from radar.db import init_db
+
+        conn = init_db(tmp_path / "r.db")
+        conn.execute(
+            "INSERT INTO runs (run_id, started_at, status, for_date) "
+            "VALUES ('r1', '2026-08-18T00:00:00+00:00', 'running', '2026-08-18')"
+        )
+        conn.commit()
+
+        log = _CallLog()
+        log.filtered(url="https://example.test/a", title="Заголовок",
+                     reason_code="vendor_unresolved", stage="enrich")
+        log.write(conn, "r1")
+
+        rows = conn.execute(
+            "SELECT reason_code FROM filtered_items WHERE run_id = 'r1'"
+        ).fetchall()
+        conn.close()
+        assert rows and rows[0][0] == "vendor_unresolved"
+
+
+class TestABrokenChannelLeavesATrace:
+    def test_a_code_error_is_recorded_before_it_propagates(self, env):
+        """Raising before the record left the supervisor with
+        NEVER_DELIVERED and no reason attached."""
+        import pytest as _pytest
+
+        conn, journal = env
+        publish_signals(conn, RUN, [make_signal()])
+
+        class Misspelled:
+            name = "telegram"
+
+            def send_digest(self, signals):
+                return self.nope(signals)
+
+        with _pytest.raises(AttributeError):
+            deliver(conn, {"telegram": Misspelled()}, RUN, journal)
+
+        events = [e for e in journal.events(run_id=RUN)
+                  if e["kind"] == str(EventKind.DELIVERY_FAILED)]
+        assert events, "отказ канала не записан в журнал"
+        assert "AttributeError" in str(events[0]["payload"].get("error"))
