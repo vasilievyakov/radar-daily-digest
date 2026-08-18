@@ -220,7 +220,8 @@ def compute_delta(
     days = int(state["days_tracked"] or 1)
     # Same run seen twice must not inflate the counter: idempotent reruns are
     # explicitly allowed (PUB-5), and "third day" would quietly become fourth.
-    pass
+    if state["last_seen_run"] != run_id:
+        days += 1
 
     # New evidence is asked about before the closure flag, and deliberately.
     # Closure is an inference — the dates we know about are all behind us —

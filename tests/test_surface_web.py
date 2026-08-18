@@ -1856,3 +1856,54 @@ class TestMergingIsNotLosing:
         # It merges too, but it knows what it merged and records each one.
         view = self._view([("collapse", 46, 40)], 6)
         assert "причина записана у каждого" in web.funnel_sentence(view)
+
+
+class TestStorylinesWithNothingNewAreFolded:
+    """FR-5.3, written into DeltaOutcome.is_publishable and called by nobody.
+
+    The reader saw these cards yesterday; making them re-read the same list to
+    discover that nothing moved is the cost of not folding. The judgement is
+    the core's — `Signal.in_progress` — and the surface only decides where on
+    the page it sits.
+    """
+
+    def _items(self, fresh: int, ongoing: int):
+        out = []
+        for i in range(fresh):
+            out.append(make_lead_signal(
+                signal_id=f"new-{i}", rank=i + 1,
+                headline=f"Anthropic отключает модель {i}", in_progress=False,
+            ))
+        for i in range(ongoing):
+            out.append(make_lead_signal(
+                signal_id=f"old-{i}", rank=fresh + i + 1,
+                headline=f"Google продолжает отключение {i}", in_progress=True,
+            ))
+        return out
+
+    def test_the_folded_section_holds_the_unchanged(self):
+        html = web.render_digest(self._items(2, 3), today=date(2026, 8, 18))
+
+        assert '<details class="ongoing"' in html
+        assert "3 сюжета без изменений со вчера" in html
+        # Folded, never dropped: a storyline that vanishes reads as resolved.
+        assert "Google продолжает отключение 2" in html
+
+    def test_the_lead_is_never_a_continuation_when_there_is_news(self):
+        html = web.render_digest(self._items(1, 3), today=date(2026, 8, 18))
+        head = html.split('<details class="ongoing"', 1)[0]
+
+        assert "Anthropic отключает модель 0" in head
+        assert "Google продолжает отключение 0" not in head
+
+    def test_a_day_of_only_continuations_still_leads_with_one(self):
+        """An empty page above a closed fold is worse than an honest lead."""
+        html = web.render_digest(self._items(0, 3), today=date(2026, 8, 18))
+        head = html.split('<details class="ongoing"', 1)[0]
+
+        assert "Google продолжает отключение 0" in head
+        assert "2 сюжета без изменений" in html
+
+    def test_nothing_is_folded_when_everything_is_new(self):
+        html = web.render_digest(self._items(3, 0), today=date(2026, 8, 18))
+        assert "ongoing" not in html

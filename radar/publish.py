@@ -326,6 +326,7 @@ def build_signal(
     run_summary: RunSummary | None = None,
     run_log_url: str | None = None,
     created_at: datetime | None = None,
+    trend: dict[str, Any] | None = None,
 ) -> Signal:
     """Assemble one digest item.
 
@@ -337,7 +338,11 @@ def build_signal(
     due = choose_due_date(facts, for_date)
     # The count decides the label, never the model (FR-5.9, FR-6.17). Passed
     # in rather than read from a retriever so this function stays pure.
-    label = resolve_context_label(None, precedents) if retrieval is not None else None
+    label = (
+        resolve_context_label(None, precedents, in_trend=trend is not None)
+        if retrieval is not None
+        else None
+    )
 
     return Signal(
         signal_id=make_signal_id(run_id, cluster.cluster_id),
@@ -356,8 +361,13 @@ def build_signal(
         duplicates_count=cluster.duplicates_count,
         delta_status=delta.status if delta else None,
         delta_note=delta.note if delta else None,
+        in_progress=bool(delta is not None and not delta.is_publishable),
         days_tracked=delta.days_tracked if delta else 1,
         context_label=label,
+        # Populated at last. The field, the label `trend_member` and the
+        # rendering for both existed from the start and nothing ever wrote
+        # them: the daily run never consulted the trends table.
+        trend_id=str(trend["trend_id"]) if trend else None,
         precedents=precedents,
         retrieval=retrieval.report if retrieval else None,
         context_note=build_context_note(

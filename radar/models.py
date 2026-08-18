@@ -277,6 +277,13 @@ class Signal(BaseModel):
 
     delta_status: DeltaStatus | None = None
     delta_note: str | None = None
+    # A storyline seen before with nothing new to say. FR-5.3 puts these in a
+    # folded section rather than the main list: a reader who saw the card
+    # yesterday should not have to re-read it to find out nothing changed.
+    # The core decides — a surface may not judge significance (SUR-2) — and
+    # `DeltaOutcome.is_publishable` is where the judgement already lived,
+    # written, tested and called by nobody.
+    in_progress: bool = False
     days_tracked: int = 0
     context_label: ContextLabel | None = None
     trend_id: str | None = None

@@ -109,15 +109,24 @@ def filter_verified_facts(
 
 
 def resolve_context_label(
-    proposed: ContextLabel | None, precedents: list[Precedent]
+    proposed: ContextLabel | None,
+    precedents: list[Precedent],
+    in_trend: bool = False,
 ) -> ContextLabel:
-    """Force the label down to what the precedent list can carry (FR-5.9, FR-6.17).
+    """Force the label down to what the evidence can carry (FR-5.9, FR-6.17).
 
     A claim of recurrence needs at least two records. The model proposes; the
-    count decides.
+    count decides — and belonging to a recognised line is a stronger statement
+    than repetition, so it wins when the trends pass has accepted the cell.
+
+    `trend_member` existed in the enum, was rendered by all three surfaces and
+    was produced by nothing: `trend_id` was null on all 233 signals ever
+    published, because the daily run never consulted the trends table.
     """
     if len(precedents) < MIN_PRECEDENTS_FOR_PATTERN:
         return ContextLabel.NOT_FOUND_IN_CORPUS
+    if in_trend:
+        return ContextLabel.TREND_MEMBER
     if proposed is None or proposed is ContextLabel.NOT_FOUND_IN_CORPUS:
         return ContextLabel.RECURRING
     return proposed

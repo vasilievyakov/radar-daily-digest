@@ -79,6 +79,7 @@ DAY_FORMS = ("день", "дня", "дней")
 RECORD_FORMS = ("запись", "записи", "записей")
 SOURCE_FORMS = ("источник", "источника", "источников")
 MATERIAL_FORMS = ("материал", "материала", "материалов")
+STORY_FORMS = ("сюжет", "сюжета", "сюжетов")
 CALL_FORMS = ("вызов", "вызова", "вызовов")
 STATEMENT_FORMS = ("запись", "записи", "записей")
 
@@ -1689,9 +1690,46 @@ def _headline_for(
 
 
 def _items_body(items: list[Signal], today: date) -> str:
-    cards = [render_card(items[0], today, lead=True)]
-    cards += [render_card(signal, today, lead=False) for signal in items[1:]]
+    """New and changed first; storylines with nothing new to say are folded.
+
+    FR-5.3. The reader saw those cards yesterday and should not have to
+    re-read them to learn that nothing moved. The judgement is the core's —
+    `Signal.in_progress` — because a surface may not decide what matters
+    (SUR-2); the surface only decides where it sits on the page.
+
+    They are folded, never dropped: a storyline that quietly disappears is
+    indistinguishable from one that was resolved, and the count is stated on
+    the summary line so the arithmetic of the page still closes.
+    """
+    fresh = [s for s in items if not s.in_progress]
+    ongoing = [s for s in items if s.in_progress]
+
+    cards: list[str] = []
+    if fresh:
+        cards.append(render_card(fresh[0], today, lead=True))
+        cards += [render_card(signal, today, lead=False) for signal in fresh[1:]]
+    elif ongoing:
+        # Everything is a continuation. Rather than an empty page above a
+        # closed fold, the strongest of them leads and says what it is.
+        cards.append(render_card(ongoing[0], today, lead=True))
+        ongoing = ongoing[1:]
+
+    if ongoing:
+        folded = "\n".join(
+            render_card(signal, today, lead=False) for signal in ongoing
+        )
+        cards.append(
+            '<details class="ongoing">\n'
+            f"<summary>{esc(_ongoing_summary(len(ongoing)))}</summary>\n"
+            f"{folded}\n</details>"
+        )
     return "\n".join(cards)
+
+
+def _ongoing_summary(count: int) -> str:
+    return (
+        f"В работе: {count_phrase(count, STORY_FORMS)} без изменений со вчера"
+    )
 
 
 def _quiet_body(signal: Signal, today: date) -> str:

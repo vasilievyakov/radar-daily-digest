@@ -252,9 +252,22 @@ def save_trends(
     dormant_after: int = DEFAULT_DORMANT_AFTER,
     labels: dict[str, str] | None = None,
 ) -> int:
-    """Persist accepted candidates. Recomputed in full on every pass (FR-6.11)."""
+    """Persist accepted candidates. Recomputed in full on every pass (FR-6.11).
+
+    "In full" has to mean it. Two things were missing and both let the table
+    drift away from the corpus it summarises: `first_observed` was left out of
+    the upsert, so the oldest date froze at whatever the first pass saw — the
+    anthropic/deprecation line still said September 2024 while its own corpus
+    started in October 2025; and a cell that stopped qualifying kept its row,
+    so openai/deprecation went on claiming twenty-five members against
+    twenty-nine in the corpus and a cadence nobody had recomputed.
+
+    A line that no longer holds is deleted rather than left stale. The corpus
+    is append-only; this table is a derived view of it and owes it nothing.
+    """
     as_of = as_of or datetime.now(UTC).date()
     written = 0
+    keep = {candidate.trend_id for candidate in candidates}
     with conn:
         for candidate in candidates:
             record = candidate.as_record(
@@ -266,6 +279,7 @@ def save_trends(
                 "evidence_refs_json, updated_at) VALUES (?, ?, ?, json(?), json(?), ?, ?, ?, ?, "
                 "json(?), ?) ON CONFLICT(trend_id) DO UPDATE SET label = excluded.label, "
                 "member_ids_json = excluded.member_ids_json, "
+                "first_observed = excluded.first_observed, "
                 "last_observed = excluded.last_observed, cadence_days = excluded.cadence_days, "
                 "trajectory = excluded.trajectory, "
                 "evidence_refs_json = excluded.evidence_refs_json, "
@@ -289,6 +303,16 @@ def save_trends(
                 ),
             )
             written += 1
+
+        stale = [
+            row["trend_id"]
+            for row in conn.execute("SELECT trend_id FROM trends")
+            if row["trend_id"] not in keep
+        ]
+        if stale:
+            conn.executemany(
+                "DELETE FROM trends WHERE trend_id = ?", [(tid,) for tid in stale]
+            )
     return written
 
 
@@ -308,3 +332,32 @@ def _json(value: Any) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def active_trend(
+    conn: sqlite3.Connection,
+    vendor: str | None,
+    change_type: str | None,
+    as_of: date | None = None,
+) -> dict[str, Any] | None:
+    """The line this cell belongs to, if the trends pass accepted one.
+
+    Looked up by cell rather than by statement, because a card is written
+    before its own event reaches the corpus — `trend_for_statement` can only
+    answer for records already stored, which is never true of today's news.
+    A dormant or closed line is not offered: saying "part of a pattern" about
+    something that stopped happening claims more than the corpus supports.
+    """
+    if not vendor or not change_type:
+        return None
+    # The same derivation the writer uses. Spelling it "vendor:type" here
+    # would look right and match nothing.
+    row = conn.execute(
+        "SELECT * FROM trends WHERE trend_id = ?",
+        (digest("trend", vendor, change_type)[:20],),
+    ).fetchone()
+    if row is None:
+        return None
+    if str(row["trajectory"]) in {str(Trajectory.DORMANT), str(Trajectory.CLOSED)}:
+        return None
+    return dict(row)

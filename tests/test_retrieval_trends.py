@@ -11,6 +11,7 @@ from radar.trends import (
     find_candidates,
     save_trends,
     trend_for_statement,
+    active_trend,
 )
 
 NOW = datetime(2026, 8, 17, tzinfo=UTC)
@@ -366,4 +367,61 @@ def test_the_shipped_configs_do_not_undo_the_relaxed_groups():
         assert any("other" in pair for pair in pairs), (
             f"{path}: `other` не соседствует ни с одним типом, "
             "предупреждение о промахе не сработает"
+        )
+
+
+class TestATrendReachesTheCard:
+    """`trend_member` was in the enum, rendered by three surfaces, produced by
+    nothing: `trend_id` was null on all 233 signals ever published, because the
+    daily run never read the trends table."""
+
+    def _line(self, conn, vendor="anthropic", change_type="deprecation",
+              trajectory="steady"):
+        from radar.cache import digest
+
+        conn.execute(
+            "INSERT INTO trends (trend_id, label, vendor, change_types_json, "
+            "member_ids_json, first_observed, last_observed, cadence_days, "
+            "trajectory, evidence_refs_json, updated_at) VALUES "
+            "(?, 'линия', ?, json('[]'), json('[]'), '2026-01-01', '2026-08-01', "
+            "12.0, ?, json('[]'), '2026-08-18T00:00:00+00:00')",
+            (digest("trend", vendor, change_type)[:20], vendor, trajectory),
+        )
+        conn.commit()
+
+    def test_an_active_line_is_found_by_its_cell(self, db):
+        self._line(db)
+        assert active_trend(db, "anthropic", "deprecation") is not None
+
+    def test_a_dormant_line_is_not_offered(self, db):
+        self._line(db, trajectory="dormant")
+        assert active_trend(db, "anthropic", "deprecation") is None
+
+    def test_a_cell_with_no_line_answers_nothing(self, db):
+        self._line(db)
+        assert active_trend(db, "google", "deprecation") is None
+
+    def test_belonging_to_a_line_outranks_plain_recurrence(self):
+        from radar.assertions import resolve_context_label
+        from radar.models import ContextLabel, Precedent
+
+        precedents = [
+            Precedent(statement_id=f"p{i}", text="t",
+                      source_url="https://example.test/x", event_date=date(2026, 3, 1),
+                      vendor="anthropic", change_type=ChangeType.DEPRECATION)
+            for i in range(3)
+        ]
+        assert resolve_context_label(None, precedents) is ContextLabel.RECURRING
+        assert resolve_context_label(None, precedents, in_trend=True) is (
+            ContextLabel.TREND_MEMBER
+        )
+
+    def test_a_thin_corpus_still_wins_over_a_line(self):
+        """Two records remain the floor: a line does not license a claim the
+        precedents cannot carry."""
+        from radar.assertions import resolve_context_label
+        from radar.models import ContextLabel
+
+        assert resolve_context_label(None, [], in_trend=True) is (
+            ContextLabel.NOT_FOUND_IN_CORPUS
         )
