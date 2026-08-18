@@ -15,6 +15,7 @@ module imports no surface at all.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -28,8 +29,9 @@ from radar.db import publish_signals
 from radar.delta import compute_delta, prune_state, resolve_expired, save_state
 from radar.fetch import Fetcher
 from radar.journal import EventKind, Journal, Outcome
-from radar.models import Fact, Signal, Tier
+from radar.models import DatePrecision, Fact, FactKind, Signal, Tier
 from radar.publish import (
+    MONTHS_GENITIVE,
     build_quiet_day,
     build_run_failure,
     build_run_summary,
@@ -89,16 +91,218 @@ def _readable(slug: str) -> str:
     return words[:1].upper() + words[1:] if words else slug
 
 
-def _headline_for(cluster: Any, lead: Any) -> str:
-    """Prefer the extracted statement, fall back to the page title.
+# A headline is a claim about the event, and the only place the pipeline can
+# get one is the extracted statement: literary Russian, quantifier-checked,
+# every fact behind it verified. Three numbers tune how much of that statement
+# survives into the headline; nothing else in here is tunable.
+_HEADLINE_MIN_CHARS = 15
+# Above this a bracketed restatement of a model id is worth dropping: the id
+# stays in `summary` and in the affected_product facts either way.
+_HEADLINE_COMFORT_CHARS = 110
+# Above this a trailing dependent clause is worth dropping too.
+_HEADLINE_LONG_CHARS = 130
 
-    A source page title is the name of the whole changelog, identical for
-    every event on it; the statement names this change.
+# The core writes Russian. A candidate with no Cyrillic in it did not come
+# from the core's own formulation, which makes it raw source text — the name
+# of a changelog page, a release tag — and never a statement about an event.
+_CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+
+# A full stop ends a sentence and a semicolon separates two complete clauses;
+# both bound the first claim. The required whitespace after the mark is what
+# keeps the dots inside "v5.0.0-beta.8" and "gemini-2.5-pro" from counting.
+_CLAUSE_END_RE = re.compile(r"(?<=[.!?;])\s+")
+
+_PARENTHETICAL_RE = re.compile(r"\s*\([^()]{0,120}\)")
+
+# Gerund and participle endings, and the prepositions that open a dependent
+# tail. A comma followed by one of these is a clause boundary: cutting there
+# leaves a whole sentence standing. A comma followed by anything else — a bare
+# model id, a conjunction — sits inside an enumeration, and cutting there
+# would leave half a list.
+_DEPENDENT_TAIL_RE = re.compile(
+    r"^(?:[а-яё]{4,}(?:ая|яя|уя|юя|ые|ый|ое|ых)|с|со|для|при|без)\b",
+    re.IGNORECASE,
+)
+
+# The change type rendered as a predicate. Not a new judgement: the type is
+# the enricher's and already on the cluster, and this table only conjugates
+# the label the config gives it. Nothing here claims more than the type does —
+# "объявляет об отключении", not "отключает", because a deprecation is an
+# announcement and the shutdown is still ahead.
+_TYPE_PREDICATE: dict[str, tuple[str, str]] = {
+    "deprecation": ("объявляет об отключении", ""),
+    "breaking_change": ("вносит ломающее изменение", "в"),
+    "pricing": ("меняет цену", "на"),
+    "limits": ("меняет лимиты", "в"),
+    "security": ("публикует изменение в безопасности", "для"),
+    "release": ("выпускает", ""),
+    "other": ("сообщает об изменении", "в"),
+}
+
+_DATED_FACT_KINDS = {FactKind.SUNSET_DATE.value, FactKind.EFFECTIVE_DATE.value}
+# A year recovered from context is not a date a headline may state.
+_FIRM_PRECISIONS = {DatePrecision.DAY.value, DatePrecision.MONTH.value}
+
+
+def _reads_as_statement(text: str) -> bool:
+    """True when the text is the core's own Russian, not raw source material."""
+    return len(text) >= _HEADLINE_MIN_CHARS and bool(_CYRILLIC_RE.search(text))
+
+
+def _first_clause(text: str) -> str:
+    """The opening claim of a statement, whole."""
+    head = _CLAUSE_END_RE.split(text.strip(), maxsplit=1)[0]
+    return head.strip().strip(",;").rstrip(".").strip()
+
+
+def _tighten(clause: str) -> str:
+    """Drop what a headline can lose without losing the claim.
+
+    Two edits, both structural, both leaving a grammatical sentence behind: a
+    bracketed restatement of the id already named beside it, and a trailing
+    dependent clause. Neither is truncation — nothing is cut mid-thought and
+    no ellipsis is written. Everything dropped here is still in `summary` and
+    in the facts, which is where a surface goes for it.
     """
-    if lead is not None and lead.text.strip():
-        first = lead.text.strip().split(". ")[0].rstrip(".")
-        if 10 < len(first) <= 120:
-            return first
+    if len(clause) > _HEADLINE_COMFORT_CHARS and "(" in clause:
+        stripped = _PARENTHETICAL_RE.sub("", clause).strip()
+        if len(stripped) >= _HEADLINE_MIN_CHARS:
+            clause = stripped
+    if len(clause) > _HEADLINE_LONG_CHARS:
+        head, separator, tail = clause.rpartition(", ")
+        if separator and len(head) >= 40 and _DEPENDENT_TAIL_RE.match(tail):
+            clause = head.rstrip(" ,")
+    return clause
+
+
+def _headline_subject(lead: Any, facts: list[Fact]) -> str:
+    """What the change is about, taken from data and never guessed."""
+    product = getattr(lead, "product", None) if lead is not None else None
+    if product and str(product).strip():
+        return str(product).strip()
+    for fact in facts:
+        if str(fact.kind) == FactKind.AFFECTED_PRODUCT.value and fact.value.strip():
+            return fact.value.strip()
+    for fact in facts:
+        if fact.subject and fact.subject.strip():
+            return fact.subject.strip()
+    return ""
+
+
+def _headline_date(facts: list[Fact], subject: str) -> str:
+    """The deadline the subject carries, or nothing at all.
+
+    A date reaches a headline only when a fact holds it at day or month
+    precision, and only when it belongs to the subject the headline names.
+    Two models retired on two dates under one announcement is the ordinary
+    case in a deprecations registry, and lifting one of those dates onto a
+    headline about the other invents a deadline.
+    """
+    dated: list[tuple[date, Fact]] = []
+    for fact in facts:
+        parsed = fact.value_date
+        if parsed is None or str(fact.kind) not in _DATED_FACT_KINDS:
+            continue
+        if str(fact.date_precision) not in _FIRM_PRECISIONS:
+            continue
+        dated.append((parsed, fact))
+    if not dated:
+        return ""
+
+    owned = [
+        pair
+        for pair in dated
+        if subject and pair[1].subject and pair[1].subject.strip() == subject
+    ]
+    if owned:
+        when, chosen = min(owned, key=lambda pair: pair[0])
+    elif len({pair[0] for pair in dated}) == 1:
+        when, chosen = dated[0]
+    else:
+        # Several deadlines and no way to tell which one is this subject's.
+        return ""
+
+    month = MONTHS_GENITIVE[when.month - 1]
+    if str(chosen.date_precision) == DatePrecision.MONTH.value:
+        return f"с {month} {when.year} года"
+    return f"с {when.day} {month} {when.year} года"
+
+
+def _composed_headline(
+    cluster: Any,
+    lead: Any,
+    facts: list[Fact],
+    vendor_names: dict[str, str],
+    type_names: dict[str, str],
+) -> str:
+    """Who did what, with what — assembled from fields when no statement exists.
+
+    Reached when stage four produced facts but no usable statement. Every part
+    comes off the signal: the vendor and the change type off the cluster, the
+    subject off the lead or the affected_product facts, the date off a
+    verified fact.
+    """
+    change_type = str(cluster.change_type or "").strip()
+    vendor_slug = str(cluster.vendor or "").strip()
+    vendor = vendor_names.get(vendor_slug, "") or vendor_slug
+    subject = _headline_subject(lead, facts)
+    when = _headline_date(facts, subject)
+
+    if vendor:
+        predicate, preposition = _TYPE_PREDICATE.get(
+            change_type, _TYPE_PREDICATE["other"]
+        )
+        words = [vendor, predicate]
+        if subject:
+            if preposition:
+                words.append(preposition)
+            words.append(subject)
+        head = " ".join(words)
+    elif subject and change_type:
+        head = f"{type_names.get(change_type, change_type)}: {subject}"
+    else:
+        return ""
+
+    return f"{head} {when}" if when else head
+
+
+def _headline_for(
+    cluster: Any,
+    lead: Any,
+    facts: list[Fact] | None = None,
+    vendor_names: dict[str, str] | None = None,
+    type_names: dict[str, str] | None = None,
+) -> str:
+    """A claim about the event, never the name of the page it was found on.
+
+    A source page title names the whole changelog — "Model status", "Legacy
+    and end-of-life (EOL) models", "Schema changes for 2026-08-17" — is
+    identical for every event on it, and tells a reader deciding whether today
+    concerns him nothing at all. The extracted statement names this change, so
+    it goes first; with no statement the fields compose one. The title is
+    reached only by a cluster carrying no statement, no vendor, no change type
+    and no facts, which is a cluster with nothing in it.
+
+    The gate here used to reject any statement whose first sentence ran past
+    120 characters and fall straight through to the title. Sixteen of the
+    thirty-four headlines in the run of 2026-08-18 were page names for that
+    reason alone, and every one of them had a usable statement behind it.
+    """
+    facts = list(facts or [])
+    vendor_names = vendor_names or {}
+    type_names = type_names or {}
+
+    if lead is not None and str(getattr(lead, "text", "")).strip():
+        candidate = _tighten(_first_clause(str(lead.text)))
+        if _reads_as_statement(candidate):
+            return candidate
+
+    composed = _composed_headline(cluster, lead, facts, vendor_names, type_names)
+    if _reads_as_statement(composed):
+        return composed
+
+    # Nothing else exists on this cluster. A name is worse than a claim and
+    # better than a blank card.
     return cluster.title
 
 
@@ -409,7 +613,9 @@ class DailyRun:
             # every fact behind it verified. The page title and a slab of raw
             # changelog were standing in for it on the screen.
             lead = statements[0] if statements else None
-            headline = _headline_for(cluster, lead)
+            headline = _headline_for(
+                cluster, lead, facts, vendor_names, type_names
+            )
             # Named apart from `summary`, which is the RunSummary parameter of
             # this function: shadowing it silently replaced the run report
             # with a string and every signal failed validation.

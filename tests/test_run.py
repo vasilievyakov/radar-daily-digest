@@ -1,14 +1,24 @@
+import re
 from datetime import UTC, date, datetime
 
 import pytest
 
 from radar.adapters.base import CollectedItem
+from radar.cluster import Cluster
 from radar.config import ThemeConfig
 from radar.contracts import EnrichResult, RejectedFact
 from radar.db import init_db, read_signals
 from radar.fetch import FetchResult, Fetcher
-from radar.models import ChangeType, Fact, FactKind, SignalType
-from radar.run import DailyRun
+from radar.models import (
+    ChangeType,
+    DatePrecision,
+    EventStatement,
+    Fact,
+    FactKind,
+    SignalType,
+)
+from radar.run import DailyRun, _headline_for
+from radar.scoring import vendor_labels
 
 TODAY = date(2026, 8, 17)
 NOW = datetime(2026, 8, 17, 6, 0, tzinfo=UTC)
@@ -410,3 +420,244 @@ class TestCompletenessIsVisible:
                        for_date=TODAY, log_dir=str(tmp / "logs"))
         run.execute()
         assert not any("расширенный" in n for n in run.log.notes)
+
+
+class TestHeadlineIsAClaimAboutTheEvent:
+    """A headline names what changed, never the page it was found on.
+
+    The material below is verbatim from the run of 2026-08-18
+    (`20260818T005156-c52a20`), where sixteen of thirty-four headlines were
+    the names of source pages: "Model status - claude-opus-5" is the title of
+    the whole Anthropic deprecations registry and reads the same under every
+    event on it.
+    """
+
+    @staticmethod
+    def cluster_titled(title, vendor="anthropic", change_type="deprecation"):
+        item = CollectedItem(
+            url="https://docs.claude.com/en/docs/about-claude/model-deprecations",
+            title=title,
+            raw_text="",
+            raw_material_ref="cache/ref",
+            extra={"source_id": "anthropic_model_deprecations"},
+        )
+        return Cluster(
+            cluster_id="c1", dedup_key="d1", items=[item],
+            vendor=vendor, change_type=change_type,
+        )
+
+    @staticmethod
+    def statement(text, product=None, vendor="anthropic",
+                  change_type=ChangeType.DEPRECATION):
+        return EventStatement(
+            statement_id="st1", text=text, vendor=vendor, product=product,
+            change_type=change_type, source_url="https://docs.claude.com/x",
+            evidence="quote", ingested_at=NOW, ingest_mode="live",
+            extractor_model="model", prompt_version="extract-v2",
+            raw_material_ref="cache/ref",
+        )
+
+    def test_a_page_title_does_not_survive_a_usable_statement(self):
+        """The defect itself: rank 1 of the run, verbatim.
+
+        The statement ran to 129 characters, the gate accepted nothing over
+        120, and the page title went out under it.
+        """
+        title = "Model status - claude-opus-5"
+        headline = _headline_for(
+            self.cluster_titled(title),
+            self.statement(
+                "Anthropic уведомила разработчиков о предстоящем прекращении "
+                "работы модели Claude Opus 4.1 (claude-opus-4-1-20250805) в "
+                "Claude API. Модель будет отключена 5 августа 2026 года.",
+                product="Claude Opus 4.1",
+            ),
+            [sunset_fact()], {"anthropic": "Anthropic"}, {},
+        )
+        assert headline != title
+        assert "Model status" not in headline
+        assert "Anthropic" in headline
+        assert "Claude Opus 4.1" in headline
+        # The claim, not the second sentence and not the whole statement.
+        assert "будет отключена" not in headline
+
+    # Verbatim from the run: the page title on the left went out as the
+    # headline, the statement on the right was sitting behind it unused.
+    @pytest.mark.parametrize(
+        "title, vendor, change_type, statement_text",
+        [
+            (
+                "Model status - claude-opus-4-8", "anthropic", "deprecation",
+                "Anthropic уведомила разработчиков о предстоящем прекращении поддержки модели Claude Opus 4.1 (claude-opus-4-1-20250805) в Claude API.",
+            ),
+            (
+                "Legacy and end-of-life (EOL) models - Amazon", "aws", "deprecation",
+                "AWS Bedrock перемещает Claude 3 Haiku в состояние Legacy, с эффективной датой 10 марта 2026 года и датой снятия 10 сентября 2026 года.",
+            ),
+            (
+                "Model pricing - September 1, 2026", "anthropic", "pricing",
+                "Anthropic отменила плановое повышение цен на Claude Sonnet 5 с 2 долларов за миллион входных токенов и 10 долларов за миллион выходных до 3 и 15 долларов соответственно.",
+            ),
+            (
+                "Changes scheduled for 2027-01-01", "github", "breaking_change",
+                "GitHub удаляет поле databaseId из типов CheckAnnotation и Artifact в GraphQL API, рекомендуя использовать fullDatabaseId вместо него.",
+            ),
+            (
+                "Schema changes for 2026-08-17", "github", "deprecation",
+                "GitHub объявила об удалении поля type из типа CopilotAgentTask; разработчикам рекомендуется использовать codingAgentFilter и codingAgentTypeFilter.",
+            ),
+            (
+                "Gemini image models - gemini-3.1-flash-image", "google", "deprecation",
+                "Google объявила о снятии с поддержки трёх основных моделей Gemini 2.5 (gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite) 20 октября 2026 года.",
+            ),
+            (
+                "Veo models - veo-3.1-fast-generate-001", "google", "release",
+                "Google выпустила две новые модели для видеогенерации: veo-3.1-generate-001 и veo-3.1-fast-generate-001, доступные с 17 ноября 2025 года.",
+            ),
+            (
+                "v5.0.0-beta.8", "oh_my_openagent", "deprecation",
+                "Выпущена версия 5.0.0-beta.8 Oh My OpenAgent с поддержкой параллельного выполнения десятков агентов, входа через подписку Cursor и Grok 4.6 как модели по умолчанию.",
+            ),
+        ],
+    )
+    def test_no_page_title_from_the_run_reaches_a_headline(
+        self, title, vendor, change_type, statement_text
+    ):
+        headline = _headline_for(
+            self.cluster_titled(title, vendor, change_type),
+            self.statement(statement_text, vendor=vendor,
+                           change_type=ChangeType(change_type)),
+            [], vendor_labels(ThemeConfig.load("config/ai-tools.yaml").data), {},
+        )
+        assert headline != title
+        # Every statement the core writes is Russian; raw source text is not.
+        assert re.search(r"[а-яё]", headline, re.IGNORECASE)
+        assert len(headline) > 20
+
+    def test_a_cluster_without_a_statement_still_gets_a_claim(self):
+        """Enrichment can return facts and no statement. That used to print
+        the page name; it now says who did what, with what, and by when."""
+        headline = _headline_for(
+            self.cluster_titled("Model status - claude-opus-5"),
+            None, [sunset_fact()], {"anthropic": "Anthropic"}, {},
+        )
+        assert headline != "Model status - claude-opus-5"
+        assert "Anthropic" in headline
+        assert "claude-3-opus" in headline
+        assert "15 октября 2026" in headline
+
+    def test_a_deprecation_is_an_announcement_not_a_shutdown(self):
+        """The composed form may not claim more than the change type does."""
+        headline = _headline_for(
+            self.cluster_titled("Model status - claude-opus-5"),
+            None, [sunset_fact()], {"anthropic": "Anthropic"}, {},
+        )
+        assert "объявляет об отключении" in headline
+
+    def test_a_date_recovered_from_context_stays_out_of_the_headline(self):
+        """FR-4.4 in a headline: a guessed year is not a deadline to print."""
+        guessed = Fact(
+            kind=FactKind.SUNSET_DATE, value="2026-10-15",
+            source_url="https://docs.claude.com/deprecations",
+            evidence="будет отключена 15 октября", value_date=date(2026, 10, 15),
+            date_precision=DatePrecision.INFERRED, subject="claude-3-opus",
+            evidence_verified=True,
+        )
+        headline = _headline_for(
+            self.cluster_titled("Model status - claude-opus-5"),
+            None, [guessed], {"anthropic": "Anthropic"}, {},
+        )
+        assert "claude-3-opus" in headline
+        assert "2026" not in headline
+
+    def test_a_deadline_belonging_to_another_model_is_not_borrowed(self):
+        """One registry page carries two models retiring on two dates. Lifting
+        one of those dates onto a headline about the other invents it."""
+        def sunset(subject, when):
+            return Fact(
+                kind=FactKind.SUNSET_DATE, value=when.isoformat(),
+                source_url="https://docs.claude.com/deprecations",
+                evidence=f"{subject} retired", value_date=when,
+                subject=subject, evidence_verified=True,
+            )
+
+        headline = _headline_for(
+            self.cluster_titled("Model status - claude-opus-5"),
+            None,
+            [
+                Fact(kind=FactKind.AFFECTED_PRODUCT, value="claude-opus-4-1",
+                     source_url="https://docs.claude.com/deprecations",
+                     evidence="claude-opus-4-1", evidence_verified=True),
+                sunset("claude-sonnet-4", date(2026, 6, 15)),
+                sunset("claude-haiku-3", date(2026, 4, 20)),
+            ],
+            {"anthropic": "Anthropic"}, {},
+        )
+        assert "claude-opus-4-1" in headline
+        assert "июня" not in headline
+        assert "апреля" not in headline
+
+    def test_an_enumeration_is_never_cut_in_half(self):
+        """Rank 13 of the run: a comma-separated list of three model ids. The
+        shortening pass must not leave the reader with the first two."""
+        headline = _headline_for(
+            self.cluster_titled("Embeddings models - text-embedding-004",
+                                vendor="google"),
+            self.statement(
+                "Google объявляет об отключении трёх моделей семейства Gemini "
+                "2.5: gemini-2.5-pro, gemini-2.5-flash и gemini-2.5-flash-lite.",
+                vendor="google",
+            ),
+            [], {"google": "Google"}, {},
+        )
+        assert headline.endswith("gemini-2.5-flash-lite")
+
+    def test_the_headline_is_stored_whole_and_carries_no_markup(self):
+        """Truncation is a surface operation; the core stores the claim."""
+        headline = _headline_for(
+            self.cluster_titled("Model pricing - September 1, 2026",
+                                change_type="pricing"),
+            self.statement(
+                "Anthropic отменила плановое повышение цен на Claude Sonnet 5 с "
+                "2 долларов за миллион входных токенов и 10 долларов за миллион "
+                "выходных до 3 и 15 долларов соответственно.",
+                change_type=ChangeType.PRICING,
+            ),
+            [], {"anthropic": "Anthropic"}, {},
+        )
+        assert not headline.endswith("…")
+        assert not headline.endswith("...")
+        assert not re.search(r"[*_`#\[\]]", headline)
+        assert "соответственно" in headline
+
+    def test_the_run_stores_a_claim_when_the_source_page_has_an_english_title(
+        self, env, monkeypatch
+    ):
+        """End to end: the page title reaches the store only over the fix."""
+        conn, config, fetcher, tmp = env
+        title = "Model status - claude-opus-5"
+        items = [
+            CollectedItem(
+                url="https://docs.claude.com/en/docs/about-claude/"
+                    "model-deprecations#model-status",
+                title=title,
+                raw_text="claude-opus-4-1-20250805 will be retired "
+                         "August 5, 2026. " * 3,
+                event_date=date(2026, 8, 16),
+                raw_material_ref="cache/ref",
+                extra={"source_id": "anthropic_model_deprecations",
+                       "source_priority": 1},
+            )
+        ]
+
+        def collect_page_titled(cfg, f, run_log=None, mode="live",
+                                sources=None, max_workers=6):
+            return items, []
+
+        monkeypatch.setattr("radar.run.collect_all", collect_page_titled)
+        result = DailyRun(conn, config, fetcher, FakeEnricher([sunset_fact()]),
+                          for_date=TODAY, log_dir=str(tmp / "logs")).execute()
+        stored = read_signals(conn, result.run_id)
+        assert stored
+        assert stored[0].headline != title
+        assert re.search(r"[а-яё]", stored[0].headline, re.IGNORECASE)
