@@ -997,3 +997,49 @@ class TestAMaterialWithNothingInItIsNotACard:
         ).fetchall()
         assert rows
         assert all(row["reason_code"] == "нечего_извлечь" for row in rows)
+
+
+class TestALongHeadlineLosesOnlyItsTail:
+    """Two headlines ran to 191 and 252 characters — five lines on the card.
+
+    Both were lists of circumstances. The cut is structural, never mid-thought:
+    the earliest comma that leaves a whole claim standing. Taking the last one
+    instead cut inside the list and kept all 252 characters.
+    """
+
+    PRICE = (
+        "Anthropic сделал стандартной ценой Claude Sonnet 5 прежнее вводное "
+        "предложение в размере $2 за миллион входных токенов и $10 за миллион "
+        "выходных токенов, действовавшее до 31 августа 2026 года"
+    )
+    SECURITY = (
+        "Anthropic усилила защиту Claude Code, отклоняя пути с использованием "
+        "пространства имён Windows NT при удалённом чтении файлов, "
+        "восстановлении сеанса, включении CLAUDE.md, скриптах workflow и "
+        "загрузке файлов для предотвращения утечки учетных данных NTLM"
+    )
+
+    def test_a_trailing_participle_goes(self):
+        out = run_module._tighten(self.PRICE)
+        assert "действовавшее" not in out
+        assert out.endswith("выходных токенов")
+
+    def test_the_cut_is_the_earliest_comma_not_the_last(self):
+        out = run_module._tighten(self.SECURITY)
+        assert out == "Anthropic усилила защиту Claude Code"
+
+    def test_an_enumeration_of_products_is_never_split(self):
+        listing = (
+            "AWS Bedrock объявил об отключении модели AI21 Labs Jamba 1.5 Large, "
+            "Claude Opus 4.1 и Cohere Command R"
+        )
+        assert run_module._tighten(listing) == listing
+
+    def test_a_short_headline_is_left_alone(self):
+        short = "Google объявляет об отключении трёх моделей Veo 30 июня 2026 года"
+        assert run_module._tighten(short) == short
+
+    def test_nothing_is_cut_mid_thought(self):
+        for text in (self.PRICE, self.SECURITY):
+            out = run_module._tighten(text)
+            assert not out.endswith((",", "…", "...", " и", " с", " для"))

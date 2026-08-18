@@ -139,7 +139,12 @@ _PARENTHETICAL_RE = re.compile(r"\s*\([^()]{0,120}\)")
 # model id, a conjunction — sits inside an enumeration, and cutting there
 # would leave half a list.
 _DEPENDENT_TAIL_RE = re.compile(
-    r"^(?:[а-яё]{4,}(?:ая|яя|уя|юя|ые|ый|ое|ых)|с|со|для|при|без)\b",
+    # Participles and gerunds by ending, plus the prepositions that open a
+    # circumstantial phrase. "-ее" and "-ие" were missing, which is why
+    # "…, действовавшее до 31 августа 2026 года" stayed on a headline of 191
+    # characters.
+    r"^(?:[а-яё]{4,}(?:ая|яя|уя|юя|ые|ый|ое|ых|ее|ие|его|ей|ем|ую|ою|им|ыми|ими)"
+    r"|с|со|для|при|без|ради|вместо)\b",
     re.IGNORECASE,
 )
 
@@ -188,9 +193,17 @@ def _tighten(clause: str) -> str:
         if len(stripped) >= _HEADLINE_MIN_CHARS:
             clause = stripped
     if len(clause) > _HEADLINE_LONG_CHARS:
-        head, separator, tail = clause.rpartition(", ")
-        if separator and len(head) >= 40 and _DEPENDENT_TAIL_RE.match(tail):
-            clause = head.rstrip(" ,")
+        # The earliest comma that leaves a whole claim behind, not the last
+        # one. A headline listing five circumstances — "…, отклоняя пути …
+        # при удалённом чтении файлов, восстановлении сеанса, включении
+        # CLAUDE.md, скриптах workflow и загрузке файлов…" — has its last
+        # comma inside the list, so cutting there kept 252 characters of it.
+        for position, character in enumerate(clause):
+            if character != "," or not clause[position + 1 : position + 2] == " ":
+                continue
+            head, tail = clause[:position], clause[position + 2 :]
+            if len(head) >= _HEADLINE_MIN_CHARS and _DEPENDENT_TAIL_RE.match(tail):
+                return head.rstrip(" ,")
     return clause
 
 
