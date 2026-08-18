@@ -762,7 +762,7 @@ sources:
 
   # 100 релизов за год, 59 с разделами breaking changes, тела по 2900 знаков.
   - id: gh_microsoft_agent_framework
-    label: "Microsoft AI agent framework"
+    label: "microsoft/agent-framework"
     vendor: microsoft_ai
     type: github_releases
     url: https://github.com/microsoft/agent-framework
@@ -812,7 +812,7 @@ sources:
   # обращением к API, а не предположением.
 
   - id: gh_langgenius_dify
-    label: "dify langgenius dify"
+    label: "langgenius/dify"
     type: github_releases
     url: https://github.com/langgenius/dify
     vendor: dify
@@ -834,7 +834,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_graphify_labs_graphify
-    label: "graphify labs graphify"
+    label: "Graphify-Labs/graphify"
     type: github_releases
     url: https://github.com/Graphify-Labs/graphify
     vendor: graphify
@@ -867,7 +867,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_headroomlabs_ai_headroom
-    label: "headroom headroomlabs AI headroom"
+    label: "headroomlabs-ai/headroom"
     type: github_releases
     url: https://github.com/headroomlabs-ai/headroom
     vendor: headroom
@@ -878,7 +878,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_upstash_context7
-    label: "context7 upstash context7"
+    label: "upstash/context7"
     type: github_releases
     url: https://github.com/upstash/context7
     vendor: context7
@@ -889,7 +889,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_aaif_goose_goose
-    label: "goose aaif goose"
+    label: "aaif-goose/goose"
     type: github_releases
     url: https://github.com/aaif-goose/goose
     vendor: goose
@@ -900,7 +900,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_diegosouzapw_omniroute
-    label: "OmniRoute diegosouzapw omniroute"
+    label: "diegosouzapw/OmniRoute"
     type: github_releases
     url: https://github.com/diegosouzapw/OmniRoute
     vendor: omniroute
@@ -922,7 +922,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_google_gemini_gemini_cli
-    label: "Google gemini CLI"
+    label: "google-gemini/gemini-cli"
     type: github_releases
     url: https://github.com/google-gemini/gemini-cli
     vendor: google
@@ -933,7 +933,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_thedotmack_claude_mem
-    label: "claude-mem thedotmack claude mem"
+    label: "thedotmack/claude-mem"
     type: github_releases
     url: https://github.com/thedotmack/claude-mem
     vendor: claude_mem
@@ -944,7 +944,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_daytonaio_daytona
-    label: "daytona daytonaio daytona"
+    label: "daytonaio/daytona"
     type: github_releases
     url: https://github.com/daytonaio/daytona
     vendor: daytona
@@ -955,7 +955,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_ruvnet_ruflo
-    label: "ruflo ruvnet ruflo"
+    label: "ruvnet/ruflo"
     type: github_releases
     url: https://github.com/ruvnet/ruflo
     vendor: ruflo
@@ -966,7 +966,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_code_yeongyu_oh_my_openagent
-    label: "oh-my-openagent code yeongyu oh my openagent"
+    label: "code-yeongyu/oh-my-openagent"
     type: github_releases
     url: https://github.com/code-yeongyu/oh-my-openagent
     vendor: oh_my_openagent
@@ -977,7 +977,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_d4vinci_scrapling
-    label: "Scrapling d4vinci scrapling"
+    label: "D4Vinci/Scrapling"
     type: github_releases
     url: https://github.com/D4Vinci/Scrapling
     vendor: scrapling
@@ -988,7 +988,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_infiniflow_ragflow
-    label: "ragflow infiniflow ragflow"
+    label: "infiniflow/ragflow"
     type: github_releases
     url: https://github.com/infiniflow/ragflow
     vendor: ragflow
@@ -999,7 +999,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_farion1231_cc_switch
-    label: "cc-switch farion1231 cc switch"
+    label: "farion1231/cc-switch"
     type: github_releases
     url: https://github.com/farion1231/cc-switch
     vendor: cc_switch
@@ -1010,7 +1010,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_koala73_worldmonitor
-    label: "worldmonitor koala73 worldmonitor"
+    label: "koala73/worldmonitor"
     type: github_releases
     url: https://github.com/koala73/worldmonitor
     vendor: worldmonitor
@@ -1032,7 +1032,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_mintplex_labs_anything_llm
-    label: "anything-llm mintplex labs anything LLM"
+    label: "Mintplex-Labs/anything-llm"
     type: github_releases
     url: https://github.com/Mintplex-Labs/anything-llm
     vendor: anything_llm
@@ -1043,7 +1043,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_nousresearch_hermes_agent
-    label: "hermes-agent nousresearch hermes agent"
+    label: "NousResearch/hermes-agent"
     type: github_releases
     url: https://github.com/NousResearch/hermes-agent
     vendor: hermes_agent
@@ -1054,7 +1054,7 @@ sources:
     min_expected_items: 3
 
   - id: gh_affaan_m_ecc
-    label: "ECC affaan m ecc"
+    label: "affaan-m/ECC"
     type: github_releases
     url: https://github.com/affaan-m/ECC
     vendor: ecc
@@ -1076,7 +1076,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_dietrichgebert_ponytail
-    label: "ponytail dietrichgebert ponytail"
+    label: "DietrichGebert/ponytail"
     type: github_releases
     url: https://github.com/DietrichGebert/ponytail
     vendor: ponytail
@@ -1087,7 +1087,7 @@ sources:
     min_expected_items: 1
 
   - id: gh_panniantong_agent_reach
-    label: "Agent-Reach panniantong agent reach"
+    label: "Panniantong/Agent-Reach"
     type: github_releases
     url: https://github.com/Panniantong/Agent-Reach
     vendor: agent_reach
@@ -1100,7 +1100,7 @@ sources:
   # Релизов 2: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_thedaviddias_front_end_checklist
-    label: "Front-End-Checklist thedaviddias front end checklist"
+    label: "thedaviddias/Front-End-Checklist"
     type: github_releases
     url: https://github.com/thedaviddias/Front-End-Checklist
     vendor: front_end_checklist
@@ -1113,7 +1113,7 @@ sources:
   # Релизов 1: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_deepseek_ai_deepseek_harness
-    label: "deepseek-harness AI deepseek harness"
+    label: "deepseek-ai/deepseek-harness"
     type: github_releases
     url: https://github.com/deepseek-ai/deepseek-harness
     vendor: deepseek_harness
@@ -1126,7 +1126,7 @@ sources:
   # Релизов 1: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_bytedance_deer_flow
-    label: "deer-flow bytedance deer flow"
+    label: "bytedance/deer-flow"
     type: github_releases
     url: https://github.com/bytedance/deer-flow
     vendor: deer_flow
@@ -1139,7 +1139,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_snailclimb_javaguide
-    label: "JavaGuide snailclimb javaguide"
+    label: "Snailclimb/JavaGuide"
     type: github_releases
     url: https://github.com/Snailclimb/JavaGuide
     vendor: javaguide
@@ -1152,7 +1152,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_punkpeye_awesome_mcp_servers
-    label: "awesome-mcp-servers punkpeye awesome MCP servers"
+    label: "punkpeye/awesome-mcp-servers"
     type: github_releases
     url: https://github.com/punkpeye/awesome-mcp-servers
     vendor: awesome_mcp_servers
@@ -1165,7 +1165,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_composiohq_awesome_claude_skills
-    label: "awesome-claude-skills composiohq awesome claude skills"
+    label: "ComposioHQ/awesome-claude-skills"
     type: github_releases
     url: https://github.com/ComposioHQ/awesome-claude-skills
     vendor: awesome_claude_skills
@@ -1178,7 +1178,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_sansan0_trendradar
-    label: "TrendRadar sansan0 trendradar"
+    label: "sansan0/TrendRadar"
     type: github_releases
     url: https://github.com/sansan0/TrendRadar
     vendor: trendradar
@@ -1191,7 +1191,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_dair_ai_prompt_engineering_guide
-    label: "Prompt-Engineering-Guide dair AI prompt engineering guide"
+    label: "dair-ai/Prompt-Engineering-Guide"
     type: github_releases
     url: https://github.com/dair-ai/Prompt-Engineering-Guide
     vendor: prompt_engineering_guide
@@ -1204,7 +1204,7 @@ sources:
   # Релизов 0: датированной истории нет, источник ничего не отдаст.
   # Это подборка или учебный материал, а не продукт с журналом изменений.
   - id: gh_microsoft_ai_agents_for_beginners
-    label: "ai-agents-for-beginners microsoft AI agents for beginners"
+    label: "microsoft/ai-agents-for-beginners"
     type: github_releases
     url: https://github.com/microsoft/ai-agents-for-beginners
     vendor: ai_agents_for_beginners
@@ -1325,7 +1325,7 @@ sources:
 
   # --- Приоритет 3: GitHub Releases, полная история через пагинацию ---
   - id: gh_anthropics_claude_code
-    label: "Anthropic anthropics claude code"
+    label: "anthropics/claude-code"
     vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/claude-code
@@ -1336,7 +1336,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_openai_python
-    label: "OpenAI Python"
+    label: "openai/openai-python"
     vendor: openai
     type: github_releases
     url: https://github.com/openai/openai-python
@@ -1347,7 +1347,7 @@ sources:
     min_expected_items: 5
 
   - id: gh_anthropic_sdk_python
-    label: "Anthropic SDK Python"
+    label: "anthropics/anthropic-sdk-python"
     vendor: anthropic
     type: github_releases
     url: https://github.com/anthropics/anthropic-sdk-python
@@ -1359,7 +1359,7 @@ sources:
 
   # Релизится тегами пакетов, а не GitHub Releases: 2 за полгода, 7 за год.
   - id: gh_modelcontextprotocol_servers
-    label: "Model Context Protocol modelcontextprotocol servers"
+    label: "modelcontextprotocol/servers"
     vendor: mcp
     type: github_releases
     url: https://github.com/modelcontextprotocol/servers
