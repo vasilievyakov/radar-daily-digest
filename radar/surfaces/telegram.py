@@ -301,6 +301,23 @@ def _date_fact(signal: Signal) -> tuple[Fact, date, DatePrecision] | None:
     return None
 
 
+def _body_beside(headline: str, summary: str) -> str:
+    """Drop the body when it merely repeats the title next to it."""
+    def fold(value: str) -> str:
+        return _re_nonword.sub("", value or "").casefold()
+
+    a, b = fold(summary), fold(headline)
+    if not a or not b:
+        return summary
+    longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
+    if longer.startswith(shorter) and len(longer) - len(shorter) <= 3:
+        return ""
+    return summary
+
+
+_re_nonword = __import__("re").compile(r"[^\w]+")
+
+
 def _date_phrase(signal: Signal, today: date) -> str | None:
     found = _date_fact(signal)
     if found is None:
@@ -596,7 +613,10 @@ def _lead_parts(signal: Signal, today: date) -> _LeadParts:
     return _LeadParts(
         headline=signal.headline.strip(),
         date_phrase=_date_phrase(signal, today),
-        summary=_sentences(signal.summary),
+        # The store keeps the statement whole in both fields, so a
+        # single-sentence statement is the headline and the body at once. The
+        # web page learned not to print it twice; this surface had not.
+        summary=_sentences(_body_beside(signal.headline, signal.summary)),
         why=signal.why_it_matters.strip(),
         evidence=evidence,
         evidence_url=evidence_url,

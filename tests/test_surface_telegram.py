@@ -1049,3 +1049,40 @@ class TestARelativePathIsNotALink:
     def test_an_absolute_run_log_is_rendered_as_a_link(self):
         rendered = tg._link("https://radar.test/run-log.html", "Лог прогона")
         assert 'href="https://radar.test/run-log.html"' in rendered
+
+
+class TestTheMessageDoesNotRepeatItsOwnTitle:
+    """The store keeps the statement whole in headline and summary alike.
+
+    That is right for the store — a channel with one line takes the headline, a
+    channel with a paragraph takes the summary — but when the statement is a
+    single sentence the two fields hold the same string, and the message
+    printed it in bold and again below. The web page was taught this; the
+    channel that actually reaches the reader was not.
+    """
+
+    def test_a_repeated_sentence_is_printed_once(self):
+        sentence = (
+            "Anthropic сделал стандартной ценой Claude Sonnet 5 прежнее вводное "
+            "предложение в размере $2 за миллион входных токенов"
+        )
+        signal = lead_signal(headline=sentence, summary=sentence)
+
+        text = telegram.render_digest([signal], today=TODAY)
+        body = text if isinstance(text, str) else text.text
+
+        assert body.count("Anthropic сделал стандартной ценой") == 1
+
+    def test_a_summary_that_says_more_survives(self):
+        signal = lead_signal(
+            headline="Anthropic отключает claude-3-opus",
+            summary=(
+                "Anthropic отключает claude-3-opus. Замена — claude-opus-4-8, "
+                "миграция описана в документации."
+            ),
+        )
+
+        text = telegram.render_digest([signal], today=TODAY)
+        body = text if isinstance(text, str) else text.text
+
+        assert "Замена" in body
