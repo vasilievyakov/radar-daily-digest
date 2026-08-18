@@ -222,10 +222,11 @@ class _CallLog:
             for row in self.calls:
                 tokens_in += int(row.get("tokens_in", 0) or 0)
                 tokens_out += int(row.get("tokens_out", 0) or 0)
+                spent = float(row.get("cost_usd", 0.0) or 0.0)
                 conn.execute(
                     "INSERT INTO model_calls (call_id, run_id, stage, model, provider, "
-                    "tokens_in, tokens_out, cost_usd, cached, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tokens_in, tokens_out, cost_usd, cached, original_cost_usd, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         uuid.uuid4().hex,
                         run_id,
@@ -234,8 +235,13 @@ class _CallLog:
                         row.get("provider"),
                         int(row.get("tokens_in", 0) or 0),
                         int(row.get("tokens_out", 0) or 0),
-                        float(row.get("cost_usd", 0.0) or 0.0),
+                        spent,
                         int(bool(row.get("cached", False))),
+                        # This buffer is the path every CLI run takes, so a
+                        # column it does not forward is a column that is always
+                        # empty in practice: forty-four cache hits reported
+                        # "would have cost nothing".
+                        float(row.get("original_cost_usd", 0.0) or 0.0) or spent,
                         datetime.now(UTC).isoformat(),
                     ),
                 )

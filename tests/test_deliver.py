@@ -648,3 +648,43 @@ class TestTheReaderDecidesWhatWakesThem:
 
         assert keep == signals
         assert held == []
+
+
+class TestTheBufferForwardsWhatItWasGiven:
+    """`_CallLog` is the path every CLI run takes.
+
+    A column it does not forward is a column that is always empty in practice:
+    forty-four cache hits in one run reported "would have cost nothing", so the
+    page could not print the honest comparison it had just been taught to
+    print.
+    """
+
+    def test_the_would_have_cost_reaches_the_table(self, tmp_path):
+        from radar import cli
+
+        conn = init_db(tmp_path / "r.db")
+        log = cli._CallLog()
+        log.model_call(stage="enrich", model="haiku", tokens_in=10, tokens_out=5,
+                       cost_usd=0.0, cached=True, original_cost_usd=0.0137)
+        log.write(conn, "run-buf")
+
+        row = conn.execute(
+            "SELECT cost_usd, original_cost_usd FROM model_calls WHERE run_id = ?",
+            ("run-buf",),
+        ).fetchone()
+        assert row["cost_usd"] == 0.0
+        assert abs(row["original_cost_usd"] - 0.0137) < 1e-9
+
+    def test_a_live_call_reports_the_same_figure_twice(self, tmp_path):
+        from radar import cli
+
+        conn = init_db(tmp_path / "r.db")
+        log = cli._CallLog()
+        log.model_call(stage="filter", model="haiku", cost_usd=0.17, cached=False)
+        log.write(conn, "run-live")
+
+        row = conn.execute(
+            "SELECT cost_usd, original_cost_usd FROM model_calls WHERE run_id = ?",
+            ("run-live",),
+        ).fetchone()
+        assert row["original_cost_usd"] == row["cost_usd"] == 0.17
