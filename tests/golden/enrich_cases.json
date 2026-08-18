@@ -1,6 +1,6 @@
 {
-  "prompt_version": "extract-v1",
-  "note": "Fragments copied verbatim out of the warm http cache; the recorded responses are the shape the extraction prompt asks for. The test replays them through LlmEnricher with a stubbed backend, so what is under test is verification, normalization and dating, not the model.",
+  "prompt_version": "extract-v2",
+  "note": "Фрагменты скопированы дословно из тёплого HTTP-архива. Ответы записаны заново против промпта extract-v2: взяты из кэша ответов модели, ключ которого включает системный промпт и префикс, поэтому они получены именно этой версией, а не прежней. Поле expect — то, что конвейер делает из этих ответов, так что правка промпта и правка проверок обе измеряются, а не ощущаются. При перезаписи выяснилось, что слово today превращалось в дату прогона; это починено до записи, иначе набор закрепил бы дефект.",
   "cases": [
     {
       "id": "anthropic-opus-4-1-retirement",
@@ -15,31 +15,32 @@
       "response": {
         "events": [
           {
-            "statement": "Anthropic отключила модель Claude Opus 4.1 на Claude API. Разработчиков уведомили 5 июня 2026 года, отключение состоялось 5 августа 2026 года. Рекомендованная замена — claude-opus-4-8.",
+            "statement": "Anthropic объявила об отключении модели claude-opus-4-1-20250805 в Claude API с датой завершения 5 августа 2026 года. Рекомендуемой заменой является claude-opus-4-8.",
             "change_type": "deprecation",
             "event_date": "2026-06-05",
-            "event_date_text": "June 5, 2026",
+            "event_date_text": "",
             "product": "Claude Opus 4.1",
             "version": "claude-opus-4-1-20250805",
+            "vendor": "",
             "evidence": "This model was retired August 5, 2026.",
             "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2026-08-05",
-                "subject": "claude-opus-4-1-20250805",
-                "evidence": "This model was retired August 5, 2026."
-              },
-              {
-                "kind": "effective_date",
-                "value": "2026-06-05",
-                "subject": "claude-opus-4-1-20250805",
-                "evidence": "On June 5, 2026, Anthropic notified developers using Claude Opus 4.1"
-              },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-1-20250805",
                 "subject": "",
-                "evidence": "August 5, 2026 | claude-opus-4-1-20250805 | claude-opus-4-8"
+                "evidence": "claude-opus-4-1-20250805"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-05",
+                "subject": "claude-opus-4-1-20250805",
+                "evidence": "retired August 5, 2026"
+              },
+              {
+                "kind": "affected_product",
+                "value": "claude-opus-4-8",
+                "subject": "",
+                "evidence": "Recommended replacement claude-opus-4-8"
               }
             ]
           }
@@ -56,30 +57,28 @@
             "version": "claude-opus-4-1-20250805",
             "facts": [
               {
-                "kind": "sunset_date",
-                "value": "2026-08-05",
-                "value_date": "2026-08-05",
-                "date_precision": "day",
-                "subject": "claude-opus-4-1-20250805"
-              },
-              {
-                "kind": "effective_date",
-                "value": "2026-06-05",
-                "value_date": "2026-06-05",
-                "date_precision": "day",
-                "subject": "claude-opus-4-1-20250805"
-              },
-              {
                 "kind": "affected_product",
                 "value": "claude-opus-4-1-20250805",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-05",
+                "value_date": "2026-08-05",
+                "date_precision": "day",
+                "subject": "claude-opus-4-1-20250805"
               }
             ]
           }
         ],
-        "rejected": []
+        "rejected": [
+          [
+            "affected_product",
+            "evidence_not_in_source"
+          ]
+        ]
       }
     },
     {
@@ -95,71 +94,86 @@
       "response": {
         "events": [
           {
-            "statement": "Anthropic убрала быстрый режим для Claude Opus 4.6. Запросы с speed: \"fast\" выполняются на стандартной скорости и по стандартным ставкам, ошибка не возвращается.",
+            "statement": "Anthropic удалила режим быстрой обработки для Claude Opus 4.6. Запросы с параметром speed: \"fast\" теперь выполняются на стандартной скорости, тарифицируются по стандартным ставкам и не возвращают ошибку.",
             "change_type": "breaking_change",
             "event_date": "2026-06-29",
             "event_date_text": "June 29, 2026",
             "product": "Claude Opus 4.6",
-            "version": "claude-opus-4-6",
-            "evidence": "We've removed fast mode for Claude Opus 4.6.",
+            "version": "4.6",
+            "vendor": "",
+            "evidence": "We've removed fast mode for Claude Opus 4.6",
             "facts": [
-              {
-                "kind": "effective_date",
-                "value": "2026-06-29",
-                "subject": "claude-opus-4-6",
-                "evidence": "June 29, 2026"
-              },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-6",
                 "subject": "",
-                "evidence": "Requests to claude-opus-4-6 with speed: \"fast\" no longer run"
+                "evidence": "Requests to claude-opus-4-6 with speed: \"fast\""
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-06-29",
+                "subject": "fast mode removal for claude-opus-4-6",
+                "evidence": "June 29, 2026"
               }
             ]
           },
           {
-            "statement": "Anthropic подняла лимиты запросов на Claude API. Лимиты Sonnet и Haiku сравнялись с Opus на каждом уровне использования, а сами уровни сведены к трём: Start, Build и Scale.",
+            "statement": "Anthropic повысила ограничения частоты запросов в Claude API. Лимиты Claude Sonnet и Claude Haiku теперь соответствуют лимитам Claude Opus для каждого уровня использования, и уровни использования были консолидированы в три: Start, Build и Scale.",
             "change_type": "limits",
             "event_date": "2026-06-26",
             "event_date_text": "June 26, 2026",
             "product": "Claude API",
             "version": "",
-            "evidence": "We've raised rate limits across the Claude API.",
+            "vendor": "",
+            "evidence": "We've raised rate limits across the Claude API",
             "facts": [
               {
-                "kind": "limit",
-                "value": "три уровня использования: Start, Build, Scale",
+                "kind": "affected_product",
+                "value": "Claude Sonnet",
                 "subject": "",
-                "evidence": "usage tiers have been consolidated into three: Start, Build, and Scale"
+                "evidence": "Claude Sonnet and Claude Haiku rate limits now match Claude Opus"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Haiku",
+                "subject": "",
+                "evidence": "Claude Sonnet and Claude Haiku rate limits now match Claude Opus"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Opus",
+                "subject": "",
+                "evidence": "Claude Sonnet and Claude Haiku rate limits now match Claude Opus"
               },
               {
                 "kind": "effective_date",
                 "value": "2026-06-26",
-                "subject": "Claude API",
+                "subject": "rate limit increase",
                 "evidence": "June 26, 2026"
               }
             ]
           },
           {
-            "statement": "Anthropic объявила об отключении быстрого режима для Claude Opus 4.7 с 24 июля 2026 года. После удаления запросы к claude-opus-4-7 с speed: \"fast\" будут возвращать ошибку.",
+            "statement": "Anthropic объявила об отключении режима быстрой обработки для Claude Opus 4.7. После удаления 24 июля 2026 запросы с параметром speed: \"fast\" будут возвращать ошибку.",
             "change_type": "deprecation",
             "event_date": "2026-06-25",
             "event_date_text": "June 25, 2026",
             "product": "Claude Opus 4.7",
-            "version": "claude-opus-4-7",
+            "version": "4.7",
+            "vendor": "",
             "evidence": "We've deprecated fast mode for Claude Opus 4.7",
             "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2026-07-24",
-                "subject": "claude-opus-4-7",
-                "evidence": "with removal on July 24, 2026"
-              },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-7",
                 "subject": "",
-                "evidence": "requests to claude-opus-4-7 with speed: \"fast\" will return an error"
+                "evidence": "requests to claude-opus-4-7 with speed: \"fast\""
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-07-24",
+                "subject": "fast mode for claude-opus-4-7",
+                "evidence": "removal on July 24, 2026"
               }
             ]
           }
@@ -173,35 +187,39 @@
             "change_type": "breaking_change",
             "event_date": "2026-06-29",
             "date_precision": "day",
-            "version": "claude-opus-4-6",
+            "version": "4.6",
             "facts": [
-              {
-                "kind": "effective_date",
-                "value": "2026-06-29",
-                "value_date": "2026-06-29",
-                "date_precision": "day",
-                "subject": "claude-opus-4-6"
-              },
               {
                 "kind": "affected_product",
                 "value": "claude-opus-4-6",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
-              }
-            ]
-          },
-          {
-            "index": 1,
-            "vendor": "anthropic",
-            "change_type": "limits",
-            "event_date": "2026-06-26",
-            "date_precision": "day",
-            "version": null,
-            "facts": [
+              },
               {
-                "kind": "limit",
-                "value": "три уровня использования: Start, Build, Scale",
+                "kind": "effective_date",
+                "value": "2026-06-29",
+                "value_date": "2026-06-29",
+                "date_precision": "day",
+                "subject": "Claude Opus 4.6"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Haiku",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Opus",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
@@ -212,23 +230,6 @@
                 "value_date": "2026-06-26",
                 "date_precision": "day",
                 "subject": "Claude API"
-              }
-            ]
-          },
-          {
-            "index": 2,
-            "vendor": "anthropic",
-            "change_type": "deprecation",
-            "event_date": "2026-06-25",
-            "date_precision": "day",
-            "version": "claude-opus-4-7",
-            "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2026-07-24",
-                "value_date": "2026-07-24",
-                "date_precision": "day",
-                "subject": "claude-opus-4-7"
               },
               {
                 "kind": "affected_product",
@@ -236,8 +237,33 @@
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-07-24",
+                "value_date": "2026-07-24",
+                "date_precision": "day",
+                "subject": "Claude Opus 4.7"
               }
             ]
+          },
+          {
+            "index": 1,
+            "vendor": "anthropic",
+            "change_type": "limits",
+            "event_date": "2026-06-26",
+            "date_precision": "day",
+            "version": null,
+            "facts": []
+          },
+          {
+            "index": 2,
+            "vendor": "anthropic",
+            "change_type": "deprecation",
+            "event_date": "2026-06-25",
+            "date_precision": "day",
+            "version": "4.7",
+            "facts": []
           }
         ],
         "rejected": []
@@ -256,19 +282,26 @@
       "response": {
         "events": [
           {
-            "statement": "Cursor открыла хостинг кода Origin в раннем бета-доступе на всех платных тарифах. В первую версию вошли репозитории, пул-реквесты, просмотр кода и синхронизация с GitHub.",
+            "statement": "Cursor выпустил Origin в ранней бета-версии на всех платных планах. Функция позволяет хранить код с поддержкой репозиториев, pull request'ов, просмотра кода и синхронизации GitHub.",
             "change_type": "release",
-            "event_date": "",
-            "event_date_text": "",
+            "event_date": "2026-08-18",
+            "event_date_text": "today",
             "product": "Origin",
             "version": "",
-            "evidence": "Origin begins rolling out today in early beta on all paid plans.",
+            "vendor": "cursor",
+            "evidence": "Origin begins rolling out today in early beta on all paid plans",
             "facts": [
               {
                 "kind": "affected_product",
                 "value": "Origin",
                 "subject": "",
-                "evidence": "Cursor can now host your code."
+                "evidence": "Origin begins rolling out today in early beta"
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-08-18",
+                "subject": "Origin",
+                "evidence": "Origin begins rolling out today in early beta"
               }
             ]
           }
@@ -290,11 +323,23 @@
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-08-18",
+                "value_date": "2026-08-18",
+                "date_precision": "day",
+                "subject": "Origin"
               }
             ]
           }
         ],
-        "rejected": []
+        "rejected": [
+          [
+            "event_date",
+            "date_not_printed"
+          ]
+        ]
       }
     },
     {
@@ -310,18 +355,19 @@
       "response": {
         "events": [
           {
-            "statement": "GitHub поднял предел числа центров затрат до 1 000 на предприятие.",
+            "statement": "GitHub увеличила лимит центров затрат до 1000 на одно предприятие.",
             "change_type": "limits",
-            "event_date": "",
+            "event_date": "2026-06-26",
             "event_date_text": "Jun.26",
             "product": "GitHub Enterprise",
             "version": "",
+            "vendor": "github",
             "evidence": "Cost center limit increased to 1,000 per enterprise",
             "facts": [
               {
                 "kind": "limit",
-                "value": "1000 центров затрат на предприятие",
-                "subject": "",
+                "value": "1,000 per enterprise",
+                "subject": "Cost center limit",
                 "evidence": "Cost center limit increased to 1,000 per enterprise"
               }
             ]
@@ -340,10 +386,10 @@
             "facts": [
               {
                 "kind": "limit",
-                "value": "1000 центров затрат на предприятие",
+                "value": "1,000 per enterprise",
                 "value_date": null,
                 "date_precision": "day",
-                "subject": null
+                "subject": "Cost center limit"
               }
             ]
           }
@@ -364,25 +410,86 @@
       "response": {
         "events": [
           {
-            "statement": "Anthropic подняла предел вложений со 100 до 600 изображений или страниц PDF на запрос при работе с окном контекста в 1 млн токенов.",
+            "statement": "Anthropic выпустил 1M токен контекстного окна в общий доступ для Claude Opus 4.6 и Sonnet 4.6 по стандартной цене. Запросы свыше 200k токенов работают автоматически без заголовка бета-версии.",
+            "change_type": "release",
+            "event_date": "2026-03-13",
+            "event_date_text": "March 13, 2026",
+            "product": "Claude Opus 4.6, Claude Sonnet 4.6",
+            "version": "",
+            "vendor": "",
+            "evidence": "1M token context window is now generally available for Claude Opus 4.6 and Sonnet 4.6",
+            "facts": [
+              {
+                "kind": "affected_product",
+                "value": "Claude Opus 4.6",
+                "subject": "",
+                "evidence": "Claude Opus 4.6 and Sonnet 4.6 at standard pricing"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.6",
+                "subject": "",
+                "evidence": "Claude Opus 4.6 and Sonnet 4.6 at standard pricing"
+              },
+              {
+                "kind": "limit",
+                "value": "1M tokens context window",
+                "subject": "",
+                "evidence": "1M token context window is now generally available"
+              }
+            ]
+          },
+          {
+            "statement": "Anthropic удалил выделенные лимиты на 1M токены для всех поддерживаемых моделей. Стандартные лимиты аккаунта теперь применяются ко всем длинам контекста.",
+            "change_type": "breaking_change",
+            "event_date": "2026-03-13",
+            "event_date_text": "March 13, 2026",
+            "product": "Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 4.5, Claude Sonnet 4",
+            "version": "",
+            "vendor": "",
+            "evidence": "We've removed the dedicated 1M rate limits for all supported models",
+            "facts": [
+              {
+                "kind": "affected_product",
+                "value": "Claude Opus 4.6",
+                "subject": "",
+                "evidence": "removed the dedicated 1M rate limits for all supported models"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.6",
+                "subject": "",
+                "evidence": "removed the dedicated 1M rate limits for all supported models"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.5",
+                "subject": "",
+                "evidence": "removed the dedicated 1M rate limits for all supported models"
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4",
+                "subject": "",
+                "evidence": "removed the dedicated 1M rate limits for all supported models"
+              }
+            ]
+          },
+          {
+            "statement": "Anthropic увеличил лимит на медиа с 100 до 600 изображений или страниц PDF на запрос при использовании 1M токен контекстного окна.",
             "change_type": "limits",
             "event_date": "2026-03-13",
             "event_date_text": "March 13, 2026",
-            "product": "Claude API",
+            "product": "Claude (1M token context window)",
             "version": "",
-            "evidence": "raised the media limit from 100 to 600 images or PDF pages",
+            "vendor": "",
+            "evidence": "raised the media limit from 100 to 600 images or PDF pages per request",
             "facts": [
               {
                 "kind": "limit",
-                "value": "600 изображений или страниц PDF на запрос",
+                "value": "600 images or PDF pages per request",
                 "subject": "",
                 "evidence": "raised the media limit from 100 to 600 images or PDF pages"
-              },
-              {
-                "kind": "effective_date",
-                "value": "2026-03-13",
-                "subject": "media limit",
-                "evidence": "March 13, 2026"
               }
             ]
           }
@@ -391,28 +498,88 @@
       "expect": {
         "statements": [
           {
-            "index": 0,
+            "index": 1,
             "vendor": "anthropic",
-            "change_type": "limits",
+            "change_type": "breaking_change",
             "event_date": "2026-03-13",
             "date_precision": "day",
             "version": null,
             "facts": [
               {
-                "kind": "limit",
-                "value": "600 изображений или страниц PDF на запрос",
+                "kind": "affected_product",
+                "value": "Claude Opus 4.6",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
               },
               {
-                "kind": "effective_date",
-                "value": "2026-03-13",
-                "value_date": "2026-03-13",
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.6",
+                "value_date": null,
                 "date_precision": "day",
-                "subject": "media limit"
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.5",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Opus 4.6",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "Claude Sonnet 4.6",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "limit",
+                "value": "1M tokens context window",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "limit",
+                "value": "600 images or PDF pages per request",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
               }
             ]
+          },
+          {
+            "index": 0,
+            "vendor": "anthropic",
+            "change_type": "release",
+            "event_date": "2026-03-13",
+            "date_precision": "day",
+            "version": null,
+            "facts": []
+          },
+          {
+            "index": 2,
+            "vendor": "anthropic",
+            "change_type": "limits",
+            "event_date": "2026-03-13",
+            "date_precision": "day",
+            "version": null,
+            "facts": []
           }
         ],
         "rejected": []
@@ -431,31 +598,26 @@
       "response": {
         "events": [
           {
-            "statement": "Вводная цена Claude Sonnet 5 в 2 и 10 долларов за миллион токенов стала стандартной. Запланированное повышение до 3 и 15 долларов с 1 сентября 2026 года отменено.",
+            "statement": "Anthropic отменила запланированное повышение цен на Claude Sonnet 5 с 1 сентября 2026 года. Вводная цена в размере $2/$10 за MTok теперь становится стандартной ценой вместо ранее запланированного увеличения до $3/$15 за MTok.",
             "change_type": "pricing",
             "event_date": "2026-08-10",
             "event_date_text": "August 10, 2026",
             "product": "Claude Sonnet 5",
             "version": "",
-            "evidence": "is now the standard price",
+            "vendor": "anthropic",
+            "evidence": "introductory pricing for Claude Sonnet 5 ($2 / $10 per MTok) is now the standard price",
             "facts": [
               {
                 "kind": "price",
-                "value": "$2 / $10 за MTok",
-                "subject": "",
-                "evidence": "The introductory pricing for Claude Sonnet 5 ($2 / $10 per MTok)"
-              },
-              {
-                "kind": "price",
-                "value": "отменённое повышение до $3 / $15 за MTok",
-                "subject": "",
-                "evidence": "the previously scheduled increase to $3 / $15 per MTok"
-              },
-              {
-                "kind": "effective_date",
-                "value": "2026-08-10",
+                "value": "$2 per MTok (input), $10 per MTok (output)",
                 "subject": "Claude Sonnet 5",
-                "evidence": "August 10, 2026"
+                "evidence": "Claude Sonnet 5 ($2 / $10 per MTok) is now the standard price"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-09-01",
+                "subject": "запланированное повышение цены на Claude Sonnet 5",
+                "evidence": "previously scheduled increase to $3 / $15 per MTok on September 1, 2026 will not occur"
               }
             ]
           }
@@ -473,29 +635,24 @@
             "facts": [
               {
                 "kind": "price",
-                "value": "$2 / $10 за MTok",
+                "value": "$2 per MTok (input), $10 per MTok (output)",
                 "value_date": null,
-                "date_precision": "day",
-                "subject": null
-              },
-              {
-                "kind": "price",
-                "value": "отменённое повышение до $3 / $15 за MTok",
-                "value_date": null,
-                "date_precision": "day",
-                "subject": null
-              },
-              {
-                "kind": "effective_date",
-                "value": "2026-08-10",
-                "value_date": "2026-08-10",
                 "date_precision": "day",
                 "subject": "Claude Sonnet 5"
               }
             ]
           }
         ],
-        "rejected": []
+        "rejected": [
+          [
+            "sunset_date",
+            "evidence_too_long:16"
+          ],
+          [
+            "statement",
+            "evidence_too_long:16"
+          ]
+        ]
       }
     },
     {
@@ -511,31 +668,50 @@
       "response": {
         "events": [
           {
-            "statement": "OpenAI объявила об отключении устаревших моделей аудио, realtime и транскрибации. Разработчиков уведомили 20 июля 2026 года, модели отключат 20 января 2027 года.",
+            "statement": "OpenAI объявила об отключении моделей gpt-realtime, gpt-audio и gpt-4o-audio с API 20 января 2027 года. Разработчикам рекомендуется переходить на gpt-realtime-2.1 и gpt-audio-1.5.",
             "change_type": "deprecation",
             "event_date": "2026-07-20",
             "event_date_text": "July 20, 2026",
-            "product": "OpenAI Audio and Realtime API",
+            "product": "gpt-realtime, gpt-audio, gpt-4o-audio",
             "version": "",
-            "evidence": "removal from the API on January 20, 2027.",
+            "vendor": "openai",
+            "evidence": "notified developers using legacy audio, realtime, and transcription model families and snapshots of their deprecation and removal from the API on January 20, 2027",
             "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2027-01-20",
-                "subject": "gpt-realtime",
-                "evidence": "removal from the API on January 20, 2027."
-              },
               {
                 "kind": "affected_product",
                 "value": "gpt-realtime",
                 "subject": "",
-                "evidence": "Jan 20, 2027 | gpt-realtime | gpt-realtime-2.1"
+                "evidence": "gpt-realtime"
+              },
+              {
+                "kind": "affected_product",
+                "value": "gpt-audio",
+                "subject": "",
+                "evidence": "gpt-audio"
               },
               {
                 "kind": "affected_product",
                 "value": "gpt-4o-audio",
                 "subject": "",
-                "evidence": "Jan 20, 2027 | gpt-4o-audio | gpt-audio-1.5"
+                "evidence": "gpt-4o-audio"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "subject": "gpt-realtime",
+                "evidence": "Jan 20, 2027"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "subject": "gpt-audio",
+                "evidence": "Jan 20, 2027"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "subject": "gpt-4o-audio",
+                "evidence": "Jan 20, 2027"
               }
             ]
           }
@@ -552,15 +728,15 @@
             "version": null,
             "facts": [
               {
-                "kind": "sunset_date",
-                "value": "2027-01-20",
-                "value_date": "2027-01-20",
+                "kind": "affected_product",
+                "value": "gpt-realtime",
+                "value_date": null,
                 "date_precision": "day",
-                "subject": "gpt-realtime"
+                "subject": null
               },
               {
                 "kind": "affected_product",
-                "value": "gpt-realtime",
+                "value": "gpt-audio",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
@@ -571,11 +747,37 @@
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "value_date": "2027-01-20",
+                "date_precision": "day",
+                "subject": "gpt-realtime"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "value_date": "2027-01-20",
+                "date_precision": "day",
+                "subject": "gpt-audio"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-20",
+                "value_date": "2027-01-20",
+                "date_precision": "day",
+                "subject": "gpt-4o-audio"
               }
             ]
           }
         ],
-        "rejected": []
+        "rejected": [
+          [
+            "statement",
+            "evidence_too_long:24"
+          ]
+        ]
       }
     },
     {
@@ -591,25 +793,38 @@
       "response": {
         "events": [
           {
-            "statement": "Google назначила отключение gemini-2.0-flash на 1 июня 2026 года. Рекомендованная замена — gemini-3.6-flash.",
+            "statement": "Google прекращает поддержку моделей Gemini 2.0 Flash. Рекомендуемой заменой является Gemini 3.6 Flash.",
             "change_type": "deprecation",
             "event_date": "2026-06-01",
             "event_date_text": "June 1, 2026",
-            "product": "Gemini 2.0 Flash",
-            "version": "gemini-2.0-flash",
-            "evidence": "gemini-2.0-flash | February 5, 2025 | June 1, 2026 | gemini-3.6-flash",
+            "product": "Gemini 2.0",
+            "version": "",
+            "vendor": "google",
+            "evidence": "gemini-2.0-flash | February 5, 2025 | June 1, 2026",
             "facts": [
               {
-                "kind": "sunset_date",
-                "value": "2026-06-01",
+                "kind": "affected_product",
+                "value": "gemini-2.0-flash",
                 "subject": "gemini-2.0-flash",
-                "evidence": "gemini-2.0-flash | February 5, 2025 | June 1, 2026 | gemini-3.6-flash"
+                "evidence": "gemini-2.0-flash | February 5, 2025 | June 1, 2026"
               },
               {
                 "kind": "affected_product",
                 "value": "gemini-2.0-flash-001",
-                "subject": "",
+                "subject": "gemini-2.0-flash-001",
                 "evidence": "gemini-2.0-flash-001 | February 5, 2025 | June 1, 2026"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-06-01",
+                "subject": "gemini-2.0-flash",
+                "evidence": "June 1, 2026 | gemini-3.6-flash"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-06-01",
+                "subject": "gemini-2.0-flash-001",
+                "evidence": "June 1, 2026 | gemini-3.6-flash"
               }
             ]
           }
@@ -623,12 +838,12 @@
             "change_type": "deprecation",
             "event_date": "2026-06-01",
             "date_precision": "day",
-            "version": "gemini-2.0-flash",
+            "version": null,
             "facts": [
               {
-                "kind": "sunset_date",
-                "value": "2026-06-01",
-                "value_date": "2026-06-01",
+                "kind": "affected_product",
+                "value": "gemini-2.0-flash",
+                "value_date": null,
                 "date_precision": "day",
                 "subject": "gemini-2.0-flash"
               },
@@ -637,7 +852,21 @@
                 "value": "gemini-2.0-flash-001",
                 "value_date": null,
                 "date_precision": "day",
-                "subject": null
+                "subject": "gemini-2.0-flash-001"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-06-01",
+                "value_date": "2026-06-01",
+                "date_precision": "day",
+                "subject": "gemini-2.0-flash"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-06-01",
+                "value_date": "2026-06-01",
+                "date_precision": "day",
+                "subject": "gemini-2.0-flash-001"
               }
             ]
           }
@@ -658,31 +887,26 @@
       "response": {
         "events": [
           {
-            "statement": "OpenAI объявила об отключении платформы Evals. С 31 октября 2026 года существующие оценки станут доступны только для чтения, 30 ноября 2026 года панель и API будут отключены.",
+            "statement": "OpenAI объявила об устаревании платформы Evals. Существующие эвалюации станут доступны только для чтения с 31 октября 2026 года. Панель управления Evals и API будут отключены 30 ноября 2026 года.",
             "change_type": "deprecation",
             "event_date": "2026-06-03",
             "event_date_text": "June 3, 2026",
-            "product": "Evals",
+            "product": "Evals platform",
             "version": "",
-            "evidence": "Deprecation announced for the Evals platform.",
+            "vendor": "openai",
+            "evidence": "we notified developers using the Evals platform that the product is being deprecated",
             "facts": [
-              {
-                "kind": "effective_date",
-                "value": "2026-10-31",
-                "subject": "Evals",
-                "evidence": "Oct 31, 2026 | Existing evals become read-only."
-              },
               {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
-                "subject": "Evals",
-                "evidence": "The Evals dashboard and API are scheduled to shut down."
+                "subject": "Evals dashboard and API",
+                "evidence": "Nov 30, 2026 | The Evals dashboard and API are scheduled to shut down"
               },
               {
-                "kind": "affected_product",
-                "value": "Evals",
-                "subject": "",
-                "evidence": "Deprecation announced for the Evals platform."
+                "kind": "effective_date",
+                "value": "2026-10-31",
+                "subject": "existing evals become read-only",
+                "evidence": "Oct 31, 2026 | Existing evals become read-only"
               }
             ]
           }
@@ -699,25 +923,18 @@
             "version": null,
             "facts": [
               {
-                "kind": "effective_date",
-                "value": "2026-10-31",
-                "value_date": "2026-10-31",
-                "date_precision": "day",
-                "subject": "Evals"
-              },
-              {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
                 "value_date": "2026-11-30",
                 "date_precision": "day",
-                "subject": "Evals"
+                "subject": "Evals dashboard and API"
               },
               {
-                "kind": "affected_product",
-                "value": "Evals",
-                "value_date": null,
+                "kind": "effective_date",
+                "value": "2026-10-31",
+                "value_date": "2026-10-31",
                 "date_precision": "day",
-                "subject": null
+                "subject": "existing evals become read-only"
               }
             ]
           }
@@ -738,37 +955,62 @@
       "response": {
         "events": [
           {
-            "statement": "Anthropic выпустила Claude Fable 5 и Claude Mythos 5 для участников Project Glasswing. Обе модели по умолчанию работают с окном контекста в 1 млн токенов и выдают до 128 тысяч токенов.",
+            "statement": "Anthropic выпустила Claude Fable 5 (claude-fable-5) с поддержкой контекстного окна в 1M токенов, максимума 128k токенов на выходе и встроенной адаптивной мыслью.",
             "change_type": "release",
             "event_date": "2026-06-09",
             "event_date_text": "June 9, 2026",
             "product": "Claude Fable 5",
             "version": "claude-fable-5",
-            "evidence": "We've launched Claude Fable 5 (claude-fable-5)",
+            "vendor": "anthropic",
+            "evidence": "We've launched Claude Fable 5 (claude-fable-5), our most capable widely released model",
             "facts": [
               {
                 "kind": "version",
                 "value": "claude-fable-5",
                 "subject": "",
-                "evidence": "We've launched Claude Fable 5 (claude-fable-5)"
+                "evidence": "Claude Fable 5 (claude-fable-5)"
               },
               {
                 "kind": "limit",
-                "value": "1M token context window",
-                "subject": "",
-                "evidence": "Both models support a 1M token context window by default"
+                "value": "1M tokens",
+                "subject": "context window",
+                "evidence": "support a 1M token context window by default"
               },
               {
                 "kind": "limit",
-                "value": "128k max output tokens",
+                "value": "128k",
+                "subject": "max output tokens",
+                "evidence": "128k max output tokens"
+              }
+            ]
+          },
+          {
+            "statement": "Anthropic выпустила Claude Mythos 5 (claude-mythos-5) для участников Project Glasswing с поддержкой контекстного окна в 1M токенов, максимума 128k токенов на выходе и встроенной адаптивной мыслью.",
+            "change_type": "release",
+            "event_date": "2026-06-09",
+            "event_date_text": "June 9, 2026",
+            "product": "Claude Mythos 5",
+            "version": "claude-mythos-5",
+            "vendor": "anthropic",
+            "evidence": "Claude Mythos 5 (claude-mythos-5) for Project Glasswing participants",
+            "facts": [
+              {
+                "kind": "version",
+                "value": "claude-mythos-5",
                 "subject": "",
-                "evidence": "128k max output tokens, and always-on adaptive thinking"
+                "evidence": "Claude Mythos 5 (claude-mythos-5)"
               },
               {
-                "kind": "effective_date",
-                "value": "2026-06-09",
-                "subject": "Claude Fable 5",
-                "evidence": "June 9, 2026"
+                "kind": "limit",
+                "value": "1M tokens",
+                "subject": "context window",
+                "evidence": "support a 1M token context window by default"
+              },
+              {
+                "kind": "limit",
+                "value": "128k",
+                "subject": "max output tokens",
+                "evidence": "128k max output tokens"
               }
             ]
           }
@@ -793,26 +1035,49 @@
               },
               {
                 "kind": "limit",
-                "value": "1M token context window",
+                "value": "1M tokens",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": "context window"
+              },
+              {
+                "kind": "limit",
+                "value": "128k",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": "max output tokens"
+              },
+              {
+                "kind": "version",
+                "value": "claude-mythos-5",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
               },
               {
                 "kind": "limit",
-                "value": "128k max output tokens",
+                "value": "1M tokens",
                 "value_date": null,
                 "date_precision": "day",
-                "subject": null
+                "subject": "context window"
               },
               {
-                "kind": "effective_date",
-                "value": "2026-06-09",
-                "value_date": "2026-06-09",
+                "kind": "limit",
+                "value": "128k",
+                "value_date": null,
                 "date_precision": "day",
-                "subject": "Claude Fable 5"
+                "subject": "max output tokens"
               }
             ]
+          },
+          {
+            "index": 1,
+            "vendor": "anthropic",
+            "change_type": "release",
+            "event_date": "2026-06-09",
+            "date_precision": "day",
+            "version": "claude-mythos-5",
+            "facts": []
           }
         ],
         "rejected": []
@@ -831,20 +1096,15 @@
       "response": {
         "events": [
           {
-            "statement": "GitHub удалит поле databaseId у CheckAnnotation и Artifact в GraphQL API 1 января 2027 года. Вместо него следует использовать fullDatabaseId.",
+            "statement": "GitHub удалит поле databaseId из типа CheckAnnotation в GraphQL API. Вместо databaseId следует использовать fullDatabaseId, так как databaseId не поддерживает 64-битные целые числа со знаком.",
             "change_type": "breaking_change",
             "event_date": "2027-01-01",
             "event_date_text": "2027-01-01",
-            "product": "GitHub GraphQL API",
+            "product": "GraphQL API",
             "version": "",
+            "vendor": "github",
             "evidence": "databaseId will be removed. Use fullDatabaseId instead.",
             "facts": [
-              {
-                "kind": "effective_date",
-                "value": "2027-01-01",
-                "subject": "CheckAnnotation.databaseId",
-                "evidence": "Changes scheduled for 2027-01-01"
-              },
               {
                 "kind": "affected_product",
                 "value": "CheckAnnotation.databaseId",
@@ -852,10 +1112,34 @@
                 "evidence": "A change will be made to CheckAnnotation.databaseId."
               },
               {
+                "kind": "sunset_date",
+                "value": "2027-01-01",
+                "subject": "CheckAnnotation.databaseId",
+                "evidence": "Changes scheduled for 2027-01-01"
+              }
+            ]
+          },
+          {
+            "statement": "GitHub удалит поле databaseId из типа Artifact в GraphQL API. Вместо databaseId следует использовать fullDatabaseId, так как databaseId не поддерживает 64-битные целые числа со знаком.",
+            "change_type": "breaking_change",
+            "event_date": "2027-01-01",
+            "event_date_text": "2027-01-01",
+            "product": "GraphQL API",
+            "version": "",
+            "vendor": "github",
+            "evidence": "databaseId will be removed. Use fullDatabaseId instead.",
+            "facts": [
+              {
                 "kind": "affected_product",
                 "value": "Artifact.databaseId",
                 "subject": "",
                 "evidence": "A change will be made to Artifact.databaseId."
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-01",
+                "subject": "Artifact.databaseId",
+                "evidence": "Changes scheduled for 2027-01-01"
               }
             ]
           }
@@ -872,13 +1156,6 @@
             "version": null,
             "facts": [
               {
-                "kind": "effective_date",
-                "value": "2027-01-01",
-                "value_date": "2027-01-01",
-                "date_precision": "day",
-                "subject": "CheckAnnotation.databaseId"
-              },
-              {
                 "kind": "affected_product",
                 "value": "CheckAnnotation.databaseId",
                 "value_date": null,
@@ -886,13 +1163,36 @@
                 "subject": null
               },
               {
+                "kind": "sunset_date",
+                "value": "2027-01-01",
+                "value_date": "2027-01-01",
+                "date_precision": "day",
+                "subject": "CheckAnnotation.databaseId"
+              },
+              {
                 "kind": "affected_product",
                 "value": "Artifact.databaseId",
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2027-01-01",
+                "value_date": "2027-01-01",
+                "date_precision": "day",
+                "subject": "Artifact.databaseId"
               }
             ]
+          },
+          {
+            "index": 1,
+            "vendor": "github",
+            "change_type": "breaking_change",
+            "event_date": "2027-01-01",
+            "date_precision": "day",
+            "version": null,
+            "facts": []
           }
         ],
         "rejected": []
@@ -911,42 +1211,56 @@
       "response": {
         "events": [
           {
-            "statement": "Anthropic закрывает прежний Workbench в Claude Console, доступ прекращается 17 августа 2026 года. Сохранённые промпты, переменные и оценки в новом Workbench не поддерживаются.",
+            "statement": "Anthropic объявляет об отключении legacy Workbench в Claude Console с окончанием доступа 17 августа 2026 года. Сохранённые промпты, переменные и evals не поддерживаются в обновлённом Workbench.",
             "change_type": "deprecation",
             "event_date": "2026-07-17",
             "event_date_text": "July 17, 2026",
             "product": "Claude Console Workbench",
             "version": "",
-            "evidence": "being sunset with access ending on August 17, 2026.",
+            "vendor": "",
+            "evidence": "legacy Workbench (platform.claude.com/workbench) in the Claude Console is being sunset with access ending on August 17, 2026",
             "facts": [
               {
                 "kind": "sunset_date",
                 "value": "2026-08-17",
-                "subject": "Workbench",
-                "evidence": "being sunset with access ending on August 17, 2026."
+                "subject": "legacy Workbench",
+                "evidence": "access ending on August 17, 2026"
               }
             ]
           },
           {
-            "statement": "Anthropic отключает экспериментальные API работы с промптами 17 августа 2026 года. После удаления запросы к /v1/experimental/generate_prompt и соседним эндпоинтам вернут ошибку.",
+            "statement": "Anthropic прекращает поддержку экспериментальных API инструментов для промптов (/v1/experimental/generate_prompt, /v1/experimental/improve_prompt, /v1/experimental/templatize_prompt) с отключением 17 августа 2026 года.",
             "change_type": "deprecation",
             "event_date": "2026-07-17",
             "event_date_text": "July 17, 2026",
-            "product": "Prompt tools API",
+            "product": "Claude API experimental prompt tools",
             "version": "",
-            "evidence": "are being retired along with the Workbench on August 17, 2026.",
+            "vendor": "",
+            "evidence": "experimental prompt tools APIs for generating, improving, and templatizing prompts are being retired along with the Workbench on August 17, 2026",
             "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2026-08-17",
-                "subject": "Workbench",
-                "evidence": "are being retired along with the Workbench on August 17, 2026."
-              },
               {
                 "kind": "affected_product",
                 "value": "/v1/experimental/generate_prompt",
                 "subject": "",
-                "evidence": "/v1/experimental/generate_prompt"
+                "evidence": "/v1/experimental/generate_prompt, /v1/experimental/improve_prompt, and /v1/experimental/templatize_prompt"
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/improve_prompt",
+                "subject": "",
+                "evidence": "/v1/experimental/generate_prompt, /v1/experimental/improve_prompt, and /v1/experimental/templatize_prompt"
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/templatize_prompt",
+                "subject": "",
+                "evidence": "/v1/experimental/generate_prompt, /v1/experimental/improve_prompt, and /v1/experimental/templatize_prompt"
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-17",
+                "subject": "experimental prompt tools APIs",
+                "evidence": "being retired along with the Workbench on August 17, 2026"
               }
             ]
           }
@@ -967,7 +1281,35 @@
                 "value": "2026-08-17",
                 "value_date": "2026-08-17",
                 "date_precision": "day",
-                "subject": "Workbench"
+                "subject": "legacy Workbench"
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/generate_prompt",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/improve_prompt",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "affected_product",
+                "value": "/v1/experimental/templatize_prompt",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
+              },
+              {
+                "kind": "sunset_date",
+                "value": "2026-08-17",
+                "value_date": "2026-08-17",
+                "date_precision": "day",
+                "subject": "experimental prompt tools APIs"
               }
             ]
           },
@@ -978,25 +1320,19 @@
             "event_date": "2026-07-17",
             "date_precision": "day",
             "version": null,
-            "facts": [
-              {
-                "kind": "sunset_date",
-                "value": "2026-08-17",
-                "value_date": "2026-08-17",
-                "date_precision": "day",
-                "subject": "Workbench"
-              },
-              {
-                "kind": "affected_product",
-                "value": "/v1/experimental/generate_prompt",
-                "value_date": null,
-                "date_precision": "day",
-                "subject": null
-              }
-            ]
+            "facts": []
           }
         ],
-        "rejected": []
+        "rejected": [
+          [
+            "statement",
+            "evidence_too_long:17"
+          ],
+          [
+            "statement",
+            "evidence_too_long:21"
+          ]
+        ]
       }
     },
     {
@@ -1012,26 +1348,26 @@
       "response": {
         "events": [
           {
-            "statement": "OpenAI объявила об отключении Agent Builder 3 июня 2026 года. Продукт выключат 30 ноября 2026 года, ChatKit продолжит работать.",
+            "statement": "OpenAI объявила об устаревании продукта Agent Builder. Разработчикам уведомлено о прекращении поддержки продукта.",
             "change_type": "deprecation",
             "event_date": "2026-06-03",
             "event_date_text": "June 3, 2026",
             "product": "Agent Builder",
             "version": "",
-            "vendor": "OpenAI",
-            "evidence": "Deprecation announced for Agent Builder.",
+            "vendor": "openai",
+            "evidence": "we notified developers using Agent Builder that the product is being deprecated",
             "facts": [
+              {
+                "kind": "effective_date",
+                "value": "2026-06-03",
+                "subject": "Agent Builder",
+                "evidence": "On June 3, 2026, we notified developers"
+              },
               {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
                 "subject": "Agent Builder",
-                "evidence": "Nov 30, 2026 | Agent Builder is scheduled to shut down."
-              },
-              {
-                "kind": "affected_product",
-                "value": "Agent Builder",
-                "subject": "",
-                "evidence": "Deprecation announced for Agent Builder."
+                "evidence": "Nov 30, 2026 | Agent Builder is scheduled to shut down"
               }
             ]
           }
@@ -1048,18 +1384,18 @@
             "version": null,
             "facts": [
               {
+                "kind": "effective_date",
+                "value": "2026-06-03",
+                "value_date": "2026-06-03",
+                "date_precision": "day",
+                "subject": "Agent Builder"
+              },
+              {
                 "kind": "sunset_date",
                 "value": "2026-11-30",
                 "value_date": "2026-11-30",
                 "date_precision": "day",
                 "subject": "Agent Builder"
-              },
-              {
-                "kind": "affected_product",
-                "value": "Agent Builder",
-                "value_date": null,
-                "date_precision": "day",
-                "subject": null
               }
             ]
           }
@@ -1080,25 +1416,26 @@
       "response": {
         "events": [
           {
-            "statement": "Cursor открыла хостинг кода Origin в раннем бета-доступе на всех платных тарифах.",
+            "statement": "Cursor выпустил Origin, функцию для размещения кода, которая начала развёртываться в ранней бета-версии на все платные тарифы. Функция включает репозитории, pull request'ы, просмотр кода и синхронизацию с GitHub.",
             "change_type": "release",
             "event_date": "2026-08-17",
-            "event_date_text": "",
+            "event_date_text": "today",
             "product": "Origin",
             "version": "",
+            "vendor": "cursor",
             "evidence": "Origin begins rolling out today in early beta on all paid plans.",
             "facts": [
               {
                 "kind": "affected_product",
                 "value": "Origin",
                 "subject": "",
-                "evidence": "Cursor can now host your code."
+                "evidence": "Origin begins rolling out today in early beta"
               },
               {
-                "kind": "price",
-                "value": "$999 в месяц на всех платных тарифах",
-                "subject": "",
-                "evidence": "all paid plans now cost $999 per month"
+                "kind": "effective_date",
+                "value": "2026-08-17",
+                "subject": "Origin",
+                "evidence": "Origin begins rolling out today in early beta"
               }
             ]
           }
@@ -1120,16 +1457,18 @@
                 "value_date": null,
                 "date_precision": "day",
                 "subject": null
+              },
+              {
+                "kind": "effective_date",
+                "value": "2026-08-17",
+                "value_date": "2026-08-17",
+                "date_precision": "day",
+                "subject": "Origin"
               }
             ]
           }
         ],
-        "rejected": [
-          [
-            "price",
-            "evidence_not_in_source"
-          ]
-        ]
+        "rejected": []
       }
     },
     {
@@ -1198,6 +1537,13 @@
                 "value_date": "2027-04-01",
                 "date_precision": "day",
                 "subject": "text-embedding-005"
+              },
+              {
+                "kind": "version",
+                "value": "text-embedding-005",
+                "value_date": null,
+                "date_precision": "day",
+                "subject": null
               }
             ]
           },
@@ -1208,15 +1554,7 @@
             "event_date": "2024-11-18",
             "date_precision": "day",
             "version": "text-embedding-005",
-            "facts": [
-              {
-                "kind": "version",
-                "value": "text-embedding-005",
-                "value_date": null,
-                "date_precision": "day",
-                "subject": null
-              }
-            ]
+            "facts": []
           }
         ],
         "rejected": []
@@ -1278,6 +1616,5 @@
       }
     }
   ],
-  "recorded_against": "extract-v1",
-  "stale_note": "Ожидания записаны на промпте extract-v1, до трёх правок, найденных живым прогоном: разделение событий по затронутым объектам, подстановка даты сбора вместо даты анонса, обнуление верных дат защитой после перехода на haiku. До перезаписи на живых вызовах набор проверяет форму разбора, а не содержание ответов текущего промпта."
+  "recorded_against": "extract-v2"
 }
