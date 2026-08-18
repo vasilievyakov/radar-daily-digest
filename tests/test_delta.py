@@ -140,6 +140,20 @@ class TestUpdated:
         assert outcome.status is DeltaStatus.CONTINUING
 
 
+def store(db, cluster, facts, run="run-1", as_of=TODAY):
+    """Put a cluster into the operational layer with the facts it carries."""
+    outcome = compute_delta(db, cluster, facts, run, as_of)
+    save_state(db, cluster, facts, outcome, run, as_of)
+    return outcome
+
+
+def resolved_at(db, cluster):
+    return db.execute(
+        "SELECT resolved_at FROM clusters WHERE cluster_id = ?",
+        (cluster.cluster_id,),
+    ).fetchone()[0]
+
+
 class TestResolution:
     def test_a_passed_sunset_date_closes_the_story(self, db):
         cluster = make_cluster()
@@ -192,6 +206,182 @@ class TestResolution:
             compute_delta(db, cluster, facts, "run-2", TODAY).status
             is DeltaStatus.RESOLVED
         )
+
+
+class TestWhatCloses:
+    """A story is over when there is nothing left ahead of it.
+
+    The rule is the latest of the dates the cluster carries, not any of them.
+    A cluster's facts accumulate across runs and across the sections of one
+    page, so "any date" reads the retirement of a neighbouring table row as
+    the end of this story.
+    """
+
+    def test_one_expired_date_among_later_ones_does_not_close_it(self, db):
+        """The defect, stated as a test: 27 of 34 cards were closed by this."""
+        cluster = make_cluster()
+        facts = [
+            fact(FactKind.SUNSET_DATE, "2024-11-06"),
+            fact(FactKind.SUNSET_DATE, "2026-08-05"),
+            fact(FactKind.SUNSET_DATE, "2027-07-24"),
+        ]
+        store(db, cluster, facts)
+        assert resolve_expired(db, TODAY) == []
+
+    def test_a_story_closes_once_the_last_date_is_behind_us(self, db):
+        cluster = make_cluster()
+        facts = [
+            fact(FactKind.SUNSET_DATE, "2024-11-06"),
+            fact(FactKind.SUNSET_DATE, "2026-08-05"),
+        ]
+        store(db, cluster, facts)
+        assert resolve_expired(db, date(2026, 8, 5)) == []
+        assert resolve_expired(db, date(2026, 8, 6)) == [cluster.cluster_id]
+
+    def test_the_day_the_deadline_arrives_the_story_is_still_open(self, db):
+        """A page cannot say "сегодня" and "история закрыта" in one breath.
+
+        The date arriving is the most useful morning this card ever has; it
+        closes the morning after.
+        """
+        cluster = make_cluster()
+        facts = [fact(FactKind.SUNSET_DATE, TODAY.isoformat())]
+        store(db, cluster, facts)
+        assert resolve_expired(db, TODAY) == []
+        assert resolve_expired(db, TOMORROW) == [cluster.cluster_id]
+
+    def test_a_deadline_tomorrow_is_not_a_closed_story(self, db):
+        """Cohere Command R, from the run of 18 August 2026.
+
+        The card announced a shutdown on the 19th and carried a February
+        `effective_date` from an earlier day of the same table. The old rule
+        read February, closed the story, and the page said "19 августа,
+        завтра" and "история закрыта" one under the other.
+        """
+        cluster = make_cluster(title="Legacy and end-of-life (EOL) models - Cohere")
+        facts = [
+            fact(FactKind.EFFECTIVE_DATE, "2026-02-19"),
+            fact(FactKind.SUNSET_DATE, "2026-08-19"),
+        ]
+        store(db, cluster, facts)
+        assert resolve_expired(db, date(2026, 8, 18)) == []
+
+    def test_a_future_effective_date_holds_the_story_open(self, db):
+        """Why the kind of date does not decide it.
+
+        Judging on `sunset_date` alone looks stricter and is not: this card's
+        own date is the October release, and the passed sunsets belong to the
+        neighbouring rows of the same deprecation table.
+        """
+        cluster = make_cluster(title="Model status - claude-haiku-4-5-20251001")
+        facts = [
+            fact(FactKind.SUNSET_DATE, "2026-08-05"),
+            fact(FactKind.EFFECTIVE_DATE, "2026-10-15"),
+        ]
+        store(db, cluster, facts)
+        assert resolve_expired(db, TODAY) == []
+
+    def test_a_story_with_no_date_at_all_is_never_closed_here(self, db):
+        """A release note carries a version and no date. Silence is not
+        completion; it leaves the layer through `prune_state`."""
+        cluster = make_cluster(title="v2.1.234")
+        store(db, cluster, [fact(FactKind.VERSION, "2.1.234")])
+        assert resolve_expired(db, TODAY) == []
+        assert resolve_expired(db, TODAY + timedelta(days=365)) == []
+
+    def test_an_unreadable_date_does_not_hold_a_finished_story_open(self, db):
+        cluster = make_cluster()
+        facts = [
+            fact(FactKind.SUNSET_DATE, "дата в источнике не указана"),
+            fact(FactKind.SUNSET_DATE, "2026-08-01"),
+        ]
+        store(db, cluster, facts)
+        assert resolve_expired(db, TODAY) == [cluster.cluster_id]
+
+    def test_closing_is_recorded_once(self, db):
+        cluster = make_cluster()
+        store(db, cluster, [fact(FactKind.SUNSET_DATE, "2026-08-01")])
+        assert resolve_expired(db, TODAY) == [cluster.cluster_id]
+        assert resolve_expired(db, TOMORROW) == []
+
+
+class TestReopening:
+    """A closed story that speaks again is open again.
+
+    The closure is an inference from the dates on file; a fresh fact is an
+    observation made this morning. Checking the flag before the facts made the
+    inference permanent and unfalsifiable.
+    """
+
+    def test_a_new_fact_on_a_closed_story_is_reported(self, db):
+        cluster = make_cluster()
+        old = [fact(FactKind.SUNSET_DATE, "2026-08-01")]
+        store(db, cluster, old)
+        resolve_expired(db, TODAY)
+
+        outcome = compute_delta(
+            db,
+            cluster,
+            [*old, fact(FactKind.SUNSET_DATE, "2027-03-01")],
+            "run-2",
+            TODAY,
+        )
+        assert outcome.status is DeltaStatus.UPDATED
+        assert [f.value for f in outcome.new_facts] == ["2027-03-01"]
+        assert "2027-03-01" in outcome.note
+
+    def test_a_wrongly_closed_story_can_come_back_to_life(self, db):
+        """The second-order defect: closed once meant closed forever.
+
+        A card closed in error had no way back — the resolved branch returned
+        before the new facts were looked at, so tomorrow's announcement could
+        never reach the reader.
+        """
+        cluster = make_cluster()
+        old = [fact(FactKind.SUNSET_DATE, "2027-07-24")]
+        store(db, cluster, old)
+        # closed by hand, the way the old rule would have closed it
+        db.execute("UPDATE clusters SET resolved_at = ?", (TODAY.isoformat(),))
+        db.commit()
+
+        fresh = [*old, fact(FactKind.EFFECTIVE_DATE, "2026-12-01")]
+        outcome = compute_delta(db, cluster, fresh, "run-2", TOMORROW)
+        assert outcome.status is DeltaStatus.UPDATED
+        save_state(db, cluster, fresh, outcome, "run-2", TOMORROW)
+        assert resolved_at(db, cluster) is None
+        # and the next quiet morning does not silently fall back to closed
+        assert (
+            compute_delta(db, cluster, fresh, "run-3", TOMORROW).status
+            is DeltaStatus.CONTINUING
+        )
+
+    def test_a_story_that_stays_finished_closes_again_the_same_run(self, db):
+        """Reopening is not a leak: `resolve_expired` runs after `save_state`
+        in the same stage and re-earns the closure at once."""
+        cluster = make_cluster()
+        old = [fact(FactKind.SUNSET_DATE, "2026-08-01")]
+        store(db, cluster, old)
+        resolve_expired(db, TODAY)
+
+        fresh = [*old, fact(FactKind.EFFECTIVE_DATE, "2026-07-01")]
+        outcome = compute_delta(db, cluster, fresh, "run-2", TODAY)
+        save_state(db, cluster, fresh, outcome, "run-2", TODAY)
+        assert outcome.status is DeltaStatus.UPDATED  # today it said something
+        assert resolve_expired(db, TODAY) == [cluster.cluster_id]
+        assert (
+            compute_delta(db, cluster, fresh, "run-3", TODAY).status
+            is DeltaStatus.RESOLVED
+        )
+
+    def test_a_quiet_run_does_not_reopen_a_closed_story(self, db):
+        cluster = make_cluster()
+        facts = [fact(FactKind.SUNSET_DATE, "2026-08-01")]
+        store(db, cluster, facts)
+        resolve_expired(db, TODAY)
+        outcome = compute_delta(db, cluster, facts, "run-2", TODAY)
+        save_state(db, cluster, facts, outcome, "run-2", TODAY)
+        assert outcome.status is DeltaStatus.RESOLVED
+        assert resolved_at(db, cluster) == TODAY.isoformat()
 
 
 class TestState:

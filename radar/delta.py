@@ -223,15 +223,14 @@ def compute_delta(
     if state["last_seen_run"] != run_id:
         days += 1
 
-    if state["resolved_at"]:
-        return DeltaOutcome(
-            cluster_id=cluster.cluster_id,
-            status=DeltaStatus.RESOLVED,
-            days_tracked=days,
-            note="история закрыта",
-            first_seen_run=state["first_seen_run"],
-        )
-
+    # New evidence is asked about before the closure flag, and deliberately.
+    # Closure is an inference — the dates we know about are all behind us —
+    # while a fresh fact is an observation: the vendor said something today
+    # that was not there yesterday. An inference must not be allowed to
+    # silence an observation. Checking the flag first made closure permanent:
+    # a cluster closed once could never report anything again, so a wrongly
+    # closed story stayed wrong forever and a rightly closed one could not
+    # report that the vendor had moved the date after all.
     if fresh:
         return DeltaOutcome(
             cluster_id=cluster.cluster_id,
@@ -239,6 +238,15 @@ def compute_delta(
             days_tracked=days,
             note=_describe_new_facts(fresh),
             new_facts=fresh,
+            first_seen_run=state["first_seen_run"],
+        )
+
+    if state["resolved_at"]:
+        return DeltaOutcome(
+            cluster_id=cluster.cluster_id,
+            status=DeltaStatus.RESOLVED,
+            days_tracked=days,
+            note="история закрыта",
             first_seen_run=state["first_seen_run"],
         )
 
@@ -250,11 +258,57 @@ def compute_delta(
     )
 
 
-def resolve_expired(conn: sqlite3.Connection, as_of: date | None = None) -> list[str]:
-    """Close stories whose announced date has arrived.
+DATED_FACT_KINDS = frozenset({"sunset_date", "effective_date"})
 
-    A sunset date that has passed is no longer a warning, and leaving it open
-    would keep the digest carrying weight it should have put down.
+
+def _announced_dates(facts_json: str) -> list[date]:
+    """Every date the cluster has ever carried, unreadable values dropped."""
+    found: list[date] = []
+    for raw in json.loads(facts_json):
+        fact = Fact.model_validate(raw)
+        if str(fact.kind) not in DATED_FACT_KINDS:
+            continue
+        try:
+            found.append(date.fromisoformat(fact.value.strip()[:10]))
+        except ValueError:
+            continue
+    return found
+
+
+def resolve_expired(conn: sqlite3.Connection, as_of: date | None = None) -> list[str]:
+    """Close stories that have no date left ahead of them.
+
+    What closes a story is the question this function exists to answer, and
+    the answer is dictated by what a card promises the reader. A card says
+    "this is coming, here is when". It has stopped being a warning on the day
+    there is nothing left to prepare for — that is, when the last of the dates
+    it carries is behind us. So the test is the latest date, not any date.
+
+    "Any date" was the previous rule and it is wrong twice over.
+
+    A cluster's fact list is cumulative: `save_state` merges in every fact
+    ever extracted from every material that landed in it, and those materials
+    are page sections. One section of a deprecation table carries the
+    retirement dates of a dozen neighbouring models. The moment the oldest of
+    those rows expires — often years ago — the whole story was declared over,
+    while the card above it still announced a date next spring. On the last
+    run this closed twenty-seven cards out of thirty-four, including one whose
+    only date was tomorrow.
+
+    Nor does the kind of date decide it. `sunset_date` alone would look like
+    the stricter rule and is not: a card whose date is an `effective_date` —
+    a price becoming standard, a model going generally available — would then
+    be judged on the sunset dates of its table neighbours and closed while its
+    own date is still months out. Both kinds are dates the reader is waiting
+    for, so both hold the story open.
+
+    A cluster carrying no readable date is never closed here. Silence is not
+    completion; a story nobody has dated is simply undated, and it leaves the
+    operational layer through `prune_state` at the thirty-day horizon.
+
+    The comparison is strict. On the very day a model goes off the story is at
+    its most useful and the digest says "today"; a page cannot say "today" and
+    "closed" in one breath. The story closes the morning after.
     """
     as_of = as_of or datetime.now(UTC).date()
     closed: list[str] = []
@@ -262,17 +316,9 @@ def resolve_expired(conn: sqlite3.Connection, as_of: date | None = None) -> list
         "SELECT cluster_id, facts_json FROM clusters WHERE resolved_at IS NULL"
     ).fetchall()
     for row in rows:
-        for raw in json.loads(row["facts_json"]):
-            fact = Fact.model_validate(raw)
-            if str(fact.kind) not in {"sunset_date", "effective_date"}:
-                continue
-            try:
-                when = date.fromisoformat(fact.value.strip()[:10])
-            except ValueError:
-                continue
-            if when <= as_of:
-                closed.append(row["cluster_id"])
-                break
+        dates = _announced_dates(row["facts_json"])
+        if dates and max(dates) < as_of:
+            closed.append(row["cluster_id"])
     if closed:
         with conn:
             conn.executemany(
@@ -325,6 +371,18 @@ def save_state(
                 datetime.now(UTC).isoformat(),
             ),
         )
+        if outcome.status is DeltaStatus.UPDATED:
+            # A closed story that spoke again is open again. Without this the
+            # flag would outlive the reason for it: `compute_delta` would keep
+            # reporting today's new fact while the row still said closed, and
+            # the next quiet day would fall straight back to "resolved". The
+            # closure is not lost, only re-earned — `resolve_expired` runs
+            # after this in the same stage and closes the row again at once
+            # if every date it carries is still behind us.
+            conn.execute(
+                "UPDATE clusters SET resolved_at = NULL WHERE cluster_id = ?",
+                (cluster.cluster_id,),
+            )
 
 
 def prune_state(conn: sqlite3.Connection, as_of: date | None = None) -> int:

@@ -186,6 +186,20 @@ SOURCE_STATUS_LABELS = {
 # reader can see, so the two are worded apart.
 SHORT_ANSWER_LABEL = "ответил меньше ожидаемого"
 
+# Whether the source was asked, and what came back. The column exists because
+# the answer column could not be trusted on its own: an archive served without
+# a request produced «проверен, нового нет» and a four-hundred-millisecond
+# response time, which is what parsing a megabyte of stored HTML costs, and the
+# row was indistinguishable from a source that had genuinely been checked.
+NETWORK_LABELS = {
+    "fresh": "загружено",
+    "revalidated": "не изменилось (304)",
+    "failed": "нет ответа",
+    "archive": "из архива, без запроса",
+    "offline": "офлайн, нет в архиве",
+}
+NETWORK_UNKNOWN = "—"
+
 RUN_STATUS_LABELS = {
     "ok": "Прогон завершён",
     "running": "Прогон выполняется",
@@ -897,6 +911,7 @@ def _same_sentence(one: str, other: str) -> bool:
     says what to migrate to is carrying the part the headline had to drop, and
     hiding it would cost the reader the only actionable line on the card.
     """
+
     def fold(value: str) -> str:
         return re.sub(r"[^\w]+", "", value).casefold()
 
@@ -1143,6 +1158,10 @@ class SourceRow:
     items_count: int = 0
     latency_ms: int | None = None
     error: str | None = None
+    # Written by the collector from what the fetcher actually did. Empty on
+    # rows from runs that predate the column, and shown as unknown rather than
+    # guessed: a dash is honest, "из архива" would not be.
+    network: str = ""
 
     @property
     def answer(self) -> str:
@@ -1150,6 +1169,15 @@ class SourceRow:
         if self.status == "empty" and self.items_count > 0:
             return SHORT_ANSWER_LABEL
         return SOURCE_STATUS_LABELS.get(self.status, self.status)
+
+    @property
+    def network_label(self) -> str:
+        return NETWORK_LABELS.get(self.network, NETWORK_UNKNOWN)
+
+    @property
+    def replayed(self) -> bool:
+        """Read off the disk without a single request going out."""
+        return self.network in ("archive", "offline")
 
 
 @dataclass(frozen=True)
@@ -1351,6 +1379,10 @@ def load_run_log(
         )
         for item in log.get("stages", [])
     ]
+    # A database written before `source_runs.network` existed still has to
+    # render; the column is asked for rather than assumed.
+    source_columns = {r[1] for r in conn.execute("PRAGMA table_info(source_runs)")}
+    has_network = "network" in source_columns
     sources = [
         SourceRow(
             source_id=row["source_id"],
@@ -1358,6 +1390,7 @@ def load_run_log(
             items_count=row["items_count"] or 0,
             latency_ms=row["latency_ms"],
             error=row["error"],
+            network=(row["network"] or "") if has_network else "",
         )
         for row in conn.execute(
             "SELECT * FROM source_runs WHERE run_id = ? ORDER BY CASE status "
@@ -1526,7 +1559,14 @@ def _digest_footer(
         tail = ""
         if signal.days_tracked > 1:
             tail = ", история велась " + count_phrase(signal.days_tracked, DAY_FORMS)
-        note = clean(signal.delta_note) or clean(signal.headline)
+        # The headline first, the delta note only if there is no headline.
+        # For a resolved signal the note is the core's status word — "история
+        # закрыта" — and reading it before the headline turned the last screen
+        # of the page into a column of sentences saying that something closed
+        # without ever saying what. The reader is being told which story
+        # ended, so the line has to carry the story. Telegram and the letter
+        # already close on the headline; this is the same sentence.
+        note = (clean(signal.headline) or clean(signal.delta_note)).rstrip(".")
         lines.append(f"Закрыто: {esc(note)}{esc(tail)}.")
     lines.append(f'<a href="{esc(links.run_log)}">Лог прогона</a>.')
     body = "\n".join(f"<p>{line}</p>" for line in lines)
@@ -1772,6 +1812,7 @@ def _source_table(sources: list[SourceRow], names: Names = NO_NAMES) -> str:
             "<tr>"
             f"<td>{esc(human_name(source.source_id, names))}</td>"
             f"<td>{esc(source.answer)}</td>"
+            f"<td>{esc(source.network_label)}</td>"
             f'<td class="num">{esc(fmt_int(source.items_count))}</td>'
             f'<td class="num">{esc(latency)}</td>'
             f"<td>{esc(source.error or '—')}</td>"
@@ -1780,6 +1821,10 @@ def _source_table(sources: list[SourceRow], names: Names = NO_NAMES) -> str:
     return (
         '<div class="scroll"><table>\n'
         "<thead><tr><th>Источник</th><th>Ответ</th>"
+        # Time spent is not evidence of a request. Four hundred milliseconds
+        # is what parsing a stored megabyte costs, so the two facts are
+        # reported in two columns instead of being inferred from one.
+        "<th>Сеть</th>"
         '<th class="num">Материалов</th><th class="num">Время ответа</th>'
         # Covers both a refusal and a 200 that carried nothing: the second is
         # not a refusal, and the column must not call it one.
@@ -2187,7 +2232,11 @@ def build_site(
         "run_log": (
             out / links.run_log,
             render_run_log(
-                run, today=today, links=links, names=names, now=now,
+                run,
+                today=today,
+                links=links,
+                names=names,
+                now=now,
                 tz=display_zone(config),
             ),
         ),

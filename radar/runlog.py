@@ -6,6 +6,13 @@ if every stage writes as it goes.
 
 The log is also the artifact users are pointed at (FR-8.5, S6), so it records
 why a material was dropped, what a source answered, and what the run cost.
+
+And whether it was asked at all. `source_runs.network` exists because the log
+was, for a while, unable to tell a checked source from a replayed one: the
+fetcher served the archive unconditionally, the latency column filled up with
+the cost of parsing a megabyte of HTML, and a run in which no request left the
+machine produced a table of green rows with plausible response times. A run log
+that cannot show that is worse than no run log, because it is believed.
 """
 
 from __future__ import annotations
@@ -18,6 +25,21 @@ from datetime import UTC, date, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from radar.models import SourceStatus
+
+
+def ensure_source_runs_network(conn: sqlite3.Connection) -> None:
+    """Add `source_runs.network` to a database that predates it.
+
+    Idempotent, and run when a `RunLog` opens rather than from the schema, so
+    an existing radar.db gains the column without a migration step anyone has
+    to remember. `PRAGMA table_info` is addressed positionally: the connection
+    may or may not carry a row factory.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(source_runs)")}
+    if "network" in columns:
+        return
+    with conn:
+        conn.execute("ALTER TABLE source_runs ADD COLUMN network TEXT")
 
 
 def new_run_id(now: datetime | None = None) -> str:
@@ -63,6 +85,7 @@ class RunLog:
         self.notes: list[str] = []
         self.delivery: list[dict[str, Any]] = []
         self.finished_at: datetime | None = None
+        ensure_source_runs_network(conn)
         with self.conn:
             self.conn.execute(
                 # Restarting a run clears finished_at as well: otherwise the
@@ -115,15 +138,34 @@ class RunLog:
         items_count: int = 0,
         latency_ms: int | None = None,
         error: str | None = None,
+        network: str | None = None,
     ) -> None:
+        """One source's answer, including whether it was an answer at all.
+
+        `network` is COALESCEd rather than overwritten. The row is upserted
+        twice on a daily run — the collector writes what the source did, and
+        the pipeline later downgrades an `ok` with nothing new to `quiet` — and
+        only the first of those two writers knows what the network did. A plain
+        `excluded.network` would blank the column on the second pass, which is
+        the same information loss this column was added to end.
+        """
         with self.conn:
             self.conn.execute(
                 "INSERT INTO source_runs (run_id, source_id, status, items_count, latency_ms, "
-                "error) VALUES (?, ?, ?, ?, ?, ?) "
+                "error, network) VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id, source_id) DO UPDATE SET status = excluded.status, "
                 "items_count = excluded.items_count, latency_ms = excluded.latency_ms, "
-                "error = excluded.error",
-                (self.run_id, source_id, str(status), items_count, latency_ms, error),
+                "error = excluded.error, "
+                "network = COALESCE(excluded.network, source_runs.network)",
+                (
+                    self.run_id,
+                    source_id,
+                    str(status),
+                    items_count,
+                    latency_ms,
+                    error,
+                    network or None,
+                ),
             )
 
     def filtered(

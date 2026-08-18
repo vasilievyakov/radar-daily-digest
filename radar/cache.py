@@ -9,6 +9,15 @@ tens of dollars.
 The cache key of a fetched document doubles as `raw_material_ref` on every
 EventStatement: the archived text is what evidence is verified against, so it
 has to stay addressable.
+
+What the HTTP half of the cache is *not* allowed to do is stand in for the
+network. A product whose whole claim is "this page changed today" cannot
+answer that question from yesterday's bytes: without an expiry and without
+validators, `get` returned the archive forever, the first-sighting gate said
+"seen", and every morning was quiet by construction. So an archived response
+carries the two things that make a later request conditional — `etag` and
+`last_modified` — plus the moment it was written, and the fetcher asks the
+server whether the copy still stands rather than assuming it does.
 """
 
 from __future__ import annotations
@@ -16,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -66,6 +76,23 @@ def canonical_url(url: str, keep_fragment: bool = False) -> str:
     )
     fragment = parts.fragment if keep_fragment else ""
     return urlunsplit((scheme, netloc, path, query, fragment))
+
+
+def header_value(headers: Mapping[str, Any] | None, name: str) -> str:
+    """One header by name, whatever case the server or an older run used.
+
+    httpx lowercases what it hands over, but the archive on disk is years of
+    accumulated writes and nothing guarantees every entry in it was written
+    by today's code. A validator missed because of a capital E is a
+    conditional request that never happens.
+    """
+    if not headers:
+        return ""
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            return str(value).strip()
+    return ""
 
 
 def digest(*parts: Any) -> str:
@@ -121,6 +148,25 @@ class CacheStore:
         tmp.replace(path)
         return key
 
+    @staticmethod
+    def age(entry: Mapping[str, Any] | None) -> float | None:
+        """Seconds since the entry was written, or None if it cannot say.
+
+        An entry that cannot say how old it is counts as stale everywhere it
+        is asked. That is the safe direction: the cost of being wrong is one
+        conditional request, and the cost of the other direction is a day of
+        news nobody saw.
+        """
+        if not entry:
+            return None
+        stamp = entry.get("cached_at")
+        if not isinstance(stamp, (int, float, str)):
+            return None
+        try:
+            return max(0.0, time.time() - float(stamp))
+        except (TypeError, ValueError):
+            return None
+
     def stats(self) -> dict[str, int]:
         return {"hits": self.hits, "misses": self.misses}
 
@@ -140,6 +186,78 @@ class HttpCache(CacheStore):
         # canonical_url drops fragments, so folding it into the URL made
         # paginated requests share one key and silently re-read page one.
         return digest(canonical_url(url), _ABSENT if extra is None else extra)
+
+    @staticmethod
+    def validators(entry: Mapping[str, Any] | None) -> dict[str, str]:
+        """Headers that turn the next request into a question, not a download.
+
+        Read from the top-level fields first and from the stored response
+        headers second: entries written before this existed have no top-level
+        fields, and there are two hundred of them on disk.
+        """
+        if not entry:
+            return {}
+        headers = entry.get("headers") or {}
+        conditional: dict[str, str] = {}
+        etag = str(entry.get("etag") or "").strip() or header_value(headers, "etag")
+        if etag:
+            conditional["If-None-Match"] = etag
+        modified = str(entry.get("last_modified") or "").strip() or header_value(
+            headers, "last-modified"
+        )
+        if modified:
+            conditional["If-Modified-Since"] = modified
+        return conditional
+
+    @staticmethod
+    def has_validators(entry: Mapping[str, Any] | None) -> bool:
+        return bool(HttpCache.validators(entry))
+
+    def store(
+        self,
+        key: str,
+        url: str,
+        status_code: int,
+        text: str,
+        headers: Mapping[str, str],
+    ) -> str:
+        """Archive a fresh response together with what revalidates it later."""
+        return self.put(
+            key,
+            {
+                "url": url,
+                "status_code": status_code,
+                "text": text,
+                "headers": dict(headers),
+                "etag": header_value(headers, "etag"),
+                "last_modified": header_value(headers, "last-modified"),
+            },
+        )
+
+    def revalidate(
+        self, key: str, entry: Mapping[str, Any], headers: Mapping[str, str]
+    ) -> dict[str, Any]:
+        """Record a 304: the body stands, the clock restarts.
+
+        The server was asked and said the copy is current, so the entry is as
+        good as one downloaded this second — and it has to be stamped that way,
+        or the next call would ask again a minute later. Validators can rotate
+        on a 304, and headers that carry state of their own (rate limits, for
+        one) are the fresh ones.
+        """
+        merged = {**(entry.get("headers") or {}), **dict(headers)}
+        refreshed = dict(entry)
+        refreshed.pop("cached_at", None)  # `put` stamps it; a leftover would win
+        refreshed["headers"] = merged
+        refreshed["etag"] = header_value(headers, "etag") or str(
+            entry.get("etag") or ""
+        ) or header_value(entry.get("headers") or {}, "etag")
+        refreshed["last_modified"] = header_value(headers, "last-modified") or str(
+            entry.get("last_modified") or ""
+        ) or header_value(entry.get("headers") or {}, "last-modified")
+        self.put(key, refreshed)
+        refreshed["cached_at"] = time.time()
+        return refreshed
 
 
 class ModelCache(CacheStore):

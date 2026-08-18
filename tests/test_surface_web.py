@@ -655,17 +655,91 @@ def test_unverified_fact_is_marked():
 
 
 def test_resolved_signal_closes_the_page():
+    """The closing line names the story, and the story lives in the headline.
+
+    `delta_note` on a resolved signal is the core's status word — "история
+    закрыта" — so a footer that read the note first spent its last screen
+    saying that something had closed without ever saying what.
+    """
     resolved = make_second_signal(
         signal_id="sig-resolved",
         delta_status=DeltaStatus.RESOLVED,
-        delta_note="миграция на Responses API завершена",
+        delta_note="история закрыта",
         days_tracked=12,
         rank=3,
     )
     html = web.render_digest([make_lead_signal(), resolved], today=TODAY)
-    assert (
-        "Закрыто: миграция на Responses API завершена, история велась 12 дней." in html
+    assert "Закрыто: OpenAI поднимает лимиты Tier 1, история велась 12 дней." in html
+    assert "Закрыто: история закрыта" not in html
+
+
+def test_every_closing_line_names_its_own_story():
+    """Twenty-seven closures must read as twenty-seven different sentences."""
+    resolved = [
+        make_second_signal(
+            signal_id=f"sig-resolved-{n}",
+            headline=f"Вендор {n} отключил модель m-{n}",
+            delta_status=DeltaStatus.RESOLVED,
+            delta_note="история закрыта",
+            days_tracked=4,
+            rank=n + 3,
+        )
+        for n in range(5)
+    ]
+    html = web.render_digest([make_lead_signal(), *resolved], today=TODAY)
+    closings = [line for line in html.splitlines() if "Закрыто:" in line]
+    assert len(closings) == 5
+    assert len(set(closings)) == 5
+    for n in range(5):
+        assert (
+            f"Закрыто: Вендор {n} отключил модель m-{n}, история велась 4 дня." in html
+        )
+
+
+def test_a_closing_line_falls_back_to_the_note_without_a_headline():
+    resolved = make_second_signal(
+        signal_id="sig-resolved",
+        headline="",
+        delta_status=DeltaStatus.RESOLVED,
+        delta_note="история закрыта",
+        days_tracked=2,
+        rank=3,
     )
+    html = web.render_digest([make_lead_signal(), resolved], today=TODAY)
+    assert "Закрыто: история закрыта, история велась 2 дня." in html
+
+
+def test_a_headline_that_ends_in_a_period_does_not_double_it():
+    resolved = make_second_signal(
+        signal_id="sig-resolved",
+        headline="OpenAI поднимает лимиты Tier 1.",
+        delta_status=DeltaStatus.RESOLVED,
+        delta_note="история закрыта",
+        days_tracked=1,
+        rank=3,
+    )
+    html = web.render_digest([make_lead_signal(), resolved], today=TODAY)
+    assert "Закрыто: OpenAI поднимает лимиты Tier 1." in html
+    assert ".." not in html
+
+
+def test_the_web_and_telegram_close_a_story_with_the_same_sentence():
+    """DR-10: one record, three faces. Two of them must not word it apart."""
+    from radar.surfaces import telegram
+
+    resolved = make_second_signal(
+        signal_id="sig-resolved",
+        delta_status=DeltaStatus.RESOLVED,
+        delta_note="история закрыта",
+        days_tracked=12,
+        rank=3,
+    )
+    signals = [make_lead_signal(), resolved]
+    html = web.render_digest(signals, today=TODAY)
+    post = telegram.render_digest(signals, today=TODAY)
+    line = "Закрыто: OpenAI поднимает лимиты Tier 1, история велась 12 дней."
+    assert line in html
+    assert line in (post if isinstance(post, str) else "\n".join(post))
 
 
 # -- quiet day and failure ---------------------------------------------
@@ -1610,7 +1684,9 @@ class TestTimesSayWhichClockTheyAreOn:
         assert web.fmt_time("2026-08-18T02:51:56+00:00", zone) == "05:51:56 MSK"
 
     def test_an_unknown_zone_falls_back_to_utc_rather_than_failing(self):
-        assert web.display_zone({"delivery": {"timezone": "Nowhere/Nothing"}}) == ZoneInfo("UTC")
+        assert web.display_zone(
+            {"delivery": {"timezone": "Nowhere/Nothing"}}
+        ) == ZoneInfo("UTC")
         assert web.display_zone(None) == ZoneInfo("UTC")
 
     def test_a_naive_timestamp_is_read_as_utc_not_as_local(self):
@@ -1669,8 +1745,12 @@ class TestOnlyAKnownRunIsPublished:
         conn.close()
 
         with pytest.raises(web.UnknownRun) as caught:
-            web.build_site(db, tmp_path / "out", today=date(2026, 8, 18),
-                           run_id="20260818T064508-73e8a6")
+            web.build_site(
+                db,
+                tmp_path / "out",
+                today=date(2026, 8, 18),
+                run_id="20260818T064508-73e8a6",
+            )
 
         assert "20260818T064508-73e8a6" in str(caught.value)
         assert not (tmp_path / "out" / "digest.html").exists()
@@ -1687,7 +1767,8 @@ class TestOnlyAKnownRunIsPublished:
         conn.commit()
         conn.close()
 
-        paths = web.build_site(db, tmp_path / "out", today=date(2026, 8, 18),
-                               run_id="run-known")
+        paths = web.build_site(
+            db, tmp_path / "out", today=date(2026, 8, 18), run_id="run-known"
+        )
 
         assert paths["digest"].exists()

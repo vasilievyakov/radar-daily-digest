@@ -11,12 +11,23 @@ an ordinary morning most watched repositories ship nothing, and a source with
 no news is not a source with no answer. `quiet` is that state: checked, it
 answered, none of what it holds is new. Only a source that handed back nothing
 to filter is still `empty`.
+
+All three of those words assume the source was actually asked, and for a while
+none of them were entitled to. The fetcher served the archive unconditionally,
+so a source could be filed as `quiet` — checked, answered, nothing new — on a
+morning when no request left the machine. The four hundred milliseconds in the
+log were a megabyte of HTML being parsed, and read exactly like a network
+round trip. Every outcome now carries what the network did (`network`) and how
+many requests it took (`requests`), so «проверен, нового нет» can be told apart
+from «перечитан с диска».
 """
 
 from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -26,7 +37,7 @@ from radar.adapters.html_page import HtmlPageAdapter
 from radar.adapters.rss_feed import RssFeedAdapter
 from radar.adapters.telegram_channel import TelegramChannelAdapter
 from radar.config import ThemeConfig
-from radar.fetch import Fetcher
+from radar.fetch import NETWORK_NONE, FetchTally, Fetcher
 from radar.models import SourceStatus
 from radar.runlog import RunLog
 
@@ -45,15 +56,44 @@ class SourceOutcome:
     items: list[CollectedItem] = field(default_factory=list)
     latency_ms: int = 0
     error: str | None = None
+    # What the network did for this source: "fresh" (something was downloaded),
+    # "revalidated" (asked, HTTP 304, the archived copy stands), "failed"
+    # (asked, no answer), "archive" (nothing was asked, the disk answered),
+    # "offline". Empty when the source never got as far as a fetch.
+    network: str = NETWORK_NONE
+    # Requests that left the process. Zero next to a green status is the thing
+    # the run log has to be able to show.
+    requests: int = 0
 
     @property
     def count(self) -> int:
         return len(self.items)
 
+    @property
+    def checked(self) -> bool:
+        """Was this source actually asked during this run?"""
+        return self.requests > 0
+
 
 def build_adapter(source: SourceConfig, fetcher: Fetcher) -> Adapter | None:
     adapter_cls = ADAPTERS.get(source.type)
     return adapter_cls(source, fetcher) if adapter_cls else None
+
+
+@contextmanager
+def _recording(fetcher: Fetcher) -> Iterator[FetchTally]:
+    """Tally the fetches a block makes, tolerating a fetcher that cannot.
+
+    Adapters are handed whatever object the caller calls a fetcher, and several
+    stand-ins in the test suite implement `get` and nothing else. A missing
+    tally must cost the accounting, never the collection.
+    """
+    record = getattr(fetcher, "record", None)
+    if not callable(record):
+        yield FetchTally()
+        return
+    with record() as tally:
+        yield tally
 
 
 # How many records the source handed over before the window was applied. The
@@ -137,18 +177,22 @@ def collect_source(
             error=f"нет адаптера для типа источника {source.type}",
         )
 
+    tally = FetchTally()
     try:
-        items = (
-            adapter.backfill(source.backfill_depth_days)
-            if mode == "backfill"
-            else adapter.collect(since)
-        )
+        with _recording(fetcher) as tally:
+            items = (
+                adapter.backfill(source.backfill_depth_days)
+                if mode == "backfill"
+                else adapter.collect(since)
+            )
     except Exception as exc:
         return SourceOutcome(
             source.id,
             SourceStatus.FAILED,
             latency_ms=int((time.monotonic() - started) * 1000),
             error=f"{type(exc).__name__}: {exc}",
+            network=tally.label,
+            requests=tally.requests,
         )
 
     for item in items:
@@ -172,18 +216,43 @@ def collect_source(
                     f"источник ответил, но записей меньше ожидаемого: "
                     f"{len(items)} вместо {source.min_expected_items}"
                 ),
+                network=tally.label,
+                requests=tally.requests,
             )
         return SourceOutcome(
-            source.id, SourceStatus.OK, items=items, latency_ms=latency
+            source.id,
+            SourceStatus.OK,
+            items=items,
+            latency_ms=latency,
+            network=tally.label,
+            requests=tally.requests,
         )
 
     if items:
         return SourceOutcome(
-            source.id, SourceStatus.OK, items=items, latency_ms=latency
+            source.id,
+            SourceStatus.OK,
+            items=items,
+            latency_ms=latency,
+            network=tally.label,
+            requests=tally.requests,
         )
 
-    status, note = classify_silence(adapter)
-    return SourceOutcome(source.id, status, latency_ms=latency, error=note)
+    # The unwindowed re-read goes through the fetcher too. It is a disk read
+    # by construction — the response it re-parses was just archived — and
+    # counting it keeps the tally an account of the whole source rather than
+    # of its first request.
+    with _recording(fetcher) as reread:
+        status, note = classify_silence(adapter)
+    tally.merge(reread)
+    return SourceOutcome(
+        source.id,
+        status,
+        latency_ms=latency,
+        error=note,
+        network=tally.label,
+        requests=tally.requests,
+    )
 
 
 def dedupe_key(item: CollectedItem) -> str:
@@ -262,6 +331,7 @@ def collect_all(
                 items_count=outcome.count,
                 latency_ms=outcome.latency_ms,
                 error=outcome.error,
+                network=outcome.network,
             )
 
     return dedupe_by_url(outcomes), outcomes
