@@ -710,28 +710,6 @@ class DailyRun:
                 )
         self.journal.checkpoint("collapse", item_count=len(enriched))
 
-        # The loop closes here. Until this line the corpus held only what one
-        # evening's backfill put in it: today's events never became tomorrow's
-        # precedents, so "the third time since May" could only ever refer to
-        # history loaded by hand. A daily agent that does not consolidate what
-        # it learns is a daily agent with anterograde amnesia.
-        harvest = [
-            (index, EnrichResult(source_id="", url=cluster.primary.url,
-                                 statements=list(statements)))
-            for index, (cluster, _facts, statements) in enumerate(enriched)
-        ]
-        stored, already = persist_statements(self.conn, harvest, ingest_mode="live")
-        self.log.note(
-            "в корпус записано "
-            + russian_count(stored, "событие", "события", "событий")
-            + " сегодняшнего прогона"
-            + (
-                ", " + russian_count(already, "уже был", "уже были", "уже были")
-                if already
-                else ""
-            )
-        )
-
         result.failed_stage = "contextualize"
         with self.log.stage("contextualize", in_count=len(enriched)) as record:
             contexts = []
@@ -745,7 +723,11 @@ class DailyRun:
                     cluster.change_type,
                     self.for_date,
                     text=cluster.title,
-                    exclude_ids={cluster.cluster_id},
+                    # Statement ids, which is what the query compares against.
+                    # This passed `cluster.cluster_id` — an identifier from a
+                    # different namespace, so the condition never once matched
+                    # and an event could cite itself.
+                    exclude_ids={st.statement_id for st in statements},
                 )
                 contexts.append((cluster, facts, delta, retrieval, statements))
                 # Both counts reach the log. Every other system in the room
@@ -778,6 +760,28 @@ class DailyRun:
             resolve_expired(self.conn, self.for_date)
             record["out_count"] = len(contexts)
         self.journal.checkpoint("contextualize", item_count=len(contexts))
+
+        # The loop closes here — after the corpus has been searched, never
+        # before. Writing first let a run cite itself: "the third time since
+        # August 17" stood over two records this same run had created minutes
+        # earlier from one release page, and the corpus held no older instance
+        # at all. Today becomes tomorrow's precedent, not this morning's.
+        harvest = [
+            (index, EnrichResult(source_id="", url=cluster.primary.url,
+                                 statements=list(statements)))
+            for index, (cluster, _facts, statements) in enumerate(enriched)
+        ]
+        stored, already = persist_statements(self.conn, harvest, ingest_mode="live")
+        self.log.note(
+            "в корпус записано "
+            + russian_count(stored, "событие", "события", "событий")
+            + " сегодняшнего прогона"
+            + (
+                ", " + russian_count(already, "уже был", "уже были", "уже были")
+                if already
+                else ""
+            )
+        )
 
         result.failed_stage = "score"
         summary = build_run_summary(

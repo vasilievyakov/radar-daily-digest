@@ -509,3 +509,68 @@ class TestTheFunnelNamesEveryDrop:
             "SELECT title FROM filtered_items WHERE run_id = 'run-funnel'"
         ).fetchall()
         assert len(rows) == 2, "one anchor swallowed the other section"
+
+
+class TestAnEventIsNotItsOwnPrecedent:
+    """«Третий раз с 17 августа» — над двумя записями этого же прогона.
+
+    The run wrote its events into the corpus before searching it, and the guard
+    against self-citation compared `cluster_id` against `statement_id` — two
+    different namespaces, so the condition never once matched. A card about a
+    Claude Code release cited two retellings of that same release, created
+    minutes earlier by the same run, while the corpus held no older instance of
+    the pair (vendor, change type) at all.
+    """
+
+    def test_todays_events_are_written_after_the_corpus_is_searched(self, run_result, conn):
+        run, result = run_result
+        live = {
+            row["statement_id"]
+            for row in conn.execute(
+                "SELECT statement_id FROM event_statements WHERE ingest_mode = 'live'"
+            )
+        }
+        assert live, "прогон ничего не записал в корпус"
+
+        cited = {
+            precedent.statement_id
+            for signal in result.signals
+            for precedent in signal.precedents
+        }
+        assert not (cited & live), (
+            "сигнал сослался на запись, созданную этим же прогоном: "
+            f"{sorted(cited & live)[:3]}"
+        )
+
+    def test_the_exclusion_actually_excludes(self, conn):
+        """The guard is only real if the identifier it passes is the one the
+        query compares. Both are opaque strings, which is why the mismatch
+        survived: nothing complained, it simply never matched."""
+        from radar.retrieval import CorpusRetriever
+
+        for index in range(3):
+            conn.execute(
+                "INSERT INTO event_statements (statement_id, text, vendor, "
+                "change_type, event_date, source_url, statement_index, evidence, "
+                "ingested_at, ingest_mode, extractor_model, prompt_version, "
+                "raw_material_ref) VALUES (?, 'Anthropic отключает модель', "
+                "'anthropic', 'deprecation', ?, ?, ?, 'q', "
+                "'2026-08-01T00:00:00+00:00', 'live', 'm', 'v2', 'r')",
+                (f"st-{index}", f"2026-0{index + 3}-01",
+                 f"https://example.test/{index}", index),
+            )
+        conn.commit()
+        retriever = CorpusRetriever(conn)
+
+        everything = retriever.find_precedents(
+            "anthropic", "deprecation", TODAY, text="Anthropic отключает модель",
+            exclude_ids=set(),
+        )
+        without_one = retriever.find_precedents(
+            "anthropic", "deprecation", TODAY, text="Anthropic отключает модель",
+            exclude_ids={"st-1"},
+        )
+
+        assert len(everything.precedents) == 3
+        assert len(without_one.precedents) == 2
+        assert "st-1" not in {p.statement_id for p in without_one.precedents}
