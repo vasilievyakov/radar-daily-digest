@@ -278,6 +278,31 @@ def build_run_summary(
     )
 
 
+def choose_due_date(
+    facts: list[Fact], as_of: date
+) -> tuple[date | None, DatePrecision]:
+    """The one date a card is about, decided in the core and only here.
+
+    Nearest obligation still ahead; if every date has passed, the most recent
+    one, because "the deadline was three days ago" is news too. An inferred
+    date never leads: showing "in 59 days" for a year recovered from context is
+    false precision (FR-5.12).
+    """
+    dated = [
+        (f.value_date, f.date_precision)
+        for f in facts
+        if f.value_date is not None
+        and f.kind in {FactKind.SUNSET_DATE, FactKind.EFFECTIVE_DATE}
+        and f.date_precision is not DatePrecision.INFERRED
+    ]
+    if not dated:
+        return None, DatePrecision.DAY
+    ahead = [pair for pair in dated if pair[0] >= as_of]
+    if ahead:
+        return min(ahead, key=lambda pair: pair[0])
+    return max(dated, key=lambda pair: pair[0])
+
+
 def build_signal(
     run_id: str,
     for_date: date,
@@ -309,6 +334,7 @@ def build_signal(
     unbuildable on data already collected.
     """
     precedents = retrieval.precedents if retrieval else []
+    due = choose_due_date(facts, for_date)
     # The count decides the label, never the model (FR-5.9, FR-6.17). Passed
     # in rather than read from a retriever so this function stays pure.
     label = resolve_context_label(None, precedents) if retrieval is not None else None
@@ -346,6 +372,8 @@ def build_signal(
             earliest_match=retrieval.report.earliest_event_date if retrieval else None,
             change_type=ChangeType(cluster.change_type) if cluster.change_type else None,
         ),
+        due_date=due[0],
+        due_precision=due[1],
         score=score,
         score_rationale=rationale,
         rank=rank,

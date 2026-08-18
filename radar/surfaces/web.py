@@ -803,7 +803,15 @@ def fact_date(fact: Fact) -> tuple[date | None, DatePrecision]:
 
 
 def signal_date(signal: Signal) -> tuple[date | None, DatePrecision]:
-    """The date a card leads with: the first dated fact, in the order given."""
+    """The date the core chose, not a fourth opinion about it.
+
+    This function used to take the first dated fact in list order while scoring
+    took the nearest future one and the core took a third — three consumers,
+    three rules, disagreeing on fifteen of thirty-four cards. The fallback
+    below exists for signals stored before `due_date` was on the contract.
+    """
+    if signal.due_date is not None:
+        return signal.due_date, signal.due_precision
     for fact in signal.facts:
         if fact.kind not in DATE_FACT_KINDS:
             continue

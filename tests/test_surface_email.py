@@ -985,19 +985,30 @@ class TestAClosingLineSaysWhatClosed:
     names its subject. Twenty-seven of them ended the digest every morning.
     """
 
-    def test_the_subject_is_named(self):
+    def test_the_subject_is_named_when_there_is_no_note(self):
         signal = digest_item(
             headline="AWS Bedrock отключает Cohere Command R.",
             delta_status=DeltaStatus.RESOLVED,
-            delta_note="история закрыта",
+            delta_note=None,
             days_tracked=4,
         )
 
         line = surface._closing_line([signal])
 
         assert "Cohere Command R" in line
-        assert "история закрыта" not in line
         assert ".," not in line
+
+    def test_a_note_that_says_something_still_wins(self):
+        signal = digest_item(
+            headline="OpenAI отключает Assistants API.",
+            delta_status=DeltaStatus.RESOLVED,
+            delta_note="миграция на Responses API завершена",
+            days_tracked=12,
+        )
+
+        line = surface._closing_line([signal])
+
+        assert "миграция на Responses API завершена" in line
 
     def test_it_falls_back_to_the_note_when_there_is_no_headline(self):
         signal = digest_item(

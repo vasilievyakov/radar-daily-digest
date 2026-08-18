@@ -602,12 +602,12 @@ def _closing_line(signals: Sequence[Signal]) -> str:
     for signal in signals:
         if signal.delta_status is not DeltaStatus.RESOLVED:
             continue
-        # Headline first, note second. `delta_note` for a resolved storyline
-        # is the words "история закрыта", so putting it first produced
-        # "Закрыто: история закрыта, история велась 4 дня" — a sentence that
-        # never says what closed. The web page had the same inversion and the
-        # digest ended every morning on twenty-seven copies of it.
-        subject = " ".join((signal.headline or signal.delta_note or "").split())
+        # Note first when there is one — "migration to the Responses API is
+        # complete" says more than the headline. The placeholder that used to
+        # sit here, the words "история закрыта", is gone from delta.py: it
+        # displaced the only part of the sentence that carried information, and
+        # twenty-seven copies of it ended the digest every morning.
+        subject = " ".join((signal.delta_note or signal.headline or "").split())
         line = f"Закрыто: {subject.rstrip('.')}" if subject else "Закрыто"
         if signal.days_tracked > 1:
             history = _count(signal.days_tracked, "день", "дня", "дней")

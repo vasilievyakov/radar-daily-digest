@@ -49,6 +49,7 @@ from radar.models import (
 )
 from radar.publish import (
     MONTHS_GENITIVE,
+    choose_due_date,
     build_quiet_day,
     build_run_failure,
     build_run_summary,
@@ -402,10 +403,9 @@ def _why_it_matters(cluster: Any, facts: list[Fact], as_of: date) -> str:
     fact that survived quote verification. Nothing here may claim more.
     """
     reasons: list[str] = []
-    deadline = min(
-        (f.value_date for f in facts if f.value_date and f.value_date >= as_of),
-        default=None,
-    )
+    # The same choice the card leads with and scoring weighs. Three copies of
+    # this arithmetic disagreed on fifteen cards of thirty-four.
+    deadline, _precision = choose_due_date(facts, as_of)
     if deadline is not None:
         days = (deadline - as_of).days
         subject = next(

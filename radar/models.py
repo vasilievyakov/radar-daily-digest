@@ -288,6 +288,14 @@ class Signal(BaseModel):
     # Every number in it must be backed by `precedents`.
     context_note: str | None = None
 
+    # The date the card leads with, chosen once. Three consumers used to pick
+    # it three ways — the page took the first dated fact in list order, scoring
+    # took the nearest future one, the core took a third — and they disagreed
+    # on fifteen of thirty-four cards. A card announcing today's news carried
+    # "expired 649 days ago" because one of them read a neighbouring row.
+    due_date: date | None = None
+    due_precision: DatePrecision = DatePrecision.DAY
+
     score: int = 0
     score_rationale: str = ""
     rank: int = 0

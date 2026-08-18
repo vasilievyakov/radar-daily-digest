@@ -18,6 +18,7 @@ from radar.models import (
     SignalType,
     SourceStatus,
     Tier,
+    DatePrecision,
 )
 from radar.publish import (
     build_context_note,
@@ -28,6 +29,7 @@ from radar.publish import (
     collect_upcoming,
     facts_to_upcoming,
     make_signal_id,
+    choose_due_date,
 )
 from radar.retrieval import RetrievalResult, RetrievalHit
 
@@ -639,3 +641,66 @@ class TestRecurrenceIsNotClaimedForRoutine:
             change_type=ChangeType.DEPRECATION,
         )
         assert note and "14-й раз" in note
+
+
+class TestOneDatePerCard:
+    """Three consumers picked the card's date three ways.
+
+    The page took the first dated fact in list order, scoring took the nearest
+    one still ahead, the core took a third. They disagreed on fifteen cards of
+    thirty-four, and a card about today's announcement carried a deadline
+    belonging to a neighbouring row of the same table.
+    """
+
+    @staticmethod
+    def _fact(kind, value, when, precision=DatePrecision.DAY):
+        return Fact(
+            kind=kind, value=value, source_url="https://example.test/x",
+            evidence=value, value_date=when, date_precision=precision,
+            evidence_verified=True,
+        )
+
+    def test_the_nearest_obligation_ahead_wins(self):
+        facts = [
+            self._fact(FactKind.SUNSET_DATE, "2027-05-01", date(2027, 5, 1)),
+            self._fact(FactKind.EFFECTIVE_DATE, "2026-09-01", date(2026, 9, 1)),
+            self._fact(FactKind.SUNSET_DATE, "2024-01-01", date(2024, 1, 1)),
+        ]
+        assert choose_due_date(facts, date(2026, 8, 18))[0] == date(2026, 9, 1)
+
+    def test_a_passed_deadline_is_still_the_news(self):
+        facts = [
+            self._fact(FactKind.SUNSET_DATE, "2024-01-01", date(2024, 1, 1)),
+            self._fact(FactKind.SUNSET_DATE, "2026-08-15", date(2026, 8, 15)),
+        ]
+        # Nothing ahead: the most recent passed date, not the oldest one. The
+        # card said "expired 649 days ago" under a headline about this week.
+        assert choose_due_date(facts, date(2026, 8, 18))[0] == date(2026, 8, 15)
+
+    def test_an_inferred_date_never_leads(self):
+        facts = [
+            self._fact(FactKind.SUNSET_DATE, "2026-09-01", date(2026, 9, 1),
+                       DatePrecision.INFERRED),
+        ]
+        assert choose_due_date(facts, date(2026, 8, 18))[0] is None
+
+    def test_a_card_with_no_dates_says_so(self):
+        assert choose_due_date([], date(2026, 8, 18)) == (None, DatePrecision.DAY)
+
+    def test_the_signal_carries_the_choice(self):
+        from radar.cluster import Cluster
+        from radar.adapters.base import CollectedItem
+
+        item = CollectedItem(url="https://example.test/x", title="t", raw_text="")
+        cluster = Cluster(cluster_id="c1", dedup_key="d1", items=[item],
+                          vendor="anthropic", change_type="deprecation")
+        facts = [
+            self._fact(FactKind.SUNSET_DATE, "2026-10-15", date(2026, 10, 15)),
+            self._fact(FactKind.EFFECTIVE_DATE, "2026-09-01", date(2026, 9, 1)),
+        ]
+        signal = build_signal(
+            "run-1", date(2026, 8, 18), cluster, facts, None, None,
+            score=0, rationale="", tier=Tier.STANDARD, rank=1,
+            headline="заголовок", summary="текст",
+        )
+        assert signal.due_date == date(2026, 9, 1)

@@ -246,7 +246,12 @@ def compute_delta(
             cluster_id=cluster.cluster_id,
             status=DeltaStatus.RESOLVED,
             days_tracked=days,
-            note="история закрыта",
+            # No note. The status already says the storyline closed, and a
+            # placeholder repeating it in words displaced the one thing the
+            # line needed: what closed. Surfaces read note-or-headline, so an
+            # empty note lets the subject through, and a real note — "migration
+            # to the Responses API is complete" — still wins when there is one.
+            note=None,
             first_seen_run=state["first_seen_run"],
         )
 
