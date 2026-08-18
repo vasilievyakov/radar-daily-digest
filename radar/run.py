@@ -482,6 +482,7 @@ class DailyRun:
         log_dir: str = "logs",
         progress: Any = None,
         sources: list[Any] | None = None,
+        budget: Budget | None = None,
     ) -> None:
         self.conn = conn
         self.config = config
@@ -507,7 +508,10 @@ class DailyRun:
                 "будет работать только на веб-странице"
             )
         self.journal = Journal(conn, log_dir=log_dir, run_id=self.run_id)
-        self.budget = Budget(
+        # Shared with the enricher when the caller hands one over. The ceiling
+        # used to be created here and seen by the filter alone, so the stage
+        # that spends the money — enrichment — ran outside it.
+        self.budget = budget or Budget(
             float(config.section("budget").get("max_usd_per_run", 0.5))
         )
         self.retriever = CorpusRetriever(conn, config.retrieval)

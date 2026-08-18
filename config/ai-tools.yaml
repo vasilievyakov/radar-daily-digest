@@ -1534,9 +1534,14 @@ models:
 critical_change_types: [deprecation, breaking_change, security]
 
 budget:
-  # NFR-5 target for a daily run: roughly 40 materials through the filter on
-  # haiku plus a dozen enrichments on sonnet.
-  max_usd_per_run: 0.50
+  # Measured, not rounded. The cold run of 18 August — cache of model answers
+  # deleted, 104 materials collected, 44 enriched — cost $0.4329, and the last
+  # run's honest cold equivalent was $0.5781. A ceiling of $0.50 sat inside
+  # that range, so the fuse would have blown on ordinary work; it also watched
+  # only the filter, about a third of the bill, and therefore never blew at
+  # all. Both ends are fixed now: the ceiling covers enrichment too, and the
+  # number is set above the measured cost with room for a heavier morning.
+  max_usd_per_run: 1.00
   # Backfill is the one large spend of the project and runs once. Measured on
   # the real cache: priority 1 gives 2405 materials, of which about 692 are
   # critical. Mixed routing puts those on sonnet (~$10) and the rest on haiku

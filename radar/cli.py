@@ -42,7 +42,7 @@ from radar.fetch import Fetcher
 from radar.journal import Journal
 from radar.llm import API_KEY_ENV
 from radar.llm_cli import CLI_BIN_ENV
-from radar.runlog import RunLog, new_run_id
+from radar.runlog import Budget, RunLog, new_run_id
 
 DEFAULT_DB = "data/radar.db"
 DEFAULT_CONFIG = "config/ai-tools.yaml"
@@ -280,6 +280,7 @@ def _build_enricher(
     args: argparse.Namespace,
     fetcher: Fetcher,
     call_log: _CallLog,
+    budget: Any = None,
 ) -> Any:
     """The one place that touches stage 4's implementation.
 
@@ -288,9 +289,14 @@ def _build_enricher(
 
     The backend logs its calls into `call_log` rather than the real run log:
     the run log's connection belongs to the calling thread and enrichment runs
-    in a pool. The budget is not handed over at all — the ceiling belongs to
-    backfill, and a second counter inside the enricher would charge every call
-    twice.
+    in a pool.
+
+    The budget is optional and for the daily run. Backfill keeps its own
+    ceiling and passes none, because a second counter inside the enricher would
+    charge every call twice. The daily run had no counter here at all — and
+    enrichment is where its money goes: on the cold run the ceiling watched
+    $0.16 of the $0.43 actually spent, so nearly two thirds of the bill sat
+    outside the fuse meant to blow on it.
     """
     from radar.cache import ModelCache
     from radar.enrich import LlmEnricher
@@ -309,6 +315,7 @@ def _build_enricher(
         backend,
         fetcher=fetcher,
         ingest_mode="backfill",
+        budget=budget,
         # Without this the enricher passes run_log=None into every call and
         # overrides the log the backend was built with: token counts landed
         # nowhere, and the run log showed "5 calls, 0 tokens, $0.20". One row
@@ -852,7 +859,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     config, conn = _load(args)
     fetcher = _fetcher(config, args.cache)
     call_log = _CallLog()
-    enricher = _build_enricher(config, args, fetcher, call_log)
+    # One ceiling for the whole run, built here so enrichment sits under the
+    # same counter as the filter. Two thirds of the bill used to be outside it.
+    budget = Budget(float(config.section("budget").get("max_usd_per_run", 0.5)))
+    enricher = _build_enricher(config, args, fetcher, call_log, budget=budget)
 
     for_date = date.fromisoformat(args.for_date) if args.for_date else None
     run = DailyRun(
@@ -868,6 +878,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if args.sources
             else None
         ),
+        budget=budget,
     )
 
     relevance = None

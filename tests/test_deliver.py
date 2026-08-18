@@ -234,7 +234,7 @@ class TestTheCommandsActuallyRun:
                 )
                 return EnrichResult(source_id="s", url=item.url, facts=[])
 
-        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log: Paying(log))
+        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log, budget=None: Paying(log))
 
         from radar.adapters.base import CollectedItem
         from radar.collect import SourceOutcome
@@ -479,7 +479,7 @@ class TestOneRunHasOneCost:
                 )
                 return EnrichResult(source_id="s", url=item.url, facts=[])
 
-        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log: Paying(log))
+        monkeypatch.setattr(cli, "_build_enricher", lambda cfg, a, f, log, budget=None: Paying(log))
 
         from radar.adapters.base import CollectedItem
         from radar.collect import SourceOutcome
@@ -745,3 +745,46 @@ class TestEveryDeclaredChannelIsActuallyWired:
         cli._deliver_run(conn, run, None)
 
         assert set(built) == {"telegram", "email"}
+
+
+class TestTheCeilingWatchesWhereTheMoneyGoes:
+    """NFR-5 and NFR-6 share one number and neither held.
+
+    The ceiling was created inside DailyRun and handed to the filter alone, so
+    on the cold run it watched $0.16 of the $0.43 actually spent — the stage
+    that spends the money ran outside the fuse meant to blow on it. And the
+    number itself, $0.50, sat inside the measured cold range of $0.43–0.58, so
+    connecting the fuse without raising it would have killed ordinary runs.
+    """
+
+    def test_the_enricher_and_the_run_share_one_counter(self, tmp_path, monkeypatch):
+        from radar import cli
+        from radar.runlog import Budget
+
+        seen: list[object] = []
+
+        def spy(config, args, fetcher, call_log, budget=None):
+            seen.append(budget)
+            return type("E", (), {"enrich": lambda self, i, s: None})()
+
+        monkeypatch.setattr(cli, "_build_enricher", spy)
+        monkeypatch.setattr("radar.run.collect_all", lambda *a, **k: ([], []))
+
+        cli.main([
+            "--db", str(tmp_path / "r.db"), "--cache", str(tmp_path / "c"),
+            "run", "--no-filter", "--log-dir", str(tmp_path / "l"),
+            "--no-pages",
+        ])
+
+        assert seen and isinstance(seen[0], Budget), "обогащение осталось без счётчика"
+
+    def test_the_ceiling_is_above_the_measured_cold_run(self):
+        import yaml
+
+        data = yaml.safe_load(open("config/ai-tools.yaml", encoding="utf-8"))
+        ceiling = float(data["budget"]["max_usd_per_run"])
+        # Cold run of 18 August: $0.4329. Honest cold equivalent of the last
+        # run: $0.5781. A ceiling inside that range blows on ordinary work.
+        assert ceiling > 0.58, (
+            f"потолок {ceiling} ниже измеренной холодной стоимости прогона"
+        )
