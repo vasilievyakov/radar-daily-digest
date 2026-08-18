@@ -197,6 +197,12 @@ CREATE TABLE IF NOT EXISTS model_calls (
     tokens_out  INTEGER NOT NULL DEFAULT 0,
     cost_usd    REAL NOT NULL DEFAULT 0,
     cached      INTEGER NOT NULL DEFAULT 0,
+    -- What the call would have cost had the cache missed. Computed in llm.py
+    -- since the cache was written and never stored anywhere, so a run served
+    -- entirely from cache reported its price as the price of the work — which
+    -- is how "1:19 and $0.16" went into an acceptance report for a run whose
+    -- forty-two enrichment calls were all hits.
+    original_cost_usd REAL NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_model_calls_run ON model_calls(run_id);
@@ -290,11 +296,22 @@ def migrate_filtered_key(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_original_cost(conn: sqlite3.Connection) -> None:
+    """Add the would-have-cost column to a table that predates it."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_calls)")}
+    if columns and "original_cost_usd" not in columns:
+        conn.execute(
+            "ALTER TABLE model_calls "
+            "ADD COLUMN original_cost_usd REAL NOT NULL DEFAULT 0"
+        )
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(DDL)
     migrate_event_key(conn)
     migrate_filtered_key(conn)
+    migrate_original_cost(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -21,11 +21,13 @@ internals are patched: what is checked is the status the pipeline writes.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 from radar.adapters.base import SourceConfig
-from radar.collect import collect_source, summarize
-from radar.fetch import FetchResult
+from radar.collect import collect_all, collect_source, summarize
+from radar.fetch import FetchOrigin, FetchResult, FetchTally
 from radar.models import SourceStatus
 from radar.publish import build_run_summary
 from radar.surfaces import web
@@ -35,7 +37,12 @@ WINDOW = NOW - timedelta(hours=26)
 
 
 class FakeFetcher:
-    """Stands in for radar.fetch.Fetcher: one canned response, no network."""
+    """Stands in for radar.fetch.Fetcher: one canned response, no network.
+
+    It carries `record()` because the collector now asks the fetcher what the
+    network did, and `origin` because "answered" and "was read off the disk"
+    are the two things the run log has to be able to tell apart.
+    """
 
     def __init__(
         self,
@@ -43,24 +50,45 @@ class FakeFetcher:
         status_code: int = 200,
         error: str | None = None,
         headers: dict[str, str] | None = None,
+        origin: FetchOrigin = FetchOrigin.ARCHIVE,
     ) -> None:
         self.text = text
         self.status_code = status_code
         self.error = error
         self.headers = headers or {}
+        self.origin = origin
         self.calls: list[str] = []
+        self._tallies: list[FetchTally] = []
+
+    @contextmanager
+    def record(self):
+        tally = FetchTally()
+        self._tallies.append(tally)
+        try:
+            yield tally
+        finally:
+            self._tallies.pop()
 
     def get(self, url: str, **kwargs) -> FetchResult:
         self.calls.append(url)
-        return FetchResult(
+        result = FetchResult(
             url=url,
             status_code=self.status_code,
             text=self.text,
             headers=self.headers,
             ref="sha256:fixture",
-            from_cache=True,
+            origin=self.origin,
             error=self.error,
         )
+        for tally in self._tallies:
+            tally.add(result)
+        return result
+
+
+class NoRecordFetcher(FakeFetcher):
+    """A stand-in from before `record()` existed. Collection must not care."""
+
+    record = None
 
 
 def rss(*published: datetime) -> str:
@@ -364,3 +392,167 @@ class TestTheRunLogSaysWhichItWas:
         assert "проверен, нового нет" in web.render_run_log(
             web.RunLogView(run_id="run-1", sources=[row]), today=NOW.date()
         )
+
+
+# -- was the source actually asked? ------------------------------------
+
+
+class TestTheOutcomeSaysWhetherTheNetworkWasInvolved:
+    """The distinction one layer below `quiet`.
+
+    `quiet` means checked, answered, nothing new — and for a while it was
+    written on mornings when nothing was checked at all. The fetcher served
+    the archive unconditionally, the four hundred milliseconds in the log were
+    a megabyte of stored HTML being parsed, and the row was indistinguishable
+    from a working source. The outcome now carries what the network did, so
+    "проверен" can be verified rather than assumed.
+    """
+
+    def test_a_source_read_off_the_disk_is_not_reported_as_checked(self):
+        fetcher = FakeFetcher(rss(NOW - timedelta(hours=2)), origin=FetchOrigin.ARCHIVE)
+        outcome = collect_source(source(), fetcher, mode="live", since=WINDOW)
+        assert outcome.status is SourceStatus.OK  # it did hand over material
+        assert outcome.network == "archive"
+        assert outcome.requests == 0
+        assert outcome.checked is False
+
+    def test_a_downloaded_source_is_reported_as_checked(self):
+        fetcher = FakeFetcher(rss(NOW - timedelta(hours=2)), origin=FetchOrigin.NETWORK)
+        outcome = collect_source(source(), fetcher, mode="live", since=WINDOW)
+        assert outcome.network == "fresh"
+        assert outcome.requests == 1
+        assert outcome.checked is True
+
+    def test_a_confirmed_unchanged_source_is_checked_too(self):
+        """HTTP 304 is an answer: the page was asked about and stood still."""
+        fetcher = FakeFetcher(
+            rss(NOW - timedelta(days=9)), origin=FetchOrigin.REVALIDATED
+        )
+        outcome = collect_source(source(), fetcher, mode="live", since=WINDOW)
+        assert outcome.status is SourceStatus.QUIET
+        assert outcome.network == "revalidated"
+        assert outcome.checked is True
+
+    def test_a_source_that_did_not_answer_says_so(self):
+        fetcher = FakeFetcher(
+            "", status_code=0, error="ConnectError", origin=FetchOrigin.NETWORK
+        )
+        outcome = collect_source(source(), fetcher, mode="live", since=WINDOW)
+        assert outcome.status is SourceStatus.EMPTY
+        assert outcome.network == "failed"
+        assert outcome.requests == 1
+
+    def test_the_unwindowed_reread_does_not_hide_the_first_request(self):
+        """A page adapter is read twice; the download still counts as one."""
+        page = source(
+            id="vendor_changelog",
+            type="html_scrape",
+            url="https://vendor.test/changelog",
+            min_expected_items=3,
+        )
+        fetcher = FakeFetcher(DATED_PAGE, origin=FetchOrigin.NETWORK)
+        outcome = collect_source(page, fetcher, mode="live", since=WINDOW)
+        assert outcome.status is SourceStatus.QUIET
+        assert len(fetcher.calls) == 2  # windowed read, then the unwindowed one
+        assert outcome.network == "fresh"
+
+    def test_a_source_with_no_adapter_claims_nothing(self):
+        outcome = collect_source(
+            source(type="carrier_pigeon"), FakeFetcher(), mode="live"
+        )
+        assert outcome.status is SourceStatus.FAILED
+        assert outcome.network == ""
+        assert outcome.checked is False
+
+    def test_a_fetcher_that_cannot_account_still_collects(self):
+        fetcher = NoRecordFetcher(rss(NOW - timedelta(hours=2)))
+        outcome = collect_source(source(), fetcher, mode="live", since=WINDOW)
+        assert outcome.status is SourceStatus.OK
+        assert outcome.count == 1
+        assert outcome.network == ""
+
+
+class TestTheFlagReachesTheRunLog:
+    def test_collect_all_hands_the_network_verdict_to_the_log(self):
+        written = []
+
+        class Recorder:
+            def source_result(self, source_id, status, **kwargs):
+                written.append((source_id, str(status), kwargs.get("network")))
+
+        config = SimpleNamespace(collection={"window_hours": 26})
+        collect_all(
+            config,
+            FakeFetcher(rss(NOW - timedelta(hours=2)), origin=FetchOrigin.REVALIDATED),
+            run_log=Recorder(),
+            sources=[source()],
+            max_workers=1,
+        )
+        assert written == [("vendor_notes", "ok", "revalidated")]
+
+    def test_the_verdict_lands_in_the_database(self):
+        """End to end through the real run log, which is what a page reads."""
+        from radar.db import init_db
+        from radar.runlog import RunLog
+
+        conn = init_db(":memory:")
+        log = RunLog(conn, "run-net", date(2026, 8, 18))
+        config = SimpleNamespace(collection={"window_hours": 26})
+        collect_all(
+            config,
+            FakeFetcher(rss(NOW - timedelta(hours=2)), origin=FetchOrigin.ARCHIVE),
+            run_log=log,
+            sources=[source()],
+            max_workers=1,
+        )
+        row = conn.execute(
+            "SELECT status, network FROM source_runs WHERE source_id = 'vendor_notes'"
+        ).fetchone()
+        assert (row["status"], row["network"]) == ("ok", "archive")
+
+    def test_a_later_write_does_not_blank_the_verdict(self):
+        """The daily run rewrites the row when an `ok` turns out to be quiet."""
+        from radar.db import init_db
+        from radar.runlog import RunLog
+
+        conn = init_db(":memory:")
+        log = RunLog(conn, "run-net", date(2026, 8, 18))
+        log.source_result("s", SourceStatus.OK, items_count=3, network="revalidated")
+        log.source_result("s", SourceStatus.QUIET, items_count=0)
+        row = conn.execute("SELECT status, network FROM source_runs").fetchone()
+        assert (row["status"], row["network"]) == ("quiet", "revalidated")
+
+    def test_the_column_appears_on_a_database_that_predates_it(self):
+        from radar.db import init_db
+        from radar.runlog import RunLog
+
+        conn = init_db(":memory:")
+        conn.execute("ALTER TABLE source_runs DROP COLUMN network") if "network" in {
+            r[1] for r in conn.execute("PRAGMA table_info(source_runs)")
+        } else None
+        RunLog(conn, "run-old", date(2026, 8, 18))
+        assert "network" in {
+            r[1] for r in conn.execute("PRAGMA table_info(source_runs)")
+        }
+
+
+class TestThePageShowsWhetherThereWasNetwork:
+    def test_a_replayed_source_is_labelled_as_such(self):
+        row = web.SourceRow("vendor_notes", "quiet", network="archive")
+        assert row.network_label == "из архива, без запроса"
+        assert row.replayed is True
+
+    def test_a_304_is_worded_as_an_answer(self):
+        row = web.SourceRow("vendor_notes", "quiet", network="revalidated")
+        assert row.network_label == "не изменилось (304)"
+        assert row.replayed is False
+
+    def test_an_old_run_says_it_does_not_know(self):
+        assert web.SourceRow("vendor_notes", "ok").network_label == "—"
+
+    def test_the_table_carries_the_column(self):
+        html = web._source_table(
+            [web.SourceRow("vendor_notes", "quiet", network="archive")]
+        )
+        assert "<th>Сеть</th>" in html
+        assert "из архива, без запроса" in html

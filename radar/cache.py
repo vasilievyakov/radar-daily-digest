@@ -249,12 +249,16 @@ class HttpCache(CacheStore):
         refreshed = dict(entry)
         refreshed.pop("cached_at", None)  # `put` stamps it; a leftover would win
         refreshed["headers"] = merged
-        refreshed["etag"] = header_value(headers, "etag") or str(
-            entry.get("etag") or ""
-        ) or header_value(entry.get("headers") or {}, "etag")
-        refreshed["last_modified"] = header_value(headers, "last-modified") or str(
-            entry.get("last_modified") or ""
-        ) or header_value(entry.get("headers") or {}, "last-modified")
+        refreshed["etag"] = (
+            header_value(headers, "etag")
+            or str(entry.get("etag") or "")
+            or header_value(entry.get("headers") or {}, "etag")
+        )
+        refreshed["last_modified"] = (
+            header_value(headers, "last-modified")
+            or str(entry.get("last_modified") or "")
+            or header_value(entry.get("headers") or {}, "last-modified")
+        )
         self.put(key, refreshed)
         refreshed["cached_at"] = time.time()
         return refreshed

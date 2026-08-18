@@ -79,6 +79,7 @@ class RunLog:
         self.status = "running"
         self.stages: list[dict[str, Any]] = []
         self.cost_usd = 0.0
+        self.original_cost_usd = 0.0
         self.model_calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
@@ -205,15 +206,21 @@ class RunLog:
         tokens_out: int = 0,
         cost_usd: float = 0.0,
         cached: bool = False,
+        original_cost_usd: float = 0.0,
     ) -> None:
         self.model_calls += 1
         self.tokens_in += tokens_in
         self.tokens_out += tokens_out
         self.cost_usd += cost_usd
+        # What the work costs when nothing is cached. Kept apart from the money
+        # actually spent so a run can say both, and a fast cheap run cannot be
+        # mistaken for a fast cheap pipeline.
+        self.original_cost_usd += original_cost_usd or cost_usd
         with self.conn:
             self.conn.execute(
-                "INSERT INTO model_calls (call_id, run_id, stage, model, provider, tokens_in, "
-                "tokens_out, cost_usd, cached, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO model_calls (call_id, run_id, stage, model, provider, "
+                "tokens_in, tokens_out, cost_usd, cached, original_cost_usd, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     uuid.uuid4().hex,
                     self.run_id,
@@ -224,6 +231,7 @@ class RunLog:
                     tokens_out,
                     cost_usd,
                     int(cached),
+                    original_cost_usd or cost_usd,
                     datetime.now(UTC).isoformat(),
                 ),
             )

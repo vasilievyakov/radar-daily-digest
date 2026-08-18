@@ -3,7 +3,14 @@ from datetime import date
 
 import pytest
 
-from radar.cache import CacheStore, HttpCache, ModelCache, canonical_url, digest
+from radar.cache import (
+    CacheStore,
+    HttpCache,
+    ModelCache,
+    canonical_url,
+    digest,
+    header_value,
+)
 
 
 @pytest.fixture
@@ -275,3 +282,140 @@ class TestWriteIsActuallyAtomic:
         assert written_to, "put did not write anything"
         assert final not in written_to, "final path was written to directly"
         assert final.exists()
+
+
+# -- what makes a later request conditional ---------------------------------
+
+
+@pytest.fixture
+def http(tmp_path):
+    return HttpCache(tmp_path / "cache")
+
+
+def stored(http, key="k" * 64, headers=None, text="page"):
+    http.store(key, "https://example.com/x", 200, text, headers or {})
+    return http.get(key)
+
+
+class TestHeaderValue:
+    def test_a_header_is_found_whatever_its_case(self):
+        assert header_value({"ETag": 'W/"1"'}, "etag") == 'W/"1"'
+        assert header_value({"etag": 'W/"1"'}, "ETag") == 'W/"1"'
+
+    def test_a_missing_header_is_an_empty_string(self):
+        assert header_value({"etag": "x"}, "last-modified") == ""
+        assert header_value(None, "etag") == ""
+
+    def test_surrounding_whitespace_is_stripped(self):
+        assert header_value({"etag": '  W/"1" '}, "etag") == 'W/"1"'
+
+
+class TestValidatorsSurviveTheArchive:
+    """Without these two headers a re-check is a full download every morning.
+
+    They are stored twice over — as their own fields and inside the response
+    headers — because the archive on disk predates the fields, and a validator
+    the cache cannot find is a conditional request that never happens.
+    """
+
+    def test_store_keeps_the_etag_and_the_date(self, http):
+        entry = stored(
+            http,
+            headers={
+                "etag": 'W/"abc"',
+                "last-modified": "Mon, 17 Aug 2026 20:03:01 GMT",
+            },
+        )
+        assert entry["etag"] == 'W/"abc"'
+        assert entry["last_modified"] == "Mon, 17 Aug 2026 20:03:01 GMT"
+
+    def test_both_validators_become_request_headers(self, http):
+        entry = stored(
+            http,
+            headers={
+                "etag": 'W/"abc"',
+                "last-modified": "Mon, 17 Aug 2026 20:03:01 GMT",
+            },
+        )
+        assert HttpCache.validators(entry) == {
+            "If-None-Match": 'W/"abc"',
+            "If-Modified-Since": "Mon, 17 Aug 2026 20:03:01 GMT",
+        }
+
+    def test_an_entry_written_by_an_older_run_still_yields_validators(self, http):
+        """Two hundred and thirty files on disk have no top-level fields."""
+        http.put(
+            "a" * 64,
+            {
+                "url": "https://example.com/x",
+                "status_code": 200,
+                "text": "page",
+                "headers": {"ETag": 'W/"old"'},
+            },
+        )
+        assert HttpCache.validators(http.get("a" * 64)) == {"If-None-Match": 'W/"old"'}
+
+    def test_a_page_with_neither_offers_nothing(self, http):
+        entry = stored(http, headers={"content-type": "text/html"})
+        assert HttpCache.validators(entry) == {}
+        assert HttpCache.has_validators(entry) is False
+
+    def test_a_missing_entry_offers_nothing(self):
+        assert HttpCache.validators(None) == {}
+
+
+class TestAgeDecidesWhoAnswers:
+    def test_a_just_written_entry_is_new(self, http):
+        assert CacheStore.age(stored(http)) < 1.0
+
+    def test_age_counts_from_the_write(self, http, monkeypatch):
+        entry = stored(http)
+        import radar.cache as cache_module
+
+        monkeypatch.setattr(cache_module.time, "time", lambda: entry["cached_at"] + 500)
+        assert CacheStore.age(entry) == pytest.approx(500, abs=1)
+
+    def test_an_entry_that_cannot_date_itself_counts_as_stale(self):
+        """None means "ask the server": one request beats a day of silence."""
+        assert CacheStore.age({"text": "x"}) is None
+        assert CacheStore.age({"cached_at": "не дата"}) is None
+        assert CacheStore.age(None) is None
+
+
+class TestRevalidate:
+    """A 304 is not a no-op on disk: it is the server dating the copy."""
+
+    def test_the_body_stands(self, http):
+        entry = stored(http, text="the page as it was", headers={"etag": 'W/"1"'})
+        refreshed = http.revalidate("k" * 64, entry, {"etag": 'W/"1"'})
+        assert refreshed["text"] == "the page as it was"
+        assert http.get("k" * 64)["text"] == "the page as it was"
+
+    def test_the_clock_restarts(self, http, monkeypatch):
+        entry = stored(http, headers={"etag": 'W/"1"'})
+        import radar.cache as cache_module
+
+        monkeypatch.setattr(
+            cache_module.time, "time", lambda: entry["cached_at"] + 5000
+        )
+        http.revalidate("k" * 64, entry, {"etag": 'W/"1"'})
+        assert CacheStore.age(http.get("k" * 64)) == pytest.approx(0, abs=1)
+
+    def test_a_rotated_validator_replaces_the_old_one(self, http):
+        entry = stored(http, headers={"etag": 'W/"1"'})
+        refreshed = http.revalidate("k" * 64, entry, {"etag": 'W/"2"'})
+        assert refreshed["etag"] == 'W/"2"'
+        assert HttpCache.validators(http.get("k" * 64)) == {"If-None-Match": 'W/"2"'}
+
+    def test_a_304_without_a_validator_keeps_the_stored_one(self, http):
+        """RFC 9110 lets a 304 omit ETag; dropping it would cost the next check."""
+        entry = stored(http, headers={"etag": 'W/"1"'})
+        http.revalidate("k" * 64, entry, {"date": "Tue, 18 Aug 2026 06:00:00 GMT"})
+        assert HttpCache.validators(http.get("k" * 64)) == {"If-None-Match": 'W/"1"'}
+
+    def test_headers_carrying_live_state_are_taken_from_the_304(self, http):
+        entry = stored(http, headers={"etag": 'W/"1"', "x-ratelimit-remaining": "4999"})
+        refreshed = http.revalidate(
+            "k" * 64, entry, {"etag": 'W/"1"', "x-ratelimit-remaining": "12"}
+        )
+        assert refreshed["headers"]["x-ratelimit-remaining"] == "12"

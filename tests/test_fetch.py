@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from radar import fetch as fetch_module
-from radar.fetch import Fetcher
+from radar.fetch import DEFAULT_CACHE_TTL, FetchOrigin, FetchResult, FetchTally, Fetcher
 
 
 class FakeClock:
@@ -57,12 +57,21 @@ def clock(monkeypatch):
 def make_fetcher(tmp_path, clock):
     created: list[Fetcher] = []
 
-    def factory(handler, polite_delay=0.0, max_retries=2, cache_root=None):
+    def factory(
+        handler,
+        polite_delay=0.0,
+        max_retries=2,
+        cache_root=None,
+        cache_ttl=DEFAULT_CACHE_TTL,
+        offline=False,
+    ):
         fetcher = Fetcher(
             cache_root=cache_root or tmp_path / "cache",
             max_retries=max_retries,
             polite_delay=polite_delay,
             client=httpx.Client(transport=httpx.MockTransport(handler)),
+            offline=offline,
+            cache_ttl=cache_ttl,
         )
         created.append(fetcher)
         return fetcher
@@ -293,3 +302,348 @@ class TestAMissingPageIsNotArchived:
         assert second.ok, "the 404 was served from disk"
         assert "снова здесь" in second.text
         assert not second.from_cache
+
+
+# -- conditional requests ---------------------------------------------------
+
+
+class FakeServer:
+    """A page that answers a validator, and can publish a new version.
+
+    The point of the class is that it distinguishes the two questions the old
+    fetcher collapsed into one: "do I have bytes for this URL" and "are the
+    bytes I have still what the page says". Only the second one is a check.
+    """
+
+    def __init__(self, body="v1", etag='W/"1"', last_modified=None, extra=None):
+        self.body = body
+        self.etag = etag
+        self.last_modified = last_modified
+        self.extra = dict(extra or {})
+        self.requests: list[httpx.Request] = []
+
+    @property
+    def conditional_requests(self) -> list[httpx.Request]:
+        return [
+            r
+            for r in self.requests
+            if "if-none-match" in r.headers or "if-modified-since" in r.headers
+        ]
+
+    def publish(self, body, etag=None, last_modified=None) -> None:
+        self.body = body
+        if etag is not None:
+            self.etag = etag
+        if last_modified is not None:
+            self.last_modified = last_modified
+
+    def _headers(self) -> dict[str, str]:
+        headers = {}
+        if self.etag:
+            headers["etag"] = self.etag
+        if self.last_modified:
+            headers["last-modified"] = self.last_modified
+        headers.update(self.extra)
+        return headers
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        matched = self.etag and request.headers.get("if-none-match") == self.etag
+        dated = (
+            self.last_modified
+            and request.headers.get("if-modified-since") == self.last_modified
+        )
+        if matched or dated:
+            return httpx.Response(304, headers=self._headers())
+        return httpx.Response(200, text=self.body, headers=self._headers())
+
+
+class TestTheArchiveDoesNotImpersonateTheNetwork:
+    """The defect this module was rewritten for.
+
+    Eight sources answered in under six milliseconds, two hundred and thirty
+    files sat on disk and not one had been written that day. Nothing in the
+    result said so, so the run log recorded eight checks that never happened
+    and the digest was empty for a reason no page could state.
+    """
+
+    def test_a_fresh_download_says_it_came_from_the_network(self, make_fetcher):
+        server = FakeServer(body="hello")
+        result = make_fetcher(server).get("https://example.test/a")
+        assert result.origin is FetchOrigin.NETWORK
+        assert result.requested is True
+        assert result.from_cache is False
+        assert result.network_status == 200
+
+    def test_inside_the_ttl_the_archive_answers_and_admits_it(self, make_fetcher):
+        server = FakeServer()
+        fetcher = make_fetcher(server)
+        fetcher.get("https://example.test/a")
+        second = fetcher.get("https://example.test/a")
+        assert len(server.requests) == 1
+        assert second.origin is FetchOrigin.ARCHIVE
+        # The old code returned exactly this result and called it a check.
+        assert second.requested is False
+
+    def test_past_the_ttl_the_server_is_asked(self, make_fetcher):
+        server = FakeServer()
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        fetcher.get("https://example.test/a")
+        assert len(server.requests) == 2
+
+    def test_the_second_request_carries_the_stored_etag(self, make_fetcher):
+        server = FakeServer(etag='W/"abc"')
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        fetcher.get("https://example.test/a")
+        assert server.requests[0].headers.get("if-none-match") is None
+        assert server.requests[1].headers["if-none-match"] == 'W/"abc"'
+
+    def test_a_page_with_only_a_date_sends_if_modified_since(self, make_fetcher):
+        stamp = "Mon, 17 Aug 2026 20:03:01 GMT"
+        server = FakeServer(etag=None, last_modified=stamp)
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        fetcher.get("https://example.test/a")
+        assert server.requests[1].headers["if-modified-since"] == stamp
+
+    def test_a_page_with_no_validators_is_downloaded_again(self, make_fetcher):
+        """No ETag, no Last-Modified: the only honest check is a full read."""
+        server = FakeServer(etag=None)
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        second = fetcher.get("https://example.test/a")
+        assert server.conditional_requests == []
+        assert second.origin is FetchOrigin.NETWORK
+
+    def test_force_asks_for_the_whole_page(self, make_fetcher):
+        server = FakeServer()
+        fetcher = make_fetcher(server)
+        fetcher.get("https://example.test/a")
+        result = fetcher.get("https://example.test/a", force=True)
+        assert server.conditional_requests == []
+        assert result.origin is FetchOrigin.NETWORK
+
+    def test_max_age_zero_overrides_the_ttl_for_one_call(self, make_fetcher):
+        server = FakeServer()
+        fetcher = make_fetcher(server, cache_ttl=3600)
+        fetcher.get("https://example.test/a")
+        result = fetcher.get("https://example.test/a", max_age=0)
+        assert len(server.requests) == 2
+        assert result.origin is FetchOrigin.REVALIDATED
+
+
+class TestNotModifiedIsAnAnswer:
+    """304 is the sentence the product needs and could not previously say.
+
+    "Nothing changed" and "nobody looked" render identically on a page and
+    differ completely in what they mean. A 304 is the first one, stated by the
+    server, and it has to survive all the way into the run log.
+    """
+
+    def test_a_304_is_reported_as_a_network_answer(self, make_fetcher):
+        server = FakeServer(body="page")
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        second = fetcher.get("https://example.test/a")
+        assert second.origin is FetchOrigin.REVALIDATED
+        assert second.requested is True
+        assert second.unchanged is True
+        assert second.network_status == 304
+
+    def test_a_304_hands_the_adapter_the_archived_page(self, make_fetcher):
+        """An adapter must never see 304: it parses bodies, not statuses."""
+        server = FakeServer(body="<html>page</html>")
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        second = fetcher.get("https://example.test/a")
+        assert second.ok is True
+        assert second.status_code == 200
+        assert second.text == "<html>page</html>"
+        assert second.from_cache is True
+
+    def test_a_304_keeps_the_material_reference(self, make_fetcher):
+        server = FakeServer(body="quotable line")
+        fetcher = make_fetcher(server, cache_ttl=0)
+        first = fetcher.get("https://example.test/a")
+        second = fetcher.get("https://example.test/a")
+        assert second.ref == first.ref
+        assert fetcher.read_cached(second.ref) == "quotable line"
+
+    def test_a_304_restarts_the_clock(self, make_fetcher):
+        """Confirmed current means current: the next read may skip the wire."""
+        server = FakeServer()
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        fetcher.get("https://example.test/a")
+        fetcher.cache_ttl = 3600
+        third = fetcher.get("https://example.test/a")
+        assert third.origin is FetchOrigin.ARCHIVE
+        assert len(server.requests) == 2
+
+    def test_fresh_headers_from_a_304_win(self, make_fetcher):
+        """GitHub answers a conditional read with current rate-limit counters."""
+        server = FakeServer(extra={"x-ratelimit-remaining": "4999"})
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://api.example.test/releases")
+        server.extra["x-ratelimit-remaining"] = "12"
+        second = fetcher.get("https://api.example.test/releases")
+        assert second.headers["x-ratelimit-remaining"] == "12"
+
+    def test_a_rotated_etag_is_stored(self, make_fetcher):
+        server = FakeServer(etag='W/"1"')
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        server.extra = {}
+        server.etag = 'W/"1"'
+        fetcher.get("https://example.test/a")  # 304, same validator
+        server.publish("v1", etag='W/"2"')  # the page is re-issued unchanged
+        fetcher.get("https://example.test/a")  # 200, new validator
+        fetcher.get("https://example.test/a")
+        assert server.requests[-1].headers["if-none-match"] == 'W/"2"'
+
+    def test_an_unsolicited_304_is_an_error_not_an_empty_page(self, make_fetcher):
+        """No archive to serve, so there is nothing truthful to hand back."""
+
+        def always_304(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(304)
+
+        result = make_fetcher(always_304).get("https://example.test/a")
+        assert result.ok is False
+        assert result.error is not None
+
+
+class TestAChangedPageIsSeen:
+    """The property the product is sold on, asserted directly."""
+
+    def test_a_new_body_arrives_as_a_fresh_download(self, make_fetcher):
+        server = FakeServer(body="old", etag='W/"1"')
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+        server.publish("new", etag='W/"2"')
+        second = fetcher.get("https://example.test/a")
+        assert second.origin is FetchOrigin.NETWORK
+        assert second.text == "new"
+
+    def test_the_archive_is_updated_to_the_new_body(self, make_fetcher):
+        server = FakeServer(body="old", etag='W/"1"')
+        fetcher = make_fetcher(server, cache_ttl=0)
+        ref = fetcher.get("https://example.test/a").ref
+        server.publish("new", etag='W/"2"')
+        fetcher.get("https://example.test/a")
+        assert fetcher.read_cached(ref) == "new"
+
+
+class TestFailureIsNotPapersOverWithTheArchive:
+    def test_an_unreachable_server_does_not_fall_back_to_disk(self, make_fetcher):
+        """A source that did not answer is a source that did not answer."""
+        server = FakeServer(body="yesterday")
+        fetcher = make_fetcher(server, cache_ttl=0)
+        fetcher.get("https://example.test/a")
+
+        def down(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+        fetcher._client = httpx.Client(transport=httpx.MockTransport(down))
+        result = fetcher.get("https://example.test/a")
+        assert result.ok is False
+        assert result.text == ""
+        assert result.from_cache is False
+
+
+class TestOfflineIsUnchanged:
+    def test_offline_serves_the_archive_however_stale(self, make_fetcher, tmp_path):
+        root = tmp_path / "shared"
+        make_fetcher(FakeServer(body="archived"), cache_root=root).get(
+            "https://example.test/a"
+        )
+        offline = make_fetcher(forbidden, cache_root=root, offline=True, cache_ttl=0)
+        result = offline.get("https://example.test/a")
+        assert result.text == "archived"
+        assert result.origin is FetchOrigin.ARCHIVE
+        assert result.requested is False
+
+    def test_an_offline_miss_stays_loud(self, make_fetcher):
+        result = make_fetcher(forbidden, offline=True).get("https://example.test/gone")
+        assert result.ok is False
+        assert result.origin is FetchOrigin.OFFLINE
+        assert "offline" in (result.error or "")
+
+
+class TestWhatTheRunLogIsToldAboutTheNetwork:
+    def test_record_counts_the_three_outcomes(self, make_fetcher):
+        server = FakeServer()
+        fetcher = make_fetcher(server, cache_ttl=0)
+        with fetcher.record() as tally:
+            fetcher.get("https://example.test/a")  # 200
+            fetcher.get("https://example.test/a")  # 304
+            fetcher.cache_ttl = 3600
+            fetcher.get("https://example.test/a")  # archive
+        assert (tally.fresh, tally.revalidated, tally.archive) == (1, 1, 1)
+        assert tally.requests == 2
+
+    def test_a_block_that_only_read_the_disk_reports_no_requests(self, make_fetcher):
+        fetcher = make_fetcher(FakeServer())
+        fetcher.get("https://example.test/a")
+        with fetcher.record() as tally:
+            fetcher.get("https://example.test/a")
+        assert tally.requests == 0
+        assert tally.label == "archive"
+
+    def test_one_download_makes_the_whole_group_checked(self):
+        tally = FetchTally(fresh=1, revalidated=2, archive=5)
+        assert tally.label == "fresh"
+
+    def test_all_304_is_reported_as_confirmed_unchanged(self):
+        assert FetchTally(revalidated=3, archive=1).label == "revalidated"
+
+    def test_an_empty_group_claims_nothing(self):
+        assert FetchTally().label == ""
+
+    def test_a_failed_request_outranks_a_disk_read(self):
+        assert FetchTally(failed=1, archive=2).label == "failed"
+
+    def test_recording_is_per_thread(self, make_fetcher):
+        """collect_all runs a dozen sources through one fetcher in a pool."""
+        import threading
+
+        fetcher = make_fetcher(FakeServer(), cache_ttl=0)
+        seen = {}
+
+        def worker(name, url):
+            with fetcher.record() as tally:
+                fetcher.get(url)
+            seen[name] = tally.requests
+
+        threads = [
+            threading.Thread(target=worker, args=(i, f"https://example.test/{i}"))
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert seen == {0: 1, 1: 1, 2: 1, 3: 1}
+
+
+class TestTheTwoFlagsCannotDisagree:
+    def test_from_cache_alone_still_means_the_archive(self):
+        """Adapters and their fixtures were written before `origin` existed."""
+        result = FetchResult(
+            url="u", status_code=200, text="t", headers={}, ref="r", from_cache=True
+        )
+        assert result.origin is FetchOrigin.ARCHIVE
+        assert result.requested is False
+
+    def test_a_revalidated_result_reads_as_cached(self):
+        result = FetchResult(
+            url="u",
+            status_code=200,
+            text="t",
+            headers={},
+            ref="r",
+            origin=FetchOrigin.REVALIDATED,
+        )
+        assert result.from_cache is True
+        assert result.requested is True

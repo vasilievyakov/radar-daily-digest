@@ -51,13 +51,20 @@ USER_AGENT = (
 
 # How long an archived response may be served without asking anyone.
 #
-# Fifteen minutes is chosen against the two rhythms that exist. The daily run
-# comes round every twenty-odd hours, so it always finds the archive stale and
-# always asks — which is the entire point. Everything that reads one page twice
-# inside a single run — the collector's unwindowed re-read, an adapter walking
-# back to page one, a retry of a later stage — falls inside it and costs a
-# parse, as before. There is no value between those two rhythms to get wrong.
-DEFAULT_CACHE_TTL = 900.0
+# Thirty seconds, and the shortness is the whole policy. The window exists for
+# exactly one job: collapsing the repeated reads of the same URL that a single
+# collection makes — the collector re-reads a page unwindowed when the windowed
+# read came back empty, an adapter re-parses after a retry — into one request.
+# Those happen within the same second, so the window only has to survive a slow
+# page, not a working day.
+#
+# What it must never be is long enough to span two collections. A window that
+# does turns "check this source" back into "read the disk", which is the defect
+# itself: at an hour, a re-run five minutes later reports every source as
+# checked with no packet leaving the machine. Cheapness is not a reason to skip
+# the question — a conditional request that ends in 304 costs a few hundred
+# bytes and buys the one fact the product sells.
+DEFAULT_CACHE_TTL = 30.0
 
 # HTTP 304 without a body, the answer a conditional request hopes for.
 NOT_MODIFIED = 304

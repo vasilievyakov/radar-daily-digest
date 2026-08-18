@@ -419,6 +419,7 @@ class OpenRouterClient:
                 tokens_in=tokens_in,
                 cost_usd=cost,
                 cached=False,
+                original_cost_usd=cost,
             )
         return result
 
@@ -574,6 +575,10 @@ class OpenRouterClient:
             tokens_out=completion.tokens_out,
             cost_usd=completion.cost_usd,
             cached=completion.cached,
+            # A hit costs nothing and would have cost this. The figure existed
+            # on Completion and reached no table, so a run served from cache
+            # reported the price of the cache as the price of the work.
+            original_cost_usd=completion.original_cost_usd or completion.cost_usd,
         )
 
 
