@@ -269,6 +269,14 @@ retrieval:
   relaxed_change_type_groups:
     - [deprecation, breaking_change]
     - [limits, pricing]
+    # См. ai-tools.yaml: `other` соседствует со всеми, иначе предупреждение о
+    # промахе строгого фильтра молчит именно на неверно типизированных карточках.
+    - [other, deprecation]
+    - [other, breaking_change]
+    - [other, release]
+    - [other, pricing]
+    - [other, limits]
+    - [other, security]
 
 trends:
   min_members: 3

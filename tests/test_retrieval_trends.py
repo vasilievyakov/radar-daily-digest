@@ -347,3 +347,23 @@ class TestTheAlarmSeesTheCellItLandedIn:
         assert result.report.relaxed_hits >= 4, (
             "the alarm cannot see the cell the card actually landed in"
         )
+
+
+def test_the_shipped_configs_do_not_undo_the_relaxed_groups():
+    """A default extended in code and overridden in YAML is a default nobody has.
+
+    The pairs with `other` were added to DEFAULT_RELAXED_GROUPS to stop the
+    miss-alarm from going silent exactly where the type is wrong. Both theme
+    files declare their own list, so the fix was invisible in the only
+    configuration that runs.
+    """
+    import yaml
+
+    for path in ("config/ai-tools.yaml", "config/cloud-infra.yaml"):
+        data = yaml.safe_load(open(path, encoding="utf-8"))
+        groups = (data.get("retrieval") or {}).get("relaxed_change_type_groups") or []
+        pairs = {frozenset(pair) for pair in groups}
+        assert any("other" in pair for pair in pairs), (
+            f"{path}: `other` не соседствует ни с одним типом, "
+            "предупреждение о промахе не сработает"
+        )
